@@ -8,3 +8,4 @@ models/*
 !models/.gitkeep
 .env
 *.zip
+*.egg-info/

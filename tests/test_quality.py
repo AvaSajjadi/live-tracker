@@ -65,6 +65,24 @@ def test_out_of_frame_flagged():
     assert out.loc[3, "out_of_frame"] and not out.loc[3, "valid"]
 
 
+def test_low_confidence_flagged_only_when_configured():
+    t = make_track(jitter(10))
+    t["score"] = 0.9
+    t.loc[4, "score"] = 0.05
+    off = flag_tracking(t)
+    assert not off["low_conf"].any() and off["valid"].all()
+    on = flag_tracking(t, score_col="score", min_score=0.2)
+    assert on["low_conf"].sum() == 1 and on.loc[4, "low_conf"] and not on.loc[4, "valid"]
+
+
+def test_low_confidence_frames_are_not_interpolated():
+    t = make_track(jitter(10))
+    t["score"] = 0.9
+    t.loc[4, "score"] = 0.05
+    out = interpolate_short_gaps(flag_tracking(t, score_col="score", min_score=0.2))
+    assert not out["imputed"].any()
+
+
 def test_short_gap_interpolated_and_marked():
     x = np.arange(20, dtype=float)
     x[5:7] = np.nan

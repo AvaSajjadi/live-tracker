@@ -11,6 +11,7 @@ So instead of silently fixing bad data, we mark it with flag columns:
   frozen        exactly the same coordinates for many frames in a row
                 (real trackers always jitter a little, so this usually means
                 the tracker got stuck, not that the mouse stopped)
+  low_conf      tracker score below min_score (only if a score column is given)
   imputed       value was filled in by interpolate_short_gaps()
 
 All thresholds are placeholders. They must be chosen on training data.
@@ -20,6 +21,12 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+
+# Chosen on the 14 CalMS21 validation sessions (torso points): torso points scoring
+# below this jump a median 8+ px/frame (3 px above 0.7) and it costs ~1% of frames
+# (~3% of attack frames). Opt-in: pass it as min_score.
+SUGGESTED_MIN_SCORE = 0.15
 
 
 def _groups(df, group_cols):
@@ -40,13 +47,20 @@ def _runs(mask):
 def flag_tracking(df, x_col="x", y_col="y", time_col="time_s",
                   group_cols=("session", "mouse", "keypoint"),
                   frame_size=None, frozen_min_frames=15, frozen_tol_px=1e-6,
-                  max_speed_px_s=None):
-    """Add quality flag columns. Returns a copy; raw x/y are not changed."""
+                  max_speed_px_s=None, score_col=None, min_score=None):
+    """Add quality flag columns. Returns a copy; raw x/y are not changed.
+
+    low_conf is only checked when both score_col and min_score are given.
+    """
     out = df.copy()
-    for col in ("missing", "out_of_frame", "jump", "frozen"):
+    for col in ("missing", "out_of_frame", "jump", "frozen", "low_conf"):
         out[col] = False
 
     out["missing"] = out[x_col].isna() | out[y_col].isna()
+
+    if score_col is not None and min_score is not None:
+        # a missing score is not evidence of low confidence; "missing" covers lost points
+        out["low_conf"] = ~out["missing"] & (out[score_col] < min_score)
 
     if frame_size is not None:
         w, h = frame_size
@@ -77,7 +91,8 @@ def flag_tracking(df, x_col="x", y_col="y", time_col="time_s",
                 frozen[max(s - 1, 0):e] = True
         out.loc[part.index, "frozen"] = frozen
 
-    out["valid"] = ~(out["missing"] | out["out_of_frame"] | out["jump"] | out["frozen"])
+    out["valid"] = ~(out["missing"] | out["out_of_frame"] | out["jump"] | out["frozen"]
+                     | out["low_conf"])
     return out
 
 

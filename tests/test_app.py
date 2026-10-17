@@ -35,3 +35,9 @@ def test_injected_failures_show_warnings():
     at = run_demo(inject=True)
     assert any("Tracking lost for mouse b" in e.value for e in at.error)
     assert any("stuck for mouse a" in w.value for w in at.warning)
+
+
+def test_starter_section_is_labeled_offline_only():
+    at = run_demo()
+    assert any("OFFLINE ONLY" in s.value for s in at.subheader)
+    assert any("never for live" in c.value for c in at.caption)

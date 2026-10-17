@@ -66,9 +66,10 @@ if data is not None:
                     'mouse a frozen for 1 s.')
 
         # --- starter section (unchanged) ----------------------------------
-        st.subheader('Motion features (offline smoothing)')
-        st.caption('Uses Savitzky-Golay smoothing, which looks at future frames. '
-                   'Fine for offline analysis, not for live monitoring.')
+        st.subheader('Motion features (OFFLINE ONLY)')
+        st.caption('OFFLINE ONLY: uses Savitzky-Golay smoothing, which looks at future frames. '
+                   'Fine for offline analysis, never for live monitoring or replay. '
+                   'The causal sections below are the live-safe ones.')
         f = frame_features(data[['x_a', 'y_a']].to_numpy(),
                            data[['x_b', 'y_b']].to_numpy(), fps=fps)
         st.metric('Frames', len(f))

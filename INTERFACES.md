@@ -68,3 +68,49 @@ One entry per event (JSON lines file, one object per line):
 - `action` is one of `alert`, `ask`, `log`, `tracking_warning`.
 - `researcher_answer` is filled in only for `ask` events (`"confirmed"` / `"rejected"`).
 - The end-of-session summary is written **only** from this log.
+
+## 5. Motion engine → Classifier: feature table
+
+Built by `features.py` (owner: Ava). These are motion **measurements**, not
+behavior labels: speed or closeness alone does not mean "attack".
+
+Everything is **causal**: the value at time t uses only frames at or before t
+(a test checks this), so the same table is valid for live replay. Columns
+ending in `_w` are computed over a **trailing** window of `window_s` seconds
+(`FeatureParams.window_s`, placeholder 1.0 s). They are NaN until the window has
+at least `min_coverage` (placeholder 90 %) of good tracking, e.g. at the start
+of a session or right after a gap.
+
+Missing or invalid tracking gives **NaN**, never 0 (missing is not standing still).
+
+One row per session × frame. Per mouse, with suffix `_<mouse>` (`_a`, `_b` for
+the synthetic data; real CalMS21 mouse IDs once H1a confirms them):
+
+| column | unit | meaning | status |
+|---|---|---|---|
+| `point_ok` | bool | this mouse's point is usable (valid, or short-gap imputed) | Day 1 |
+| `uses_imputed` | bool | value was computed from at least one imputed point | Day 1 |
+| `speed` | px/s | backward difference / real dt; NaN across gaps, session starts | Day 1 |
+| `accel` | px/s² | change of velocity vector / dt | Day 1 |
+| `heading` | rad | direction of movement, (-π, π]; NaN when nearly still (noise) | Day 1 |
+| `turn_rate` | rad/s | heading change / dt, correct across ±π | Day 1 |
+| `path_len_w` | px | distance travelled in the window | Day 1 |
+| `straightness_w` | 0–1 | net displacement / path length; NaN if path < `min_path_px` | Day 1 |
+| `idle_frac_w` | 0–1 | fraction of the window with speed < `idle_speed_px_s` | Day 1 |
+| `in_pause` | bool/NA | still for ≥ `pause_min_duration_s`; True only once that time has passed | Day 1 |
+
+Dyadic (one column per pair; `_ab` means A relative to B):
+
+| column | unit | meaning | status |
+|---|---|---|---|
+| `dist_center`, `dist_rate` | px, px/s | body-center distance and its rate (negative = approaching) | Day 2 |
+| `rel_speed` | px/s | speed of A relative to B | Day 2 |
+| `dist_nose_nose`, `dist_nose_tail_ab`, `dist_nose_tail_ba` | px | keypoint distances | Day 2, needs H1a |
+| `facing_ab`, `facing_ba` | rad | angle between body axis and direction to the other mouse | Day 2, needs H1a |
+| `close_time_s` | s | trailing time with `dist_center` below a parameter | Day 2 |
+| `speed_corr_w` | -1–1 | trailing correlation of the two speeds | Day 2 |
+
+Plus `session, frame, time_s, tracking_ok` (`tracking_ok` from
+`frame_tracking_ok()`, Day 2). All thresholds are placeholders until tuned on
+train/val sessions (Day 3). Today `individual_features()` returns one row per
+session × mouse × frame and `to_wide()` turns it into this layout.

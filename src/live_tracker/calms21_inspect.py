@@ -63,16 +63,7 @@ def describe(value, depth=5, max_keys=5, indent=0, lines=None):
     return lines
 
 
-def load_calms21(*args, **kwargs):
-    """Placeholder for the real loader.
-
-    Not written yet on purpose: we first need to inspect a real file and read
-    the official readme to confirm the keypoint order, array shapes, label
-    mapping, and frame rate.
-    """
-    raise NotImplementedError(
-        "CalMS21 loader not implemented yet. Run calms21_inspect on a real "
-        "Task 1 file and check readme.md first.")
+from live_tracker.calms21 import load_calms21  # noqa: E402,F401  (real loader lives in calms21.py)
 
 
 def main(argv=None):

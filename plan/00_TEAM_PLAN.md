@@ -42,6 +42,26 @@ These are the points where one person cannot continue until another person deliv
 | **H4** | Day 3, end | Igor → Ava | `evaluate()` function + model A (basic features) results on validation | Ava's ablation (Day 4) |
 | **H5** | Day 4, end | Syed (with all) | Full pipeline runs on one real held-out session: sentence → rule → Confirm → replay → alerts → summary | Day 5 demo and report |
 
+### Handoff status (updated Sat Oct 17, Ava's side)
+
+| ID | Status |
+|---|---|
+| H0 | Partly: Ava's tests pass (53 then, 87 now). PR #2 and #3 still open. |
+| H1a | Not seen on GitHub yet. **Ava is waiting** (keypoint names and order, torso keypoints, mouse IDs, fps). |
+| H1 | Not seen yet. **Ava is waiting** (loader and split manifest). |
+| H2 | **Delivered, in `main`** (#4, #5): `compute_features()`, `frame_tracking_ok()`. Synthetic data only. |
+| H2b | **Delivered, in `main`** (#5): `tracking_warning_events()`. |
+| H3 | Igor to Syed: pending. |
+| H4 | Igor to Ava: pending. Ava's `scripts/ablation.py` is ready (#7) and needs `fit_fn` / `evaluate_fn`. |
+| H5 | Pending. |
+
+**Ava, done so far:** feature table spec (`INTERFACES.md` §5), causal individual and dyadic features, body center (needs the real names), tracking warnings, sensitivity script (#6), ablation script (#7), status doc (#8). Details and checkboxes in `plan/AVA.md`.
+
+**Ava needs:**
+- **Igor:** H1a, then H1, then H4 (details in `plan/AVA.md`).
+- **Syed:** feedback on `INTERFACES.md` §5 and the warning format; replay needs from `tracking_warning_events()`.
+- **Everyone:** reviews of #4–#8, and merge #2 and #3.
+
 **Rule:** if your handoff is late, tell the group chat **before** the deadline, not after.
 Every blocked person has a "while you wait" task in their own file, so nobody sits idle.
 

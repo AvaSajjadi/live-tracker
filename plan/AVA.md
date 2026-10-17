@@ -15,11 +15,11 @@ Your files: `src/live_tracker/motion.py`, `filters.py`, `quality.py`, `features.
 ## Day 1: Sat Oct 17 (no dependencies)
 
 ### 1. Team setup (H0, with everyone, 1 h)
-- [ ] Clone, venv, `python -m pytest -q` passes (53 tests expected)
-- [ ] Review and merge PR #2 (`ignore-egg-info`)
-- [ ] Agree on the new `INTERFACES.md` sections with Igor and Syed
+- [x] Clone, venv, `python -m pytest -q` passes (53 tests expected)
+- [ ] Review and merge PR #2 (`ignore-egg-info`)  *(not done: PR #2 still open)*
+- [ ] Agree on the new `INTERFACES.md` sections with Igor and Syed  *(spec written and merged; not yet confirmed with Igor and Syed)*
 
-### 2. Write the "Feature table" interface in `INTERFACES.md`
+### 2. Write the "Feature table" interface in `INTERFACES.md` ✅ done (§5, PR #4)
 One row per `session × frame`. Columns (pixels, seconds):
 `session, frame, time_s, tracking_ok`, then per mouse (`_a`, `_b`, or the real mouse IDs from H1a):
 `speed, accel, heading, turn_rate, path_len_w, straightness_w, idle_frac_w, in_pause`,
@@ -30,22 +30,23 @@ Igor builds his classifier against this, so publish it early (by noon).
 ### 3. `src/live_tracker/features.py`: causal individual features
 Input: long table (`session, mouse, keypoint, frame, time_s, x, y` + quality flags).
 For now use one center point per mouse (synthetic data via `formats.wide_to_long`).
-- [ ] Smooth first with `filters.smooth_dataframe(method="one_euro")` (causal)
-- [ ] Displacement, speed (px/s), acceleration (px/s²): use real `dt` (irregular timestamps), never across a missing gap or a session boundary
-- [ ] Heading (rad) and turn rate (rad/s), with angles unwrapped; NaN when the mouse barely moves (heading is noise then)
-- [ ] Trailing-window path length, straightness (net displacement / path length), idle fraction
-- [ ] Pause / movement bouts: reuse the logic of `motion.movement_bouts`, but causal (a pause is known only once it has lasted `min_duration_s`)
-- [ ] All thresholds are function arguments with "placeholder, tune on train/val" in the docstring
+- [x] Smooth first with `filters.smooth_dataframe(method="one_euro")` (causal)
+- [x] Displacement, speed (px/s), acceleration (px/s²): use real `dt` (irregular timestamps), never across a missing gap or a session boundary
+- [x] Heading (rad) and turn rate (rad/s), with angles unwrapped; NaN when the mouse barely moves (heading is noise then)
+- [x] Trailing-window path length, straightness (net displacement / path length), idle fraction
+- [x] Pause / movement bouts: reuse the logic of `motion.movement_bouts`, but causal (a pause is known only once it has lasted `min_duration_s`)  *(causal pause logic in `in_pause`; does not reuse `movement_bouts` itself)*
+- [x] All thresholds are function arguments with "placeholder, tune on train/val" in the docstring
 
 ### 4. Tests (`tests/test_features.py`)
-- [ ] Constant position → speed 0, straightness NaN or 1 by your definition (document it)
-- [ ] Straight line at known speed → correct speed, straightness ≈ 1, turn rate ≈ 0
-- [ ] Missing points → NaN features, not 0 (missing ≠ still)
-- [ ] Short gap filled by `interpolate_short_gaps` → features marked as coming from imputed data
-- [ ] Two sessions back to back → nothing carries over from session 1 to session 2
-- [ ] **Causality test:** change frames after t; features at or before t must not change
+- [x] Constant position → speed 0, straightness NaN or 1 by your definition (document it)
+- [x] Straight line at known speed → correct speed, straightness ≈ 1, turn rate ≈ 0
+- [x] Missing points → NaN features, not 0 (missing ≠ still)
+- [x] Short gap filled by `interpolate_short_gaps` → features marked as coming from imputed data
+- [x] Two sessions back to back → nothing carries over from session 1 to session 2
+- [x] **Causality test:** change frames after t; features at or before t must not change
 
 **End of Day 1:** PR "Causal individual features" opened and reviewed.
+→ Opened and merged (#4, #5). ✅ No teammate review yet.
 
 ---
 
@@ -56,28 +57,48 @@ For now use one center point per mouse (synthetic data via `formats.wide_to_long
 keypoint order and fps; add a synthetic multi-keypoint fixture to your tests.
 
 ### 5. Body center (needs H1a)
-- [ ] Center = mean of torso keypoints (e.g. neck + left hip + right hip, **only after the readme confirms these exist**). Never the nose alone.
-- [ ] If some torso keypoints are missing in a frame, use the rest; if all are missing, NaN
-- [ ] Write the definition in the docstring and in `INTERFACES.md`
+- [ ] Center = mean of torso keypoints (e.g. neck + left hip + right hip, **only after the readme confirms these exist**). Never the nose alone.  *(code done in `body_center()`, torso names pending H1a; not tested on real data)*
+- [x] If some torso keypoints are missing in a frame, use the rest; if all are missing, NaN
+- [x] Write the definition in the docstring and in `INTERFACES.md`
 
 ### 6. Dyadic features (needs H1)
-- [ ] Center distance and its rate (negative = approaching)
-- [ ] Relative speed
-- [ ] Nose-to-nose distance; nose of A to tail base of B, and of B to A
-- [ ] Facing angle: angle between A's body axis (tail base → nose or neck) and the direction to B, for both mice
-- [ ] Time spent close (trailing count of seconds with distance below a parameter)
-- [ ] Speed synchrony: trailing-window correlation of the two speeds
-- [ ] Tests: approaching / separating mice, A facing B vs facing away, missing keypoints
+- [x] Center distance and its rate (negative = approaching)
+- [x] Relative speed
+- [ ] Nose-to-nose distance; nose of A to tail base of B, and of B to A  *(waits for H1a: real keypoint names)*
+- [ ] Facing angle: angle between A's body axis (tail base → nose or neck) and the direction to B, for both mice  *(waits for H1a)*
+- [x] Time spent close (trailing count of seconds with distance below a parameter)
+- [x] Speed synchrony: trailing-window correlation of the two speeds
+- [ ] Tests: approaching / separating mice, A facing B vs facing away, missing keypoints  *(approaching/separating and missing mouse done; facing and missing keypoints on real names wait for H1a)*
 
 These are motion **measurements**, not behavior labels. Write that in the docstring.
 
 ### 7. Quality per frame + warnings for the agent
-- [ ] `frame_tracking_ok(flags_df, ...)` → one bool per `session × frame` (false if a needed keypoint of either mouse is invalid)
-- [ ] `tracking_warning_events(flags_df, ...)` → list of dicts in the event-log format from `INTERFACES.md` §4 with `action: "tracking_warning"` (wrap the existing `quality.tracking_loss_events`)
-- [ ] `compute_features(long_df, params)` → the whole feature table in one call
+- [x] `frame_tracking_ok(flags_df, ...)` → one bool per `session × frame` (false if a needed keypoint of either mouse is invalid)
+- [x] `tracking_warning_events(flags_df, ...)` → list of dicts in the event-log format from `INTERFACES.md` §4 with `action: "tracking_warning"` (wrap the existing `quality.tracking_loss_events`)
+- [x] `compute_features(long_df, params)` → the whole feature table in one call
 
 **→ Deliver H2 to Igor and H2b to Syed (merged by end of Day 2).** Post in the chat with a
 3-line usage example.
+
+---
+
+### Progress log: Sat Oct 17
+
+**What I did**
+- Feature table spec: `INTERFACES.md` §5 (columns, units, causality rules, usage example).
+- `features.py`: causal per-mouse features (speed, accel, heading, turn rate, trailing-window path length / straightness / idle fraction, causal pauses); `body_center()`; dyadic features (center distance and rate, relative speed, close time, speed correlation); `frame_tracking_ok()`; `tracking_warning_events()`; `compute_features()`. Merged in #4 and #5.
+- 34 tests for them, including a causality test; 87 tests pass on `main`.
+- Day 3 and 4 prep that needs no real data (open PRs): `scripts/sensitivity.py` and the OFFLINE ONLY label plus a test against Savitzky-Golay in live code (#6); `scripts/ablation.py` (#7). `IMPLEMENTATION_STATUS.md` updated (#8).
+- Delivered: **H2** (`compute_features`) and **H2b** (`tracking_warning_events`), both in `main`. Chat message with the usage examples still to post.
+- All of it is tested on synthetic data only; thresholds are placeholders.
+
+**What I need to continue**
+- **From Igor:**
+  1. **H1a** `docs/calms21_schema.md`: keypoint names and order, which are torso, mouse IDs, fps, label numbers. Unblocks nose-to-nose, nose-to-tail, facing angle, and testing the body center on real data.
+  2. **H1** `load_calms21()` and `splits/split_manifest.json`. Unblocks tuning (train/val only) and running the sensitivity script on real sessions. The ablation script assumes the manifest has `train`, `validation` and `test` lists of session IDs; tell me if it differs.
+  3. **H4** `evaluate()` and model A results, as `fit_fn(features, labels, manifest, split, seed)` and `evaluate_fn(scores, labels)`. Unblocks the real ablation.
+- **From Syed:** a look at `INTERFACES.md` §5 and the `tracking_warning_events()` output format (`T1, T2, …` IDs, `rule_id` null). Tell me if the replay needs different fields. Later, his and Igor's PR reviews (H5).
+- **From both:** a review of #4–#8, and PR #2 and #3 merged.
 
 ---
 
@@ -100,10 +121,10 @@ Save a small results table to `outputs/sensitivity.csv` (outputs/ is git-ignored
 This measures **feature stability**, not classification accuracy. Keep them separate.
 
 ### 10. Live paths are causal only
-- [ ] Make sure nothing Igor or Syed uses for replay calls `motion.clean_trajectory` (Savitzky-Golay)
-- [ ] Keep the old starter section in `app.py` but labeled "offline only"
+- [x] Make sure nothing Igor or Syed uses for replay calls `motion.clean_trajectory` (Savitzky-Golay)  *(test guards it; PR #6, open)*
+- [x] Keep the old starter section in `app.py` but labeled "offline only"  *(PR #6, open)*
 
-**While you wait for H4:** prepare `scripts/ablation.py` so it only needs `evaluate()` plugged in.
+**While you wait for H4:** prepare `scripts/ablation.py` so it only needs `evaluate()` plugged in. ✅ done (PR #7, open)
 
 ---
 

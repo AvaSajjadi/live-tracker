@@ -23,6 +23,12 @@ import numpy as np
 import pandas as pd
 
 
+# Chosen on the 14 CalMS21 validation sessions (torso points): torso points scoring
+# below this jump a median 8+ px/frame (3 px above 0.7) and it costs ~1% of frames
+# (~3% of attack frames). Opt-in: pass it as min_score.
+SUGGESTED_MIN_SCORE = 0.15
+
+
 def _groups(df, group_cols):
     group_cols = [c for c in group_cols if c in df.columns]
     if not group_cols:

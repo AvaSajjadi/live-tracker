@@ -27,7 +27,7 @@ Savitzky-Golay smoothing, speed/acceleration, mouse distance, movement bouts),
 Command: `python -m pytest -q` → **53 passed** (Linux, Python 3.13, pandas 2.3.3, numpy 2.5.4, streamlit 1.66).
 Also checked by running the dashboard and looking at it: injected failures show
 "Tracking lost for mouse b: 5.00 s to 6.50 s" and "stuck for mouse a: 2.50 s to 3.50 s".
-Not yet run on Windows (the GitHub Actions workflow tests Windows and Ubuntu).
+Also passes on Windows: 53 passed locally (Python 3.12.10) and in GitHub Actions (windows-latest, ubuntu-latest).
 
 ## Still missing / blockers
 

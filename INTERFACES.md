@@ -103,14 +103,31 @@ Dyadic (one column per pair; `_ab` means A relative to B):
 
 | column | unit | meaning | status |
 |---|---|---|---|
-| `dist_center`, `dist_rate` | px, px/s | body-center distance and its rate (negative = approaching) | Day 2 |
-| `rel_speed` | px/s | speed of A relative to B | Day 2 |
+| `dist_center`, `dist_rate` | px, px/s | body-center distance and its rate (negative = approaching) | done |
+| `rel_speed` | px/s | speed of A relative to B | done |
 | `dist_nose_nose`, `dist_nose_tail_ab`, `dist_nose_tail_ba` | px | keypoint distances | Day 2, needs H1a |
 | `facing_ab`, `facing_ba` | rad | angle between body axis and direction to the other mouse | Day 2, needs H1a |
-| `close_time_s` | s | trailing time with `dist_center` below a parameter | Day 2 |
-| `speed_corr_w` | -1–1 | trailing correlation of the two speeds | Day 2 |
+| `close_time_s` | s | seconds of the trailing window with `dist_center` < `close_dist_px` | done |
+| `speed_corr_w` | -1–1 | trailing correlation of the two speeds (NaN if one is constant) | done |
 
-Plus `session, frame, time_s, tracking_ok` (`tracking_ok` from
-`frame_tracking_ok()`, Day 2). All thresholds are placeholders until tuned on
-train/val sessions (Day 3). Today `individual_features()` returns one row per
-session × mouse × frame and `to_wide()` turns it into this layout.
+Plus `session, frame, time_s, tracking_ok`. `tracking_ok` comes from
+`frame_tracking_ok()`: false if any needed point of either mouse is missing,
+frozen, jumping or out of frame in that frame (short-gap imputed points count as ok).
+
+Body center (`body_center()`): mean of the usable torso keypoints, which must be
+named explicitly (`torso_keypoints=`, from the CalMS21 readme, not guessed); the
+rest are used if some are missing, NaN if all are. Never the nose alone.
+
+All thresholds are placeholders until tuned on train/val sessions (Day 3).
+
+Usage:
+
+```python
+from live_tracker.features import compute_features, tracking_warning_events
+table = compute_features(long_df, torso_keypoints=TORSO)   # §5 table, one row per session × frame
+warnings = tracking_warning_events(flags_df, keypoints=TORSO)  # §4 event-log dicts
+```
+
+`tracking_warning_events()` returns event-log entries (§4) with
+`action: "tracking_warning"`, IDs `T1, T2, ...`, `rule_id`/`behavior`/`confidence`
+set to null, and `evidence = {mouse, flag, duration_s, message}`.

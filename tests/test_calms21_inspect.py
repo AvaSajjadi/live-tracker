@@ -39,6 +39,6 @@ def test_cli_runs(tmp_path, capsys):
     assert "shape=(4, 2, 2)" in capsys.readouterr().out
 
 
-def test_loader_not_implemented_yet():
-    with pytest.raises(NotImplementedError):
-        load_calms21("anything.json")
+def test_loader_is_reexported():
+    from live_tracker import calms21
+    assert load_calms21 is calms21.load_calms21

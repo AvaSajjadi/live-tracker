@@ -9,3 +9,4 @@ models/*
 .env
 *.zip
 outputs/
+*.egg-info/

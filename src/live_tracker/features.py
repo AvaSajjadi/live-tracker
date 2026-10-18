@@ -420,7 +420,8 @@ def tracking_warning_events(flags_df, flags=("missing", "frozen", "out_of_frame"
     return events
 
 
-def compute_features(long_df, params=None, torso_keypoints=None, frame_size=None):
+def compute_features(long_df, params=None, torso_keypoints=None, frame_size=None,
+                     score_col=None, min_score=None):
     """The whole feature table (INTERFACES.md §5) in one call.
 
     If long_df has no quality flags yet, runs quality.flag_tracking and
@@ -431,7 +432,8 @@ def compute_features(long_df, params=None, torso_keypoints=None, frame_size=None
     p = params or FeatureParams()
     flags = long_df
     if "valid" not in flags.columns:
-        flags = interpolate_short_gaps(flag_tracking(flags, frame_size=frame_size))
+        flags = interpolate_short_gaps(flag_tracking(
+            flags, frame_size=frame_size, score_col=score_col, min_score=min_score))
     prep = _prepare(body_center(flags, torso_keypoints), p)
     keys = [c for c in ("session", "frame", "time_s") if c in prep.columns]
     ok = frame_tracking_ok(flags, keypoints=torso_keypoints)

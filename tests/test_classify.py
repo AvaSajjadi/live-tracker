@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from live_tracker.calms21 import VOCAB
-from live_tracker.classify import (FitParams, feature_columns, fit_model, fit_scores, main,
+from live_tracker.classify import (SCORE_COLUMNS, FitParams, check_scores, feature_columns, fit_model, fit_scores, main,
                                    score_frames)
 from live_tracker.evaluate import BEHAVIORS, CLASSES
 
@@ -120,3 +120,22 @@ def test_cli_features_and_train(tmp_path):
         assert "macro_f1" in info["validation_metrics"] and (models / f"{name}.joblib").exists()
     assert json.loads((models / "b.json").read_text())["n_features"] > \
         json.loads((models / "a.json").read_text())["n_features"]
+    out = tmp_path / "scores.csv"
+    assert main(["scores", "--name", "a", "--split-name", "validation", "--processed", str(proc),
+                 "--split", str(split), "--models", str(models), "--out", str(out)]) == 0
+    s = pd.read_csv(out)
+    assert list(s.columns) == SCORE_COLUMNS and set(s.session) == {ids[4]} and len(s) == 40
+
+
+def test_check_scores_rejects_bad_tables():
+    s = pd.DataFrame({"session": "v", "frame": range(4), "time_s": [i / 30 for i in range(4)],
+                      "attack": .1, "mount": .1, "investigation": .1, "tracking_ok": True})
+    check_scores(s, ["v"])
+    with pytest.raises(ValueError, match="gaps"):
+        check_scores(s.drop(index=2), ["v"])
+    with pytest.raises(ValueError, match="time_s"):
+        check_scores(s.assign(time_s=s.time_s * 1.01), ["v"])
+    with pytest.raises(ValueError, match="exactly"):
+        check_scores(s, ["v", "w"])
+    with pytest.raises(ValueError, match="columns"):
+        check_scores(s.assign(label="other"), ["v"])

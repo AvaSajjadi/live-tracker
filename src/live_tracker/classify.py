@@ -18,6 +18,8 @@ Usage (from the repo root):
     # 2. train + tune model A, report validation; saves models/model_a.joblib + .json
     python -m live_tracker.classify train --name model_a --features basic
     # model B (Day 3): --features basic,motion
+    # 3. per-frame scores for the agent (INTERFACES.md §2) -> outputs/ (git-ignored)
+    python -m live_tracker.classify scores --name model_a --split-name validation
 """
 
 from __future__ import annotations
@@ -38,12 +40,13 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from .basic_features import basic_features
-from .calms21 import (TORSO_KEYPOINTS, _read_json, _sessions, check_manifest, flag_quality,
+from .calms21 import (FPS, TORSO_KEYPOINTS, _read_json, _sessions, check_manifest, flag_quality,
                       load_calms21)
 from .evaluate import BEHAVIORS, CLASSES, frame_metrics, predict_labels, summary_metrics
 from .features import compute_features
 
 KEYS = ["session", "frame"]
+SCORE_COLUMNS = ["session", "frame", "time_s", "attack", "mount", "investigation", "tracking_ok"]
 NON_FEATURE = {"session", "frame", "time_s", "tracking_ok", "mouse", "label"}
 
 
@@ -171,6 +174,33 @@ def load_feature_set(processed_dir, names):
     return out
 
 
+def check_scores(scores, sessions, fps=FPS):
+    """Raise unless `scores` is a clean INTERFACES.md §2 table for exactly these sessions."""
+    if list(scores.columns) != SCORE_COLUMNS:
+        raise ValueError(f"columns {list(scores.columns)}, expected {SCORE_COLUMNS}")
+    if set(scores["session"]) != set(sessions):
+        raise ValueError("scores must cover exactly the requested sessions")
+    if scores[list(BEHAVIORS)].isna().any().any():
+        raise ValueError("NaN scores")
+    for sid, g in scores.groupby("session"):
+        if not np.array_equal(g["frame"].to_numpy(), np.arange(len(g))):
+            raise ValueError(f"{sid}: frames are not 0..T-1 without gaps")
+        if not np.allclose(g["time_s"].to_numpy(), g["frame"].to_numpy() / fps, rtol=0, atol=1e-9):
+            raise ValueError(f"{sid}: time_s is not frame / {fps:g}")
+    return scores
+
+
+def scores_for_split(model, info, features, tracking, manifest, split):
+    """§2 score table for one split. tracking: session, frame, tracking_ok (from features.py)."""
+    if feature_columns(features) != info["feature_columns"]:
+        raise ValueError("feature columns differ from the ones the model was trained on")
+    sessions = check_manifest(manifest)[split]
+    s = score_frames(model, features, sessions).drop(columns="tracking_ok", errors="ignore")
+    s = s.merge(tracking[KEYS + ["tracking_ok"]], on=KEYS, how="left", validate="one_to_one")
+    s["tracking_ok"] = s["tracking_ok"].fillna(False).astype(bool)
+    return check_scores(s[SCORE_COLUMNS], sessions)
+
+
 # --- CLI ----------------------------------------------------------------------------------
 
 def main(argv=None):
@@ -187,6 +217,13 @@ def main(argv=None):
     t.add_argument("--split", default="splits/split_manifest.json")
     t.add_argument("--models", default="models")
     t.add_argument("--seed", type=int, default=0)
+    sc = sub.add_parser("scores", help="write INTERFACES.md §2 scores for one split")
+    sc.add_argument("--name", default="model_a")
+    sc.add_argument("--split-name", required=True, choices=["validation", "test"])
+    sc.add_argument("--processed", default="data/processed")
+    sc.add_argument("--split", default="splits/split_manifest.json")
+    sc.add_argument("--models", default="models")
+    sc.add_argument("--out", default=None, help="default outputs/scores_<split>_<name>.csv")
     a = ap.parse_args(argv)
 
     if a.cmd == "features":
@@ -195,6 +232,19 @@ def main(argv=None):
         return 0
 
     manifest = check_manifest(json.loads(Path(a.split).read_text()))
+    if a.cmd == "scores":
+        info = json.loads((Path(a.models) / f"{a.name}.json").read_text())
+        model = joblib.load(Path(a.models) / f"{a.name}.joblib")
+        feats = load_feature_set(a.processed, info["features"].split(","))
+        tracking = pd.read_parquet(Path(a.processed) / "motion.parquet",
+                                   columns=KEYS + ["tracking_ok"])
+        s = scores_for_split(model, info, feats, tracking, manifest, a.split_name)
+        out = Path(a.out or f"outputs/scores_{a.split_name}_{a.name}.csv")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        s.to_csv(out, index=False)
+        print(f"wrote {out}: {len(s)} frames, {s.session.nunique()} {a.split_name} sessions, "
+              f"tracking_ok False on {int((~s.tracking_ok).sum())} frames")
+        return 0
     feats = load_feature_set(a.processed, a.features.split(","))
     labels = pd.read_parquet(Path(a.processed) / "labels.parquet")
     print(f"{a.name}: {len(feature_columns(feats))} features ({a.features})")

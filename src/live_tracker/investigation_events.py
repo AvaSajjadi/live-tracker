@@ -1,9 +1,9 @@
 """EXPERIMENTAL (Investigation mode, Stage 3): the real `query_events` tool (new file).
 
 Stage 4 adds get_window_features and check_tracking_quality
-(investigation_windows.py); they read the cache through the same
-AnnotationEventSource.snapshot() and are reached through the same
-CalMS21InvestigationTools. compare_windows is not implemented yet.
+(investigation_windows.py), Stage 5 compare_windows (investigation_compare.py);
+they read the cache through the same AnnotationEventSource.snapshot() and are
+reached through the same CalMS21InvestigationTools.
 
 Read-only. Returns behavioral episodes as Stage 2 contract results
 (investigation_contracts, CONTRACT_VERSION), from event sources plugged in by
@@ -89,7 +89,7 @@ __all__ = ["AnnotationEventSource", "CalMS21InvestigationTools", "EventQuery", "
            "SourceUnavailable", "behavior_runs", "merge_runs"]
 
 IMPLEMENTATION = "live-tracker-calms21-events"
-IMPLEMENTATION_VERSION = "0.4-experimental"
+IMPLEMENTATION_VERSION = "0.5-experimental"
 
 
 class SourceUnavailable(RuntimeError):
@@ -334,8 +334,8 @@ def _code_sha256():
 
 class CalMS21InvestigationTools(ic.UnavailableTools):
     """InvestigationTools with real query_events (Stage 3), get_window_features
-    and check_tracking_quality (Stage 4, investigation_windows). compare_windows
-    still answers 'not_implemented'."""
+    and check_tracking_quality (Stage 4, investigation_windows) and
+    compare_windows (Stage 5, investigation_compare)."""
 
     implementation = IMPLEMENTATION
     implementation_version = IMPLEMENTATION_VERSION
@@ -396,6 +396,10 @@ class CalMS21InvestigationTools(ic.UnavailableTools):
     def check_tracking_quality(self, request):
         from .investigation_windows import check_tracking_quality
         return check_tracking_quality(self, request)
+
+    def compare_windows(self, request):
+        from .investigation_compare import compare_windows
+        return compare_windows(self, request)
 
     def query_events(self, request):
         ic.validate_request("query_events", request, self.policy)  # nothing is read before this

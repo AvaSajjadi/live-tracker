@@ -84,7 +84,7 @@ def _model(C, seed, max_iter):
 def score_frames(model, features, sessions):
     """INTERFACES.md §2 table for these sessions: no label columns."""
     d = features[features["session"].isin(sessions)].sort_values(KEYS)
-    proba = model.predict_proba(_matrix(d, features))
+    proba = model.predict_proba(_matrix(d, features)).astype(float)
     out = d[[c for c in ("session", "frame", "time_s", "tracking_ok") if c in d.columns]]
     out = out.reset_index(drop=True)
     classes = list(model.classes_)

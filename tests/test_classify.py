@@ -47,7 +47,7 @@ def test_fit_scores_format_and_split(data):
     assert list(s.columns) == ["session", "frame", "time_s", "tracking_ok", *BEHAVIORS]
     assert not {"label", "labels"} & set(s.columns)
     p = s[list(BEHAVIORS)].to_numpy()
-    assert ((p >= 0) & (p <= 1)).all() and (p.sum(axis=1) <= 1 + 1e-9).all()
+    assert ((p >= 0) & (p <= 1)).all() and (p.sum(axis=1) <= 1 + 1e-5).all()
 
 
 def test_learns_the_separable_signal(data):

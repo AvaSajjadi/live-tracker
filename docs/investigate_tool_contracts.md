@@ -48,11 +48,12 @@ Out ok: `{rule_id, status: "proposed"}`. Does nothing until the researcher appro
 ## Agent budget (Syed's loop enforces; tools only report)
 
 - Max 12 tool calls per investigation.
-- Max 2 follow-up analyses after the first `compare_windows` (e.g. widen `pre_s`), and the follow-up parameters are fixed in advance: `pre_s` in {2, 5, 10}. Every attempt is reported, including the failed ones, so nothing is cherry-picked.
+- Max 2 follow-up analyses after the first `compare_windows` (e.g. widen `pre_s`), and the follow-up parameters are fixed in advance: `pre_s` in {1, 2, 5}. Every attempt is reported, including the failed ones, so nothing is cherry-picked.
 - Every call and result is journaled with the investigation id.
 
 ## Data hygiene
 
 - Development: synthetic scores (labelled) and ground-truth labels (labelled).
-- Strategy choices (pre_s grid, min_n, quality thresholds) are fixed on the train/validation split only.
+- Strategy choices (pre_s grid, min_n, quality thresholds) are fixed on train + validation sessions only (pooled, because validation alone is small).
+- Dry run on the 14 validation sessions with ground-truth labels (`scripts/dryrun_usable_windows.py`): of 40 attack bouts >= 1 s, usable pre-windows are 21 (2 s), 14 (5 s), 5 (10 s). Almost all exclusions are another attack inside the window, none are tracking quality. Hence the grid above has no 10 s. Real classifier bouts will differ, so re-run on Drop A.
 - The test split is touched once, for the final run, with Igor's real classifier scores. The agent is never given test labels.

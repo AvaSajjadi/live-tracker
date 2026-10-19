@@ -100,6 +100,9 @@ EXCLUSION_REASONS = ("starts_before_session", "overlaps_event", "overlaps_pre_wi
                      "near_event", "insufficient_usable_frames", "missing_data")
 QUALITY_VERDICTS = ("usable_with_caveats", "excluded", "insufficient_data")
 CONTAMINATION_STATUS = ("not_assessed", "none_detected", "detected")
+# the only reasons a comparison can be insufficient; reasons_not_met lists the
+# unmet ones in this order
+SUFFICIENCY_REASONS = ("min_sessions", "min_windows_per_group_pre", "min_windows_per_group_baseline")
 TRACKING_OK_MEANING = ("every needed keypoint passed the score / frame / frozen flags; "
                        "not proof that the measured motion is accurate")
 
@@ -120,7 +123,7 @@ _TIME_TOL = 1e-6
 _SESSION = r"[A-Za-z0-9_][A-Za-z0-9_./-]{0,127}"
 _SESSION_RE = re.compile(_SESSION)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-_EPISODE_RE = re.compile(rf"ep:({'|'.join(SOURCES)}):({'|'.join(BEHAVIORS)}):({_SESSION}):(\d{{1,8}})")
+_EPISODE_RE = re.compile(rf"ep:({'|'.join(SOURCES)}):({'|'.join(BEHAVIORS)}):({_SESSION}):(0|[1-9]\d{{0,7}})")
 _EVIDENCE_RE = re.compile(rf"ev:({'|'.join(TOOLS)}):[0-9a-f]{{24}}")
 
 
@@ -144,28 +147,34 @@ def _check_session_id(sid, path="session"):
     return sid
 
 
+# Identifier ranges: the constructors accept exactly what the parsers accept,
+# and the parsers accept only the canonical text the constructors produce
+# (no leading zeros), so build -> parse -> build is the identity.
+_ID_FRAME_MAX = MAX_FRAMES                 # start / onset frames: 0 .. MAX_FRAMES
+_ID_LENGTH_RANGE = (1, MAX_WINDOW_FRAMES)  # window length: 1 .. MAX_WINDOW_FRAMES
+_ID_GAP_RANGE = (0, MAX_WINDOW_FRAMES)     # pre-event gap: 0 .. MAX_WINDOW_FRAMES
+
+
+def _frames_arg(value, lo, hi, name):
+    if type(value) is not int or not lo <= value <= hi:
+        raise ContractError(name, f"must be an int in [{lo}, {hi}]")
+    return value
+
+
 def episode_id(source, behavior, session, start_frame):
     """ep:<source>:<behavior>:<session>:<start_frame> (deterministic)."""
     if source not in SOURCES or behavior not in BEHAVIORS:
         raise ContractError("episode_id", "unknown source or behavior")
     _check_session_id(session)
-    if type(start_frame) is not int or start_frame < 0:
-        raise ContractError("episode_id", "start_frame must be a non-negative int")
+    _frames_arg(start_frame, 0, _ID_FRAME_MAX, "episode_id.start_frame")
     return f"ep:{source}:{behavior}:{session}:{start_frame}"
-
-
-def _frames_arg(value, lo, name):
-    if type(value) is not int or not lo <= value <= MAX_FRAMES:
-        raise ContractError(name, f"must be an int >= {lo}")
-    return value
 
 
 def pre_window_id(ep_id, length_frames, gap_frames):
     """win:pre:<length>:<gap>:<episode_id> (deterministic)."""
-    if not isinstance(ep_id, str) or not _EPISODE_RE.fullmatch(ep_id):
-        raise ContractError("pre_window_id", f"invalid episode id {ep_id!r}")
-    return (f"win:pre:{_frames_arg(length_frames, 1, 'length_frames')}:"
-            f"{_frames_arg(gap_frames, 0, 'gap_frames')}:{ep_id}")
+    parse_episode_id(ep_id)
+    return (f"win:pre:{_frames_arg(length_frames, *_ID_LENGTH_RANGE, 'length_frames')}:"
+            f"{_frames_arg(gap_frames, *_ID_GAP_RANGE, 'gap_frames')}:{ep_id}")
 
 
 def baseline_window_id(source, behavior, session, start_frame, length_frames):
@@ -173,39 +182,59 @@ def baseline_window_id(source, behavior, session, start_frame, length_frames):
     if source not in SOURCES or behavior not in BEHAVIORS:
         raise ContractError("baseline_window_id", "unknown source or behavior")
     _check_session_id(session)
-    return (f"win:base:{_frames_arg(length_frames, 1, 'length_frames')}:{source}:{behavior}:"
-            f"{session}:{_frames_arg(start_frame, 0, 'start_frame')}")
+    return (f"win:base:{_frames_arg(length_frames, *_ID_LENGTH_RANGE, 'length_frames')}:{source}:"
+            f"{behavior}:{session}:{_frames_arg(start_frame, 0, _ID_FRAME_MAX, 'start_frame')}")
 
 
-_PRE_RE = re.compile(rf"win:pre:(\d{{1,4}}):(\d{{1,4}}):({_EPISODE_RE.pattern})")
-_BASE_RE = re.compile(rf"win:base:(\d{{1,4}}):({'|'.join(SOURCES)}):({'|'.join(BEHAVIORS)}):"
-                      rf"({_SESSION}):(\d{{1,8}})")
+_NUM = r"(0|[1-9]\d{0,7})"   # canonical non-negative integer text (range checked by rebuilding)
+_PRE_RE = re.compile(rf"win:pre:{_NUM}:{_NUM}:({_EPISODE_RE.pattern})")
+_BASE_RE = re.compile(rf"win:base:{_NUM}:({'|'.join(SOURCES)}):({'|'.join(BEHAVIORS)}):"
+                      rf"({_SESSION}):{_NUM}")
 
 
 def parse_window_id(wid):
-    """{"kind", "session", "source", "behavior", "length_frames", ...} or ContractError."""
+    """{"kind", "session", "source", "behavior", "length_frames", ...} or
+    ContractError. Only canonical IDs the constructors could build are accepted."""
     if not isinstance(wid, str):
         raise ContractError("window_id", "must be a string")
     m = _PRE_RE.fullmatch(wid)
     if m:
-        e = _EPISODE_RE.fullmatch(m.group(3))
-        return {"kind": "pre_event", "length_frames": int(m.group(1)), "gap_frames": int(m.group(2)),
-                "episode_id": m.group(3), "source": e.group(1), "behavior": e.group(2),
-                "session": e.group(3), "onset_frame": int(e.group(4))}
-    m = _BASE_RE.fullmatch(wid)
-    if m:
-        return {"kind": "baseline", "length_frames": int(m.group(1)), "source": m.group(2),
-                "behavior": m.group(3), "session": m.group(4), "start_frame": int(m.group(5)),
-                "episode_id": None}
-    raise ContractError("window_id", f"invalid window id {wid!r}")
+        e = parse_episode_id(m.group(3))
+        out = {"kind": "pre_event", "length_frames": int(m.group(1)), "gap_frames": int(m.group(2)),
+               "episode_id": m.group(3), "source": e["source"], "behavior": e["behavior"],
+               "session": e["session"], "onset_frame": e["start_frame"]}
+        rebuilt = lambda: pre_window_id(out["episode_id"], out["length_frames"], out["gap_frames"])  # noqa: E731
+    else:
+        m = _BASE_RE.fullmatch(wid)
+        if not m:
+            raise ContractError("window_id", f"invalid window id {wid!r}")
+        out = {"kind": "baseline", "length_frames": int(m.group(1)), "source": m.group(2),
+               "behavior": m.group(3), "session": m.group(4), "start_frame": int(m.group(5)),
+               "episode_id": None}
+        rebuilt = lambda: baseline_window_id(out["source"], out["behavior"], out["session"],  # noqa: E731
+                                             out["start_frame"], out["length_frames"])
+    try:
+        canonical = rebuilt()
+    except ContractError:
+        raise ContractError("window_id", f"window id out of range {wid!r}") from None
+    if canonical != wid:
+        raise ContractError("window_id", f"non-canonical window id {wid!r}")
+    return out
 
 
 def parse_episode_id(eid):
     m = _EPISODE_RE.fullmatch(eid) if isinstance(eid, str) else None
     if not m:
         raise ContractError("episode_id", f"invalid episode id {eid!r}")
-    return {"source": m.group(1), "behavior": m.group(2), "session": m.group(3),
-            "start_frame": int(m.group(4))}
+    out = {"source": m.group(1), "behavior": m.group(2), "session": m.group(3),
+           "start_frame": int(m.group(4))}
+    try:
+        canonical = episode_id(out["source"], out["behavior"], out["session"], out["start_frame"])
+    except ContractError:
+        raise ContractError("episode_id", f"episode id out of range {eid!r}") from None
+    if canonical != eid:
+        raise ContractError("episode_id", f"non-canonical episode id {eid!r}")
+    return out
 
 
 # ---- evidence policy (fail closed: required for every evidence acceptance) ----
@@ -582,9 +611,16 @@ EPISODE_PROVENANCE = {
                                 "threshold": N(0.0, 1.0), "min_duration_frames": I(1, MAX_WINDOW_FRAMES)}),
     "monitor_event": O({"journal_sha256": HEX64, "run_id": S(80), "rule_id": S(80), "event_id": S(120)}),
 }
+# annotated_frames: frames inside [start_frame, end_frame) that are actually
+# annotated with the behavior (merged gaps excluded). It exists only for
+# human-annotation episodes: required for "validation_annotation", forbidden for
+# predictions and monitor events (they have no annotations). Checked in _res_query.
+ANNOTATION_COUNT_SOURCES = ("validation_annotation",)
 EPISODE_ITEM = O({"episode_id": EPISODE, "session": SESSION, "source": E(*SOURCES),
                   "behavior": E(*BEHAVIORS), "start_frame": I(), "end_frame": I(),
-                  "start_s": N(0), "end_s": N(0), "fps": C(FPS), "provenance": lambda x, p: None})
+                  "start_s": N(0), "end_s": N(0), "fps": C(FPS), "provenance": lambda x, p: None,
+                  "annotated_frames": I(1, MAX_FRAMES)},
+                 optional=("annotated_frames",))
 FEATURE_SUMMARY = O({"n_frames": I(), "n_usable": I(), "median": Null(N()), "mean": Null(N())})
 LABEL_CONTEXT = O({k: I() for k in LABELS})
 WINDOW_ITEM = O({
@@ -630,7 +666,7 @@ MEASUREMENTS = {
         "effect": O({"name": C("median_of_session_differences"), "value": Null(N()),
                      "ci_low": Null(N()), "ci_high": Null(N()), "ci_level": Null(N(0.5, 0.999))}),
         "sufficiency": O({"criteria": SUFFICIENCY, "met": B,
-                          "reasons_not_met": L(TEXT, MAX_LIST_TEXT)}),
+                          "reasons_not_met": L(E(*SUFFICIENCY_REASONS), len(SUFFICIENCY_REASONS))}),
     }),
 }
 RESULT = O({"contract_version": C(CONTRACT_VERSION), "tool": E(*TOOLS), "status": E(*STATUSES),
@@ -719,20 +755,31 @@ def _times(item, path, allow_empty=False):
 def _res_query(req, res, policy):
     m = res["measurements"]
     eps = m["episodes"]
-    if len(eps) > req["max_episodes"]:
-        raise ContractError("result", "more episodes than max_episodes")
-    if m["n_episodes_total"] < len(eps) or m["truncated"] != (m["n_episodes_total"] > len(eps)):
-        raise ContractError("result", "truncated / n_episodes_total inconsistent with the episodes")
+    if len(eps) != min(m["n_episodes_total"], req["max_episodes"]):
+        raise ContractError("result", "must return min(n_episodes_total, max_episodes) episodes")
+    if m["truncated"] != (m["n_episodes_total"] > len(eps)):
+        raise ContractError("result", "truncated exactly when n_episodes_total exceeds the episodes "
+                            "returned (and then max_episodes were returned)")
     if (res["status"] == "no_data") != (m["n_episodes_total"] == 0):
         raise ContractError("result.status", "'no_data' exactly when no episode matched")
     if res["status"] == "insufficient_evidence":
         raise ContractError("result.status", "query_events does not judge sufficiency")
-    allowed = set(req["sessions"]) if req["sessions"] is not None else None
+    for name in ("sessions_searched", "sessions_without_episodes"):
+        if len(set(m[name])) != len(m[name]):
+            raise ContractError(f"result.{name}", "sessions must be unique")
     searched = set(m["sessions_searched"])
-    if allowed is not None and not searched <= allowed:
-        raise ContractError("result.sessions_searched", "contains sessions that were not requested")
-    if not set(m["sessions_without_episodes"]) <= searched:
+    if req["sessions"] is not None and searched != set(req["sessions"]):
+        raise ContractError("result.sessions_searched", "must be exactly the requested sessions "
+                            "(a source that cannot search one must return an error, not skip it)")
+    without = set(m["sessions_without_episodes"])
+    if not without <= searched:
         raise ContractError("result.sessions_without_episodes", "must be searched sessions")
+    returned = {e["session"] for e in eps}
+    if not m["truncated"] and without != searched - returned:
+        raise ContractError("result.sessions_without_episodes", "an untruncated result is complete: "
+                            "exactly the searched sessions with no returned episode")
+    # truncated: sessions absent from the page may have episodes beyond it, so only
+    # "without" sessions with returned episodes are contradictions (checked below)
     seen = set()
     for i, e in enumerate(eps):
         path = f"result.measurements.episodes[{i}]"
@@ -748,6 +795,20 @@ def _res_query(req, res, policy):
         _times(e, path)
         EPISODE_PROVENANCE[e["source"]](e["provenance"], f"{path}.provenance")
         duration = e["end_frame"] - e["start_frame"]
+        if e["source"] in ANNOTATION_COUNT_SOURCES:
+            if "annotated_frames" not in e:
+                raise ContractError(f"{path}.annotated_frames", "required for annotation episodes")
+            if e["annotated_frames"] > duration:
+                raise ContractError(f"{path}.annotated_frames", f"{e['annotated_frames']} exceeds the "
+                                    f"episode span of {duration} frames")
+            # without merging (null, or a gap of 0 frames, which maximal runs never have)
+            # an episode is one annotated run: every frame of the span is annotated
+            if not req["merge_gap_frames"] and e["annotated_frames"] != duration:
+                raise ContractError(f"{path}.annotated_frames", "an unmerged episode is annotated on "
+                                    "every frame of its span")
+        elif "annotated_frames" in e:
+            raise ContractError(f"{path}.annotated_frames", f"{e['source']} episodes have no "
+                                "annotations; annotated_frames is only for human annotations")
         minima = [("request.min_duration_frames", req["min_duration_frames"])]
         if e["source"] == "classifier_prediction":  # only this provenance declares a minimum
             minima.append(("provenance.min_duration_frames", e["provenance"]["min_duration_frames"]))
@@ -756,6 +817,15 @@ def _res_query(req, res, policy):
                 raise ContractError(f"{path}.end_frame", f"duration {duration} frames is below "
                                     f"{name} = {minimum}")
         _check_session_for_source(policy, e["session"], e["source"], f"{path}.session")
+    # episodes are maximal bouts: within one session and behavior they never overlap
+    by_session = {}
+    for e in eps:
+        by_session.setdefault(e["session"], []).append((e["start_frame"], e["end_frame"], e["episode_id"]))
+    for sid, spans in by_session.items():
+        spans.sort()
+        for (a0, a1, aid), (b0, b1, bid) in zip(spans, spans[1:]):
+            if b0 < a1:
+                raise ContractError("result.measurements.episodes", f"{aid} and {bid} overlap")
     for sid in searched:
         _check_session_for_source(policy, sid, req["source"], "result.sessions_searched")
 
@@ -766,6 +836,14 @@ def _overlaps(a, b):
 
 _BASELINE_REASONS = {"overlaps_event", "overlaps_pre_window", "near_event",
                      "insufficient_usable_frames", "missing_data"}
+_PRE_REASONS = {"starts_before_session", "overlaps_event", "insufficient_usable_frames", "missing_data"}
+REASONS_BY_KIND = {"pre_event": _PRE_REASONS, "baseline": _BASELINE_REASONS}
+
+
+def _near_onset(span, onset, clearance):
+    """True if any frame of span [a, b) is within `clearance` frames of `onset`."""
+    a, b = span
+    return a <= onset + clearance and b - 1 >= onset - clearance
 
 
 def _res_features(req, res, policy):
@@ -808,6 +886,8 @@ def _res_features(req, res, policy):
             if not w["preprocessing"]["truncated_at_onset"]:
                 raise ContractError(f"{path}.preprocessing", "pre-event windows must be computed "
                                     "from data truncated at onset")
+            if not set(w["exclusion_reasons"]) <= _PRE_REASONS:
+                raise ContractError(f"{path}.exclusion_reasons", "not a pre-event exclusion reason")
             pre_for[w["episode_id"]] = pre_for.get(w["episode_id"], 0) + 1
             if w["status"] == "included":
                 included_pre.setdefault(w["session"], []).append(span)
@@ -849,13 +929,35 @@ def _res_features(req, res, policy):
         raise ContractError("result.measurements.windows", f"no pre_event window for {missing[:3]}")
     if any(n != 1 for n in pre_for.values()):
         raise ContractError("result.measurements.windows", "one pre_event window per episode")
+    # Temporal rules verifiable from the request alone: episode ids carry their onset
+    # frame (not their end), and every pre-event window is listed. Clearance from the
+    # full extent of each episode, and overlap with episodes that were not requested,
+    # cannot be checked here and remain the implementation's responsibility.
+    onsets = {}
+    for e in requested:
+        p = parse_episode_id(e)
+        onsets.setdefault(p["session"], []).append(p["start_frame"])
+    all_pre = {}
+    for w in windows:
+        if w["kind"] == "pre_event" and w["end_frame"] > w["start_frame"]:
+            all_pre.setdefault(w["session"], []).append((w["start_frame"], w["end_frame"]))
+    for sid, spans in included_pre.items():
+        for span in spans:
+            if any(span[0] <= o < span[1] for o in onsets.get(sid, [])):
+                raise ContractError("result.measurements.windows", f"{sid}: an included pre-event "
+                                    f"window {span} contains a requested onset (overlaps_event)")
     for sid, spans in included_base.items():
         if len(spans) > base["max_windows_per_session"]:
             raise ContractError("result.measurements.windows",
                                 f"{sid}: more included baseline windows than max_windows_per_session")
-        if any(_overlaps(b, p) for b in spans for p in included_pre.get(sid, [])):
-            raise ContractError("result.measurements.windows",
-                                f"{sid}: an included baseline window overlaps an included pre-event window")
+        if any(_overlaps(b, p) for b in spans for p in all_pre.get(sid, [])):
+            raise ContractError("result.measurements.windows", f"{sid}: an included baseline window "
+                                "overlaps a pre-event window (included or excluded)")
+        for b in spans:
+            for o in onsets.get(sid, []):
+                if _near_onset(b, o, base["clearance_frames"]):
+                    raise ContractError("result.measurements.windows", f"{sid}: included baseline "
+                                        f"window {b} is within clearance_frames of onset {o}")
     any_included = bool(included_pre) or bool(included_base)
     if res["status"] == "insufficient_evidence":
         raise ContractError("result.status", "get_window_features does not judge sufficiency")
@@ -977,6 +1079,11 @@ def _res_compare(req, res, policy):
         if x["reason"] == "insufficient_usable_frames" and (
                 n_f is None or n_u >= crit["min_usable_fraction"] * n_f - STAT_ABS_TOL and n_u > 0):
             raise ContractError(path, "insufficient_usable_frames needs counts below min_usable_fraction")
+    for i, x in enumerate(m["excluded_windows"]):
+        kind = parse_window_id(x["window_id"])["kind"]
+        if x["reason"] not in REASONS_BY_KIND[kind]:
+            raise ContractError(f"result.measurements.excluded_windows[{i}].reason",
+                                f"{x['reason']!r} is impossible for a {kind} window")
     excluded = [x["window_id"] for x in m["excluded_windows"]]
     accounted = used_pre + used_base + excluded
     if len(accounted) != len(set(accounted)) or set(accounted) != pre_req | base_req:
@@ -992,17 +1099,17 @@ def _res_compare(req, res, policy):
     if len(diffs) < crit["min_sessions"]:
         unmet.append("min_sessions")
     if len(used_pre) < crit["min_windows_per_group"]:
-        unmet.append("min_windows_per_group (pre)")
+        unmet.append("min_windows_per_group_pre")
     if len(used_base) < crit["min_windows_per_group"]:
-        unmet.append("min_windows_per_group (baseline)")
+        unmet.append("min_windows_per_group_baseline")
     met = not unmet
     eff, suf = m["effect"], m["sufficiency"]
     if suf["met"] != met:
         raise ContractError("result.measurements.sufficiency.met",
                             f"must be {met} (unmet: {unmet or 'none'})")
-    if bool(suf["reasons_not_met"]) == met:
+    if suf["reasons_not_met"] != unmet:
         raise ContractError("result.measurements.sufficiency.reasons_not_met",
-                            "reasons are listed exactly when a criterion is unmet")
+                            f"must be exactly {unmet} (recomputed, in this order, no duplicates)")
     expected_status = "no_data" if not m["per_session"] else ("ok" if met else "insufficient_evidence")
     if res["status"] != expected_status:
         raise ContractError("result.status", f"must be {expected_status!r} for these measurements")

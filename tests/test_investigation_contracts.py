@@ -56,7 +56,8 @@ def query_measurements():
     return {"episodes": [{"episode_id": EP, "session": VAL_A, "source": SRC, "behavior": BEH,
                           "start_frame": 90, "end_frame": 120, "start_s": t(90), "end_s": t(120),
                           "fps": FPS, "provenance": {"split": "validation", "annotator": "1",
-                                                     "file_sha256": "a" * 64}}],
+                                                     "file_sha256": "a" * 64},
+                          "annotated_frames": 30}],
             "n_episodes_total": 1, "truncated": False, "sessions_searched": [VAL_A],
             "sessions_without_episodes": []}
 
@@ -134,7 +135,8 @@ def compare_measurements(req, met):
                        {"name": "median_of_session_differences", "value": None, "ci_low": None,
                         "ci_high": None, "ci_level": None}),
             "sufficiency": {"criteria": req["sufficiency"], "met": met,
-                            "reasons_not_met": [] if met else ["min_sessions", "min_windows_per_group"]}}
+                            # PROVISIONAL (4 sessions, 10 windows per group) vs 1 / 1 / 1: all unmet
+                            "reasons_not_met": [] if met else ["min_sessions", "min_windows_per_group_pre", "min_windows_per_group_baseline"]}}
 
 
 LOOSE = SufficiencyCriteria(min_sessions=1, min_windows_per_group=1, min_usable_fraction=0.5)
@@ -607,7 +609,7 @@ def test_excluded_windows_are_accounted_for():
                                   "n_frames": 30, "n_usable": 12}]
         m["n_sessions_paired"], m["n_windows_baseline"] = 0, 0
         m["effect"].update(value=None, ci_low=None, ci_high=None, ci_level=None)
-        m["sufficiency"].update(met=False, reasons_not_met=["no paired session"])
+        m["sufficiency"].update(met=False, reasons_not_met=["min_sessions", "min_windows_per_group_pre", "min_windows_per_group_baseline"])
     req, res = _compare_with(exclude_baseline, "default")
     validate_result("compare_windows", req, res, POLICY)
 
@@ -793,6 +795,7 @@ def test_prediction_episode_cannot_carry_annotation_provenance():
     m = query_measurements()
     cep = episode_id("classifier_prediction", BEH, VAL_A, 90)
     m["episodes"][0].update(episode_id=cep, source="classifier_prediction")  # annotation-shaped provenance
+    del m["episodes"][0]["annotated_frames"]
     res = make_result("query_events", req, "ok", m, provenance=PROV)
     with pytest.raises(ContractError):
         validate_result("query_events", req, res, POLICY)
@@ -854,7 +857,7 @@ def test_coverage_exclusions_must_show_the_counts():
                                   "n_frames": 30 if n_usable is not None else None, "n_usable": n_usable}]
         m["n_sessions_paired"], m["n_windows_baseline"] = 0, 0
         m["effect"].update(value=None, ci_low=None, ci_high=None, ci_level=None)
-        m["sufficiency"].update(met=False, reasons_not_met=["min_sessions"])
+        m["sufficiency"].update(met=False, reasons_not_met=["min_sessions", "min_windows_per_group_baseline"])
 
     for n_usable in (29, None):  # 29/30 is above 0.5; None hides the counts
         m = compare_measurements(req, False)
@@ -1047,7 +1050,7 @@ def _empty_comparison(req, **change):
     m.update(per_session=[], n_sessions_paired=0, n_windows_pre=0, n_windows_baseline=0,
              excluded_windows=[{"window_id": PRE, "reason": "missing_data", "n_frames": None, "n_usable": None},
                                {"window_id": BASE, "reason": "missing_data", "n_frames": None, "n_usable": None}])
-    m["sufficiency"].update(met=False, reasons_not_met=["min_sessions"])
+    m["sufficiency"].update(met=False, reasons_not_met=["min_sessions", "min_windows_per_group_pre", "min_windows_per_group_baseline"])
     for k, v in change.items():
         if k == "effect":
             m["effect"].update(v)
@@ -1155,7 +1158,7 @@ def test_min_windows_applies_to_each_group_separately():
         m["per_session"][0]["baseline_windows"] = [wv(BASE, -3.0, 29), wv(base2, -3.0, 29)]
         m["n_windows_baseline"] = 2
     res = _ok_compare(req, two_baselines)
-    with pytest.raises(ContractError, match=r"min_windows_per_group \(pre\)"):
+    with pytest.raises(ContractError, match=r"min_windows_per_group_pre"):
         validate_result("compare_windows", req, res, POLICY)
 
 
@@ -1176,10 +1179,11 @@ def _query_case(end_frame, *, request_min=None, source=SRC, provenance_min=None)
     m = query_measurements()
     ep = m["episodes"][0]
     ep.update(episode_id=episode_id(source, BEH, VAL_A, 90), source=source,
-              end_frame=end_frame, end_s=t(end_frame))
+              end_frame=end_frame, end_s=t(end_frame), annotated_frames=end_frame - 90)
     if source == "classifier_prediction":
         ep["provenance"] = {"model_id": "SYNTHETIC-model", "score_file_sha256": "b" * 64,
                             "threshold": 0.75, "min_duration_frames": provenance_min}
+        del ep["annotated_frames"]  # predictions are not annotations
     res = make_result("query_events", req, "ok", m, provenance=PROV)
     assert res["evidence_id"] == ic.evidence_id("query_events", req, res)
     return req, res
@@ -1243,6 +1247,7 @@ def test_sources_without_a_provenance_minimum_only_use_the_request(source):
         ep.update(episode_id=episode_id(source, BEH, VAL_A, 90), source=source,
                   provenance={"journal_sha256": "c" * 64, "run_id": "SYNTHETIC-run",
                               "rule_id": "R1", "event_id": "E-SYNTHETIC-1"})
+        del ep["annotated_frames"]  # monitor events are not annotations
         res = make_result("query_events", req, "ok", m, provenance=PROV)
         with pytest.raises(ContractError, match="request.min_duration_frames"):
             validate_result("query_events", req, res, POLICY)
@@ -1260,7 +1265,387 @@ def test_duration_check_cannot_be_bypassed_by_rehashing():
     req, res = _query_case(150, request_min=60)
     validate_result("query_events", req, res, POLICY)
     shrunk = copy.deepcopy(res)
-    shrunk["measurements"]["episodes"][0].update(end_frame=120, end_s=t(120))
+    shrunk["measurements"]["episodes"][0].update(end_frame=120, end_s=t(120), annotated_frames=30)
     shrunk = rebuild("query_events", req, shrunk)
     with pytest.raises(ContractError, match="min_duration_frames"):
         validate_result("query_events", req, shrunk, POLICY)
+
+
+# ======================================================================
+# Antigravity audit regressions (SYNTHETIC fixtures; hashes rebuilt by make_result)
+# ======================================================================
+
+ALL_UNMET = ["min_sessions", "min_windows_per_group_pre", "min_windows_per_group_baseline"]
+
+
+# ---- 1. reasons_not_met is exactly the recomputed list ----
+
+@pytest.mark.parametrize("reasons", [
+    ["min_sessions", "min_sessions", "min_windows_per_group_pre", "min_windows_per_group_baseline"],
+    ["min_sessions"],                                                 # incomplete
+    ["min_windows_per_group_pre", "min_sessions", "min_windows_per_group_baseline"],  # order
+    ["the moon is full"],                                             # fabricated
+    ALL_UNMET + ["min_usable_fraction"],                              # not a reason
+])
+def test_reasons_not_met_must_equal_the_recomputed_criteria(reasons):
+    req = compare_request()
+    m = compare_measurements(req, False)
+    m["sufficiency"]["reasons_not_met"] = reasons
+    res = make_result("compare_windows", req, "insufficient_evidence", m, provenance=PROV)
+    with pytest.raises(ContractError, match="reasons_not_met"):
+        validate_result("compare_windows", req, res, POLICY)
+
+
+def test_exact_reasons_are_accepted():
+    req = compare_request()
+    m = compare_measurements(req, False)
+    assert m["sufficiency"]["reasons_not_met"] == ALL_UNMET
+    validate_result("compare_windows", req,
+                    make_result("compare_windows", req, "insufficient_evidence", m, provenance=PROV), POLICY)
+    assert ic.SUFFICIENCY_REASONS == tuple(ALL_UNMET)
+
+
+# ---- 2. temporal rules for window features ----
+
+def _with_clearance(clearance, tile_start, status="included", reasons=()):
+    req = features_request(baseline={"strategy": "same_session_tiles", "length_frames": 30,
+                                     "clearance_frames": clearance, "max_windows_per_session": 5})
+    m = features_measurements()
+    m["windows"][1] = window(baseline_window_id(SRC, BEH, VAL_A, tile_start, 30), "baseline",
+                             tile_start, tile_start + 30, status=status, reasons=reasons)
+    return req, make_result("get_window_features", req, "ok", m, provenance=PROV)
+
+
+@pytest.mark.parametrize("clearance, tile_start, ok", [
+    (0, 90, False),     # tile contains the onset
+    (0, 120, True),     # after the onset, no clearance asked
+    (60, 120, False),   # 30 frames after onset 90: within 60
+    (60, 150, False),   # frame 150 is exactly 60 from the onset: within
+    (60, 180, True),    # first frame 180 is 90 away
+    (60, 0, True),      # last frame 29 is 61 before the onset
+    (61, 0, False),     # ... and within 61
+])
+def test_baseline_clearance_around_requested_onsets(clearance, tile_start, ok):
+    req, res = _with_clearance(clearance, tile_start)
+    if ok:
+        validate_result("get_window_features", req, res, POLICY)
+    else:
+        with pytest.raises(ContractError, match="clearance_frames|pre-event window"):
+            validate_result("get_window_features", req, res, POLICY)
+
+
+def test_excluded_baseline_near_an_onset_is_fine():
+    req, res = _with_clearance(60, 120, status="excluded", reasons=["near_event"])
+    validate_result("get_window_features", req, res, POLICY)
+
+
+def test_included_baseline_cannot_overlap_an_excluded_pre_window():
+    ep2 = episode_id(SRC, BEH, VAL_A, 300)
+    req = features_request(episode_ids=[EP, ep2])
+    m = features_measurements()
+    m["windows"] += [window(pre_window_id(ep2, 30, 0), "pre_event", 270, 300, episode=ep2, truncated=True,
+                            status="excluded", reasons=["overlaps_event"]),
+                     window(baseline_window_id(SRC, BEH, VAL_A, 270, 30), "baseline", 270, 300)]
+    res = make_result("get_window_features", req, "ok", m, provenance=PROV)
+    with pytest.raises(ContractError, match="included or excluded"):
+        validate_result("get_window_features", req, res, POLICY)
+
+
+def test_included_pre_window_cannot_contain_another_requested_onset():
+    ep3 = episode_id(SRC, BEH, VAL_A, 80)   # inside EP's pre window [60, 90)
+    req = features_request(episode_ids=[EP, ep3], baseline=None)
+    m = {"windows": [window(PRE, "pre_event", 60, 90, episode=EP, truncated=True),
+                     window(pre_window_id(ep3, 30, 0), "pre_event", 50, 80, episode=ep3, truncated=True)]}
+    res = make_result("get_window_features", req, "ok", m, provenance=PROV)
+    with pytest.raises(ContractError, match="contains a requested onset"):
+        validate_result("get_window_features", req, res, POLICY)
+    m["windows"][0].update(status="excluded", exclusion_reasons=["overlaps_event"])
+    validate_result("get_window_features", req,
+                    make_result("get_window_features", req, "ok", m, provenance=PROV), POLICY)
+
+
+@pytest.mark.parametrize("reason", ["near_event", "overlaps_pre_window"])
+def test_pre_event_windows_cannot_use_baseline_only_reasons(reason):
+    req, res = _features_with(lambda m: m["windows"][0].update(status="excluded", exclusion_reasons=[reason]))
+    with pytest.raises(ContractError, match="not a pre-event exclusion reason"):
+        validate_result("get_window_features", req, res, POLICY)
+
+
+# ---- 3. constructors and parser agree ----
+
+@pytest.mark.parametrize("length, gap", [(1, 0), (ic.MAX_WINDOW_FRAMES, 0), (30, ic.MAX_WINDOW_FRAMES)])
+def test_every_constructible_pre_window_id_parses_back(length, gap):
+    wid = pre_window_id(EP, length, gap)
+    p = parse_window_id(wid)
+    assert (p["length_frames"], p["gap_frames"]) == (length, gap)
+    assert pre_window_id(p["episode_id"], p["length_frames"], p["gap_frames"]) == wid
+
+
+@pytest.mark.parametrize("start, length", [(0, 1), (ic.MAX_FRAMES, ic.MAX_WINDOW_FRAMES)])
+def test_every_constructible_baseline_id_parses_back(start, length):
+    wid = baseline_window_id(SRC, BEH, VAL_A, start, length)
+    p = parse_window_id(wid)
+    assert (p["start_frame"], p["length_frames"]) == (start, length)
+
+
+@pytest.mark.parametrize("call", [
+    lambda: pre_window_id(EP, ic.MAX_WINDOW_FRAMES + 1, 0),
+    lambda: pre_window_id(EP, 30, ic.MAX_WINDOW_FRAMES + 1),
+    lambda: pre_window_id(EP, 10_000, 0),
+    lambda: baseline_window_id(SRC, BEH, VAL_A, 0, ic.MAX_WINDOW_FRAMES + 1),
+    lambda: baseline_window_id(SRC, BEH, VAL_A, ic.MAX_FRAMES + 1, 30),
+    lambda: episode_id(SRC, BEH, VAL_A, ic.MAX_FRAMES + 1),
+])
+def test_constructors_refuse_what_the_parser_would_refuse(call):
+    with pytest.raises(ContractError):
+        call()
+
+
+@pytest.mark.parametrize("wid", [
+    f"win:pre:030:0:{EP}",                 # leading zero
+    f"win:pre:30:00:{EP}",
+    f"win:pre:0:0:{EP}",                   # length 0
+    f"win:pre:901:0:{EP}",                 # above MAX_WINDOW_FRAMES
+    f"win:pre:30:0:ep:{SRC}:{BEH}:{VAL_A}:090",
+    f"win:base:30:{SRC}:{BEH}:{VAL_A}:00",
+    f"win:base:30:{SRC}:{BEH}:{VAL_A}:99999999",   # above MAX_FRAMES
+    f"win:base:1000:{SRC}:{BEH}:{VAL_A}:0",
+])
+def test_parser_refuses_non_canonical_or_out_of_range_ids(wid):
+    with pytest.raises(ContractError):
+        parse_window_id(wid)
+
+
+def test_non_canonical_episode_ids_are_refused():
+    for eid in (f"ep:{SRC}:{BEH}:{VAL_A}:090", f"ep:{SRC}:{BEH}:{VAL_A}:99999999"):
+        with pytest.raises(ContractError):
+            parse_episode_id(eid)
+
+
+# ---- 4. exclusion reasons by window kind in compare_windows ----
+
+def _compare_excluding(window_id, reason):
+    req = compare_request(LOOSE)
+    m = compare_measurements(req, False)
+    row = m["per_session"][0]
+    if window_id == BASE:
+        row.update(baseline_windows=[], baseline_summary=None, difference=None)
+        m.update(n_windows_baseline=0)
+        unmet = ["min_sessions", "min_windows_per_group_baseline"]
+    else:
+        row.update(pre_windows=[], pre_summary=None, difference=None)
+        m.update(n_windows_pre=0)
+        unmet = ["min_sessions", "min_windows_per_group_pre"]
+    m["excluded_windows"] = [{"window_id": window_id, "reason": reason, "n_frames": None, "n_usable": None}]
+    m["n_sessions_paired"] = 0
+    m["effect"].update(value=None, ci_low=None, ci_high=None, ci_level=None)
+    m["sufficiency"].update(met=False, reasons_not_met=unmet)
+    return req, make_result("compare_windows", req, "insufficient_evidence", m, provenance=PROV)
+
+
+@pytest.mark.parametrize("window_id, reason, ok", [
+    (BASE, "starts_before_session", False),
+    (BASE, "near_event", True),
+    (BASE, "overlaps_pre_window", True),
+    (PRE, "near_event", False),
+    (PRE, "overlaps_pre_window", False),
+    (PRE, "starts_before_session", True),
+    (PRE, "missing_data", True),
+])
+def test_compare_exclusion_reasons_must_fit_the_window_kind(window_id, reason, ok):
+    req, res = _compare_excluding(window_id, reason)
+    if ok:
+        validate_result("compare_windows", req, res, POLICY)
+    else:
+        with pytest.raises(ContractError, match="impossible for a"):
+            validate_result("compare_windows", req, res, POLICY)
+
+
+# ---- 5. truncation is internally consistent ----
+
+def _query_with(n_returned, total, truncated, max_episodes=10):
+    req = query_request(max_episodes=max_episodes)
+    m = query_measurements()
+    base = m["episodes"][0]
+    m["episodes"] = []
+    for i in range(n_returned):
+        e = copy.deepcopy(base)
+        s = 90 + 40 * i
+        e.update(start_frame=s, end_frame=s + 30, start_s=t(s), end_s=t(s + 30),
+                 episode_id=episode_id(SRC, BEH, VAL_A, s))
+        m["episodes"].append(e)
+    m.update(n_episodes_total=total, truncated=truncated)
+    return req, make_result("query_events", req, "ok", m, provenance=PROV)
+
+
+@pytest.mark.parametrize("n, total, truncated, ok", [
+    (1, 5, True, False),     # audit: truncated but only 1 of max 10 returned
+    (1, 5, False, False),
+    (10, 15, True, True),    # a full page, more exist
+    (10, 10, False, True),
+    (10, 10, True, False),
+    (3, 3, False, True),
+    (3, 2, False, False),    # more returned than exist
+])
+def test_truncation_must_be_internally_consistent(n, total, truncated, ok):
+    req, res = _query_with(n, total, truncated)
+    if ok:
+        validate_result("query_events", req, res, POLICY)
+    else:
+        with pytest.raises(ContractError):
+            validate_result("query_events", req, res, POLICY)
+
+
+# ---- 6. no overlapping bouts within a session ----
+
+def _two_episodes(second_session, second_start, second_end):
+    req = query_request(sessions=sorted({VAL_A, second_session}))
+    m = query_measurements()
+    e2 = copy.deepcopy(m["episodes"][0])
+    e2.update(session=second_session, start_frame=second_start, end_frame=second_end,
+              start_s=t(second_start), end_s=t(second_end), annotated_frames=second_end - second_start,
+              episode_id=episode_id(SRC, BEH, second_session, second_start))
+    m["episodes"].append(e2)
+    m.update(n_episodes_total=2, sessions_searched=sorted({VAL_A, second_session}))
+    return req, make_result("query_events", req, "ok", m, provenance=PROV)
+
+
+@pytest.mark.parametrize("session, start, end, ok", [
+    (VAL_A, 100, 130, False),   # overlaps [90, 120)
+    (VAL_A, 80, 95, False),     # overlaps from before
+    (VAL_A, 119, 140, False),   # one frame of overlap
+    (VAL_A, 120, 150, True),    # adjacent: half-open spans do not overlap
+    (VAL_B, 90, 120, True),     # same frames, another session
+])
+def test_overlapping_episodes_in_one_session_are_refused(session, start, end, ok):
+    req, res = _two_episodes(session, start, end)
+    if ok:
+        validate_result("query_events", req, res, POLICY)
+    else:
+        with pytest.raises(ContractError, match="overlap"):
+            validate_result("query_events", req, res, POLICY)
+
+
+# ---- 7. sessions_without_episodes vs searched sessions and episodes ----
+
+def _sessions_case(searched, without, truncated=False, requested="same"):
+    req = query_request(sessions=sorted(searched) if requested == "same" else requested,
+                        max_episodes=1)
+    m = query_measurements()
+    m.update(sessions_searched=list(searched), sessions_without_episodes=list(without),
+             n_episodes_total=2 if truncated else 1, truncated=truncated)
+    return req, make_result("query_events", req, "ok", m, provenance=PROV)
+
+
+@pytest.mark.parametrize("searched, without, truncated, ok", [
+    ([VAL_A, VAL_B], [VAL_B], False, True),           # complete and consistent
+    ([VAL_A, VAL_B], [], False, False),               # audit: B searched, no episode, not listed
+    ([VAL_A, VAL_B], [VAL_A, VAL_B], False, False),   # A has an episode
+    ([VAL_A, VAL_B], [], True, True),                 # truncated: B may have episodes beyond the page
+    ([VAL_A, VAL_B], [VAL_B], True, True),
+    ([VAL_A, VAL_B], [VAL_A], True, False),           # A has a returned episode
+    ([VAL_A, VAL_A], [], False, False),               # duplicate searched session
+])
+def test_sessions_without_episodes_must_be_consistent(searched, without, truncated, ok):
+    req, res = _sessions_case(searched, without, truncated)
+    if ok:
+        validate_result("query_events", req, res, POLICY)
+    else:
+        with pytest.raises(ContractError):
+            validate_result("query_events", req, res, POLICY)
+
+
+def test_requested_sessions_must_all_be_searched():
+    req, res = _sessions_case([VAL_A], [], requested=[VAL_A, VAL_B])
+    with pytest.raises(ContractError, match="exactly the requested sessions"):
+        validate_result("query_events", req, res, POLICY)
+    req, res = _sessions_case([VAL_A], [], requested=None)   # null: the source decides
+    validate_result("query_events", req, res, POLICY)
+
+
+@pytest.mark.parametrize("searched, without", [([VAL_A, VAL_A], []), ([VAL_A, VAL_B], [VAL_B, VAL_B])])
+def test_duplicate_sessions_in_results_are_refused(searched, without):
+    """The request leaves sessions to the source (null), so only the result rule applies."""
+    req, res = _sessions_case(searched, without, requested=None)
+    with pytest.raises(ContractError, match="sessions must be unique"):
+        validate_result("query_events", req, res, POLICY)
+
+
+# ======================================================================
+# annotated_frames on episodes (approved contract extension)
+# ======================================================================
+
+def _annotated_case(value, *, merge=None, end_frame=120, source=SRC, drop=False):
+    req = query_request(merge_gap_frames=merge, source=source)
+    m = query_measurements()
+    ep = m["episodes"][0]
+    ep.update(end_frame=end_frame, end_s=t(end_frame), annotated_frames=value)
+    if source != SRC:
+        ep.update(source=source, episode_id=episode_id(source, BEH, VAL_A, 90),
+                  provenance={"model_id": "SYNTHETIC-model", "score_file_sha256": "b" * 64,
+                              "threshold": 0.75, "min_duration_frames": 1}
+                  if source == "classifier_prediction" else
+                  {"journal_sha256": "c" * 64, "run_id": "SYNTHETIC-run", "rule_id": "R1", "event_id": "E1"})
+    if drop:
+        del ep["annotated_frames"]
+    return req, m
+
+
+def _check(req, m):
+    validate_result("query_events", req, make_result("query_events", req, "ok", m, provenance=PROV), POLICY)
+
+
+@pytest.mark.parametrize("value, merge, ok", [
+    (30, None, True),          # unmerged: equals the 30-frame span
+    (29, None, False),         # unmerged but partial
+    (12, 5, True),             # merged: fewer annotated frames than the span
+    (30, 5, True),             # merging asked, nothing merged
+    (31, 5, False),            # more than the span
+    (12, 0, False),            # a 0-frame gap never merges maximal runs
+])
+def test_annotated_frames_against_the_span(value, merge, ok):
+    req, m = _annotated_case(value, merge=merge)
+    if ok:
+        _check(req, m)
+    else:
+        with pytest.raises(ContractError, match="annotated_frames"):
+            _check(req, m)
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, 30.0, True, "30", None])
+def test_malformed_annotated_frames_are_refused(value):
+    req, m = _annotated_case(value)
+    with pytest.raises(ContractError):
+        _check(req, m)
+
+
+def test_annotation_episodes_require_annotated_frames():
+    req, m = _annotated_case(30, drop=True)
+    with pytest.raises(ContractError, match="required for annotation episodes"):
+        _check(req, m)
+
+
+@pytest.mark.parametrize("source", ["classifier_prediction", "monitor_event"])
+def test_predictions_and_monitor_events_carry_no_annotation_count(source):
+    req, m = _annotated_case(30, source=source)
+    with pytest.raises(ContractError, match="no annotations"):
+        _check(req, m)
+    req, m = _annotated_case(30, source=source, drop=True)
+    _check(req, m)
+
+
+def test_annotated_frames_are_bound_by_the_evidence_hash():
+    req, m = _annotated_case(12, merge=5)
+    res = make_result("query_events", req, "ok", m, provenance=PROV)
+    validate_result("query_events", req, res, POLICY)
+    tampered = copy.deepcopy(res)
+    tampered["measurements"]["episodes"][0]["annotated_frames"] = 13   # plausible but altered
+    with pytest.raises(ContractError, match="evidence_id"):
+        validate_result("query_events", req, tampered, POLICY)
+
+
+def test_merged_episode_cannot_have_zero_annotated_frames():
+    """Only the positive-integer rule catches this: 0 is below a merged span."""
+    req, m = _annotated_case(0, merge=5)
+    with pytest.raises(ContractError, match="annotated_frames"):
+        _check(req, m)

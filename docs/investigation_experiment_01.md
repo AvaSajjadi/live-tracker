@@ -160,7 +160,7 @@ with `--check-doc` (§8).
 - Ignored unlisted files in the cache directory: none
 - Code (sha256 of the exact files used; git HEAD is recorded in the JSON output):
   - `scripts/investigation_feasibility.py` sha256 `78f355ff2afaaa39cc936795529e54f0bac4dd7e972f6c1a512dbc88cb056220`
-  - `src/live_tracker/investigation_data.py` sha256 `dd76565ac3c69f601c016ffbbbe566680a9674a3ed2af661eb0852bc1383b8ca`
+  - `src/live_tracker/investigation_data.py` sha256 `461b0df5a34917c60335ff0c26d799df3f092433cc84230b6a1b8f7947c0370a`
   - `src/live_tracker/calms21.py` sha256 `158c30cdf51eec6556dbe3853757e23fa16e14c8f665b4605e9f12d90673fa46`
   - `src/live_tracker/quality.py` sha256 `338e653a427f806a4e85bd26962fa723bcf66f467163271a1e7a16515305804f`
   - `src/live_tracker/features.py` sha256 `2fdc3d9c193fc67a4d0f43fab4c3bb769ec52af7643ff94d1802fc0095f5e3b1`

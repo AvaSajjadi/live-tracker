@@ -31,11 +31,20 @@ Two boundaries, both enforced here:
      payload sha256 and to the source and manifest identities. An interrupted
      run therefore never looks successful: unlisted files are ignored and
      left-over *.partial files are removed by the next locked run.
-   - Reuse: a cached session is reused only if the index has the current
-     format, the same manifest sha256, intact canonical files, the same
-     source path / size / mtime, AND the source content still hashes to the
-     recorded sha256 (a full read of the source; see the reuse_check timing).
-     Otherwise the cache is rebuilt from the source.
+   - One policy for every path: reuse, incremental extraction, fresh
+     extraction and analysis all run the same full verification
+     (_verify_locked: strict index structure, manifest binding, allowed split,
+     canonical confined files, payload hashes and sizes, session IDs inside
+     the files, frame counts, and the label summary validated against the
+     manifest and the records). A cache that fails it is never reused or
+     retained: it is rebuilt from the source. A cache is reused only if it
+     passes, lists every requested session, has the same source path / size /
+     mtime, AND the source content still hashes to the recorded sha256 (a full
+     read of the source; see the reuse_check timing). Sessions kept from an
+     earlier extraction of the same source are re-derived from the source
+     records, never copied from old metadata. Every publication is verified
+     again before it is returned.
+   - Session IDs whose cache file names would collide are refused.
 
 2. Analysis (verified_sessions)
    - Never trusts file names or directory contents: the index must match
@@ -302,31 +311,57 @@ def _code_identity():
     return {"investigation_data.py": sha256_file(Path(__file__))}
 
 
-def _published_intact(out_dir, sid, entry):
-    """True if a published session file is canonical, confined and matches its hash."""
-    try:
-        path = cache_file(out_dir, sid, entry.get("file"))
-    except ExtractionRefused:
-        return False
-    return path.exists() and sha256_file(path) == entry.get("sha256")
+# ---- strict index structure (checked before any field is used) ----
+
+_HEX64_RE = re.compile(r"[0-9a-f]{64}")
+_ENTRY_KEYS = {"file", "sha256", "bytes", "frames"}
 
 
-def _reusable(index, out_dir, source, stat_now, manifest_sha, sessions):
-    """(True, seconds spent hashing the source) if every requested session is
-    published for this exact source content and manifest; else (False, ...).
-    The source content is hashed in full: path, size and mtime alone are not
-    proof of identity."""
-    if index is None or index.get("manifest", {}).get("sha256") != manifest_sha:
-        return False, None
-    src = index.get("source", {})
-    if {k: src.get(k) for k in ("path", "size", "mtime_ns")} != stat_now:
-        return False, None
-    listed = index.get("sessions", {})
-    if not all(sid in listed and _published_intact(out_dir, sid, listed[sid]) for sid in sessions):
-        return False, None
-    t0 = time.perf_counter()
-    same = sha256_file(source) == src.get("sha256")
-    return same, round(time.perf_counter() - t0, 2)
+def _is_hex64(v):
+    return isinstance(v, str) and _HEX64_RE.fullmatch(v) is not None
+
+
+def index_problem(index):
+    """None if `index` has exactly the structure this module publishes, else a
+    short reason. Malformed metadata is never interpreted (no .get() on
+    non-objects, no missing keys)."""
+    if type(index) is not dict:
+        return "the index is not an object"
+    if index.get("format") != FORMAT:
+        return "unknown index format"
+    src = index.get("source")
+    if not (type(src) is dict and isinstance(src.get("path"), str) and _is_count(src.get("size"))
+            and _is_count(src.get("mtime_ns")) and _is_hex64(src.get("sha256"))):
+        return "malformed source block"
+    man = index.get("manifest")
+    if not (type(man) is dict and _is_hex64(man.get("sha256"))):
+        return "malformed manifest block"
+    if not isinstance(index.get("allowed_split"), str):
+        return "malformed allowed_split"
+    sessions = index.get("sessions")
+    if type(sessions) is not dict:
+        return "sessions is not an object"
+    for sid, e in sessions.items():
+        if not (isinstance(sid, str) and type(e) is dict and set(e) == _ENTRY_KEYS
+                and isinstance(e["file"], str) and _is_hex64(e["sha256"])
+                and _is_count(e["bytes"]) and _is_count(e["frames"], 1)):
+            return f"malformed session entry for {sid!r}"
+    if type(index.get("split_label_summary")) is not dict:
+        return "split_label_summary is not an object"
+    return None
+
+
+def check_filenames_unique(session_ids):
+    """Refuse IDs whose cache file names collide ('a/b' and 'a__b' both map to
+    'a__b.json'). Real CalMS21 IDs never collide; the convention is kept for
+    cache compatibility and collisions are refused instead."""
+    seen = {}
+    for sid in session_ids:
+        name = session_filename(sid)
+        if name in seen and seen[name] != sid:
+            raise ExtractionRefused(f"session ids {seen[name]!r} and {sid!r} map to the same "
+                                    f"cache file {name!r}")
+        seen[name] = sid
 
 
 # ---- extraction ----
@@ -334,18 +369,18 @@ def _reusable(index, out_dir, source, stat_now, manifest_sha, sessions):
 def extract_sessions(source, out_dir, sessions, manifest_path, allowed_split="validation"):
     """Publish `sessions` from `source` into `out_dir` (see module doc).
 
-    Returns the published index (plus, when an intact cache was reused, a
-    "reuse_check" entry with the time spent re-hashing the source; it is not
-    written to disk). Raises ExtractionRefused for anything that must not be
-    read or published, CacheError if the source changed while being read.
+    Returns the published, fully verified index (plus, when an intact cache
+    was reused, a "reuse_check" entry with the time spent re-hashing the
+    source; it is not written to disk). Raises ExtractionRefused for anything
+    that must not be read or published, CacheError if the source changed while
+    being read or the published cache fails verification.
     """
     manifest, manifest_sha = load_manifest(manifest_path)
     sessions = sorted(set(sessions))
     if not sessions:
         raise ExtractionRefused("no sessions requested")
     _check_allowed(sessions, manifest, allowed_split)
-    for sid in sessions:
-        session_filename(sid)
+    check_filenames_unique(manifest[allowed_split])
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -357,11 +392,16 @@ def extract_sessions(source, out_dir, sessions, manifest_path, allowed_split="va
         for leftover in out_dir.glob("*.partial"):  # no other writer can be active now
             leftover.unlink()
         stat_before = {"path": str(source), **_stat(source)}
-        index = _read_index(out_dir)
-        reuse, hash_seconds = _reusable(index, out_dir, source, stat_before, manifest_sha, sessions)
-        if reuse:
-            return {**index, "reuse_check": {"source_sha256_verified": True,
-                                             "source_hash_seconds": hash_seconds}}
+        try:  # the same verification as the analysis; anything else is never reused or retained
+            _, previous = _verify_locked(out_dir, manifest, manifest_sha, allowed_split)
+        except (CacheError, ExtractionRefused, OSError, ValueError):
+            previous = None
+        if previous is not None and all(sid in previous["sessions"] for sid in sessions) and \
+                {k: previous["source"][k] for k in ("path", "size", "mtime_ns")} == stat_before:
+            t0 = time.perf_counter()
+            if sha256_file(source) == previous["source"]["sha256"]:  # content, not only stat
+                return {**previous, "reuse_check": {"source_sha256_verified": True,
+                                                    "source_hash_seconds": round(time.perf_counter() - t0, 2)}}
 
         t0 = time.perf_counter()
         with open(source, "rb") as f:            # read-only, read once
@@ -389,23 +429,22 @@ def extract_sessions(source, out_dir, sessions, manifest_path, allowed_split="va
             raise ExtractionRefused(f"source lacks {allowed_split} sessions {absent[:3]}; "
                                     "the label summary must cover the whole split")
 
+        # sessions already published from this same source content stay published,
+        # but are re-derived from the source records like the requested ones: none of
+        # their old metadata (frames, bytes, hash) is trusted or copied
+        retained = []
+        if previous is not None and previous["source"]["sha256"] == source_sha:
+            retained = [sid for sid in previous["sessions"] if sid not in sessions]
+        to_publish = sorted(set(sessions) | set(retained))
+
         # validate everything first; nothing is written if any record is bad
         split_sessions = sorted(manifest[allowed_split])
         for sid in split_sessions:
             validate_annotations(sid, recs[sid])
-        frames = {sid: validate_record(group_of[sid], sid, recs[sid]) for sid in sessions}
+        frames = {sid: validate_record(group_of[sid], sid, recs[sid]) for sid in to_publish}
 
-        # same source content and manifest: keep other still-intact published sessions
-        keep = {}
-        if index is not None and index.get("source", {}).get("sha256") == source_sha \
-                and index.get("manifest", {}).get("sha256") == manifest_sha:
-            for sid, entry in index.get("sessions", {}).items():
-                if sid not in sessions and sid in set(manifest[allowed_split]) \
-                        and _published_intact(out_dir, sid, entry):
-                    keep[sid] = entry
-
-        published = dict(keep)
-        for sid in sessions:
+        published = {}
+        for sid in to_publish:
             payload = json.dumps({group_of[sid]: {sid: recs[sid]}}).encode("utf-8")
             target = out_dir / session_filename(sid)
             _write_atomic(target, payload)
@@ -427,7 +466,8 @@ def extract_sessions(source, out_dir, sessions, manifest_path, allowed_split="va
                                "peak_rss_mb": peak_rss_mb()},
         }
         _write_atomic(out_dir / INDEX_NAME, json.dumps(new_index, indent=2).encode("utf-8"))
-        return new_index
+        _, verified = _verify_locked(out_dir, manifest, manifest_sha, allowed_split)  # same policy
+        return verified
 
 
 # ---- analysis boundary ----
@@ -472,6 +512,51 @@ def validated_split_summary(index, manifest, allowed_split, extracted):
     return out
 
 
+def _verify_locked(out_dir, manifest, manifest_sha, allowed_split):
+    """Full verification of the published cache; the caller holds the lock.
+    Used by the analysis (verified_sessions), by cache reuse, before sessions
+    are retained, and after every publication, so all paths apply one policy.
+    Returns ([(session_id, parsed_dict)], index with the validated summary)."""
+    index = _read_index(out_dir)
+    if index is None:
+        raise CacheError(f"no published extraction index ({FORMAT}) in {out_dir}")
+    problem = index_problem(index)
+    if problem:
+        raise CacheError(f"malformed extraction index: {problem}")
+    if index["manifest"]["sha256"] != manifest_sha:
+        raise CacheError("the cache was built with a different split manifest")
+    if index["allowed_split"] != allowed_split:
+        raise ExtractionRefused(f"cache split {index['allowed_split']!r} != {allowed_split!r}")
+    check_filenames_unique(manifest[allowed_split])
+    listed = index["sessions"]
+    if not listed:
+        raise CacheError("the index lists no sessions")
+    _check_allowed(list(listed), manifest, allowed_split)
+    out, records = [], {}
+    for sid, entry in sorted(listed.items()):
+        path = cache_file(out_dir, sid, entry["file"])  # confined before opening
+        if not path.exists():
+            raise CacheError(f"{sid}: published file is missing")
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != entry["sha256"] or len(raw) != entry["bytes"]:
+            raise CacheError(f"{sid}: file does not match its published sha256 / size")
+        data = json.loads(raw)
+        inside = sorted(_sessions(data)) if isinstance(data, dict) and \
+            all(isinstance(g, dict) for g in data.values()) else None
+        if inside != [sid]:
+            raise ExtractionRefused(f"{entry['file']}: contains sessions {inside}, expected [{sid!r}]")
+        _check_allowed(inside, manifest, allowed_split)
+        rec = next(iter(data.values()))[sid]
+        validate_annotations(sid, rec)
+        if entry["frames"] != len(rec["annotations"]):
+            raise CacheError(f"{sid}: index frame count does not match the record")
+        records[sid] = rec
+        out.append((sid, data))
+    index = {**index, "split_label_summary": validated_split_summary(index, manifest,
+                                                                     allowed_split, records)}
+    return out, index
+
+
 def verified_sessions(out_dir, manifest_path, allowed_split="validation"):
     """Published sessions the analysis may use: ([(session_id, parsed_dict)], index).
 
@@ -485,46 +570,16 @@ def verified_sessions(out_dir, manifest_path, allowed_split="validation"):
     if not out_dir.is_dir():
         raise CacheError(f"no cache directory {out_dir}")
     with cache_lock(out_dir):
-        index = _read_index(out_dir)
-        if index is None:
-            raise CacheError(f"no published extraction index ({FORMAT}) in {out_dir}")
-        if index.get("manifest", {}).get("sha256") != manifest_sha:
-            raise CacheError("the cache was built with a different split manifest")
-        if index.get("allowed_split") != allowed_split:
-            raise ExtractionRefused(f"cache split {index.get('allowed_split')!r} != {allowed_split!r}")
-        listed = index.get("sessions", {})
-        if type(listed) is not dict or not listed:
-            raise CacheError("the index lists no sessions")
-        _check_allowed(list(listed), manifest, allowed_split)
-        out, records = [], {}
-        for sid, entry in sorted(listed.items()):
-            if type(entry) is not dict:
-                raise CacheError(f"{sid}: malformed index entry")
-            path = cache_file(out_dir, sid, entry.get("file"))  # confined before opening
-            if not path.exists():
-                raise CacheError(f"{sid}: published file is missing")
-            raw = path.read_bytes()
-            if hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
-                raise CacheError(f"{sid}: file does not match its published sha256")
-            data = json.loads(raw)
-            inside = sorted(_sessions(data)) if isinstance(data, dict) else None
-            if inside != [sid]:
-                raise ExtractionRefused(f"{entry['file']}: contains sessions {inside}, expected [{sid!r}]")
-            _check_allowed(inside, manifest, allowed_split)
-            rec = next(iter(data.values()))[sid]
-            validate_annotations(sid, rec)
-            if entry.get("frames") != len(rec["annotations"]):
-                raise CacheError(f"{sid}: index frame count does not match the record")
-            records[sid] = rec
-            out.append((sid, data))
-        index = {**index, "split_label_summary": validated_split_summary(index, manifest,
-                                                                         allowed_split, records)}
-    return out, index
+        return _verify_locked(out_dir, manifest, manifest_sha, allowed_split)
 
 
 def unlisted_files(out_dir, index):
-    """JSON files in the cache directory that are not published (ignored)."""
-    listed = {e["file"] for e in index.get("sessions", {}).values()} | {INDEX_NAME}
+    """JSON files in the cache directory that are not published (ignored).
+    A malformed index is a CacheError, never an unhandled exception."""
+    problem = index_problem(index)
+    if problem:
+        raise CacheError(f"malformed extraction index: {problem}")
+    listed = {e["file"] for e in index["sessions"].values()} | {INDEX_NAME}
     return sorted(p.name for p in Path(out_dir).glob("*.json") if p.name not in listed)
 
 

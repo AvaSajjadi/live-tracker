@@ -287,7 +287,8 @@ def _forge(out, sid, file_name, content):
     path = out / file_name
     path.write_text(json.dumps(content))
     index = json.loads((out / INDEX_NAME).read_text())
-    index["sessions"][sid] = {"file": file_name, "sha256": digest(path), "bytes": 1, "frames": 2}
+    index["sessions"][sid] = {"file": file_name, "sha256": digest(path),
+                            "bytes": path.stat().st_size, "frames": 2}
     (out / INDEX_NAME).write_text(json.dumps(index))
 
 
@@ -477,7 +478,8 @@ def test_hash_comes_from_the_written_payload(env, monkeypatch):
             path.write_text(json.dumps({"annotator-id_0": {VAL[0]: record([3, 3, 0, 0, 3, 0], 1.0)}}))
 
     monkeypatch.setattr(idata, "_write_atomic", write_then_swap)
-    extract_sessions(src, out, [VAL[0]], manifest)
+    with pytest.raises(CacheError, match="sha256"):  # caught by the post-publication check
+        extract_sessions(src, out, [VAL[0]], manifest)
     with pytest.raises(CacheError, match="sha256"):
         verified_sessions(out, manifest)
 
@@ -502,7 +504,7 @@ def test_temporary_paths_are_unique(env, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("name", [
     "../outside.json", "/tmp/outside.json", "sub/x.json", "task1__train__SYNTHETIC_val_b.json",
-    "TASK1__train__SYNTHETIC_val_a.json", "task1__train__SYNTHETIC_val_a.json/", None,
+    "TASK1__train__SYNTHETIC_val_a.json", "task1__train__SYNTHETIC_val_a.json/", None, 7,
 ])
 def test_non_canonical_index_file_names_are_refused_before_opening(env, monkeypatch, name):
     tmp, src, manifest, out = env
@@ -514,7 +516,9 @@ def test_non_canonical_index_file_names_are_refused_before_opening(env, monkeypa
     real_read = type(outside).read_bytes
     monkeypatch.setattr(type(outside), "read_bytes",
                         lambda self: opened.append(self.name) or real_read(self))
-    with pytest.raises(ExtractionRefused):
+    # a non-string name is malformed metadata (CacheError); any string name that
+    # is not the canonical one is refused before opening (ExtractionRefused)
+    with pytest.raises(ExtractionRefused if isinstance(name, str) else CacheError):
         verified_sessions(out, manifest)
     assert "outside.json" not in opened and not any(n.startswith("task1__") for n in opened)
 
@@ -620,3 +624,219 @@ def test_contention_codes_are_only_lock_contention():
     assert errno.EBADF not in idata.WINDOWS_LOCK_CONTENTION
     assert errno.EACCES in idata.WINDOWS_LOCK_CONTENTION
     assert getattr(errno, "EDEADLK", 36) in idata.WINDOWS_LOCK_CONTENTION
+
+
+# ---- Stage 1 audit regressions: one verification policy for every path ----
+
+def test_reuse_never_returns_a_held_out_label_summary(env):
+    """Finding 1: a summary entry for a held-out session must not escape through reuse."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    _edit_index(out, lambda ix: ix["split_label_summary"].__setitem__(
+        TEST[0], {"frames": 2, "label_runs": [[0, 0, 2]]}))
+    index = extract_sessions(src, out, [VAL[0]], manifest)
+    assert "reuse_check" not in index  # not reused: rebuilt from the source
+    assert sorted(index["split_label_summary"]) == sorted(VAL)
+    on_disk = json.loads((out / INDEX_NAME).read_text())
+    assert sorted(on_disk["split_label_summary"]) == sorted(VAL)
+    sessions, verified = verified_sessions(out, manifest)
+    assert verified["split_label_summary"] == index["split_label_summary"]
+
+
+@pytest.mark.parametrize("split", ["test", "train", 7, None])
+def test_reuse_never_returns_an_unauthorized_allowed_split(env, split):
+    """Finding 1: a tampered allowed_split is never reused or returned."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    _edit_index(out, lambda ix: ix.__setitem__("allowed_split", split))
+    index = extract_sessions(src, out, [VAL[0]], manifest)
+    assert "reuse_check" not in index
+    assert index["allowed_split"] == "validation"
+    assert json.loads((out / INDEX_NAME).read_text())["allowed_split"] == "validation"
+
+
+def test_reuse_of_an_intact_cache_returns_the_validated_index(env):
+    _, src, manifest, out = env
+    first = extract_sessions(src, out, VAL, manifest)
+    again = extract_sessions(src, out, [VAL[1]], manifest)
+    assert again["reuse_check"]["source_sha256_verified"] is True
+    assert {k: v for k, v in again.items() if k != "reuse_check"} == first
+    _, verified = verified_sessions(out, manifest)
+    assert verified == first
+
+
+def test_tampered_summary_values_of_extracted_sessions_are_not_reused(env):
+    """(Entries of unextracted sessions remain structure-checked only; see
+    test_summary_for_unextracted_sessions_is_structurally_checked_only.)"""
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    _edit_index(out, lambda ix: ix["split_label_summary"][VAL[0]].__setitem__("frames", 999))
+    index = extract_sessions(src, out, [VAL[0]], manifest)
+    assert "reuse_check" not in index and index["split_label_summary"][VAL[0]]["frames"] == 6
+
+
+def _drop(key):
+    return lambda ix: ix.pop(key)
+
+
+MALFORMED = {
+    "entry_string": lambda ix: ix["sessions"].__setitem__(VAL[0], "a string"),
+    "entry_int": lambda ix: ix["sessions"].__setitem__(VAL[0], 7),
+    "entry_null": lambda ix: ix["sessions"].__setitem__(VAL[0], None),
+    "entry_list": lambda ix: ix["sessions"].__setitem__(VAL[0], []),
+    "entry_only_sha": lambda ix: ix["sessions"].__setitem__(VAL[0], {"sha256": "x"}),
+    "entry_missing_frames": lambda ix: ix["sessions"][VAL[0]].pop("frames"),
+    "entry_extra_key": lambda ix: ix["sessions"][VAL[0]].__setitem__("extra", 1),
+    "entry_frames_bool": lambda ix: ix["sessions"][VAL[0]].__setitem__("frames", True),
+    "entry_frames_zero": lambda ix: ix["sessions"][VAL[0]].__setitem__("frames", 0),
+    "entry_frames_str": lambda ix: ix["sessions"][VAL[0]].__setitem__("frames", "6"),
+    "entry_bytes_negative": lambda ix: ix["sessions"][VAL[0]].__setitem__("bytes", -1),
+    "entry_sha_not_hex": lambda ix: ix["sessions"][VAL[0]].__setitem__("sha256", "Z" * 64),
+    "sessions_string": lambda ix: ix.__setitem__("sessions", "a string"),
+    "sessions_int": lambda ix: ix.__setitem__("sessions", 5),
+    "sessions_list": lambda ix: ix.__setitem__("sessions", [VAL[0]]),
+    "sessions_missing": _drop("sessions"),
+    "manifest_string": lambda ix: ix.__setitem__("manifest", "not-a-dict"),
+    "manifest_null": lambda ix: ix.__setitem__("manifest", None),
+    "manifest_missing": _drop("manifest"),
+    "source_string": lambda ix: ix.__setitem__("source", "x"),
+    "source_size_str": lambda ix: ix["source"].__setitem__("size", "1"),
+    "source_missing": _drop("source"),
+    "allowed_split_int": lambda ix: ix.__setitem__("allowed_split", 7),
+    "summary_string": lambda ix: ix.__setitem__("split_label_summary", "x"),
+    "summary_missing": _drop("split_label_summary"),
+}
+
+
+@pytest.mark.parametrize("change", MALFORMED.values(), ids=MALFORMED.keys())
+def test_malformed_index_is_a_cache_error_and_is_rebuilt(env, change):
+    """Finding 2: malformed metadata never raises AttributeError/TypeError/KeyError;
+    analysis refuses it and extraction rebuilds a verified cache from the source."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    _edit_index(out, change)
+    with pytest.raises(CacheError, match="malformed"):
+        verified_sessions(out, manifest)
+    index = extract_sessions(src, out, [VAL[0]], manifest)
+    assert "reuse_check" not in index
+    sessions, verified = verified_sessions(out, manifest)
+    assert [sid for sid, _ in sessions] == [VAL[0]] and verified == index
+
+
+@pytest.mark.parametrize("content", ["[1, 2]", '"text"', "null"])
+def test_non_object_index_is_a_cache_error_and_is_rebuilt(env, content):
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    (out / INDEX_NAME).write_text(content)
+    with pytest.raises(CacheError):
+        verified_sessions(out, manifest)
+    assert extract_sessions(src, out, [VAL[0]], manifest)["sessions"][VAL[0]]["frames"] == 6
+
+
+@pytest.mark.parametrize("requested", [[VAL[0]], [VAL[1]]])
+def test_tampered_frames_never_survive_incremental_extraction(env, requested):
+    """Finding 3: a tampered frame count on a retained (or requested) session is
+    never carried into the new index."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, VAL, manifest)
+    _edit_index(out, lambda ix: ix["sessions"][VAL[1]].__setitem__("frames", 999))
+    index = extract_sessions(src, out, requested, manifest)
+    assert all(e["frames"] != 999 for e in index["sessions"].values())
+    on_disk = json.loads((out / INDEX_NAME).read_text())
+    assert all(e["frames"] != 999 for e in on_disk["sessions"].values())
+    if VAL[1] in on_disk["sessions"]:
+        assert on_disk["sessions"][VAL[1]]["frames"] == 4
+    verified_sessions(out, manifest)  # the published cache verifies
+
+
+def test_retained_sessions_are_rederived_from_the_source(env, monkeypatch):
+    """Sessions kept from an earlier extraction are re-validated and rewritten
+    from the source records; their old metadata is not copied."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    validated, written = [], []
+    real_validate, real_write = idata.validate_record, idata._write_atomic
+    monkeypatch.setattr(idata, "validate_record",
+                        lambda g, sid, rec: validated.append(sid) or real_validate(g, sid, rec))
+    monkeypatch.setattr(idata, "_write_atomic",
+                        lambda path, payload: written.append(path.name) or real_write(path, payload))
+    index = extract_sessions(src, out, [VAL[1]], manifest)
+    assert sorted(index["sessions"]) == sorted(VAL)
+    assert sorted(validated) == sorted(VAL)
+    assert session_filename(VAL[0]) in written and session_filename(VAL[1]) in written
+    assert index["sessions"][VAL[0]]["frames"] == 6 and index["sessions"][VAL[1]]["frames"] == 4
+
+
+def test_sessions_from_a_changed_source_are_not_retained(env):
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    src.write_text(json.dumps(source_data(offset=1.0)))
+    index = extract_sessions(src, out, [VAL[1]], manifest)
+    assert sorted(index["sessions"]) == [VAL[1]]
+
+
+@pytest.mark.parametrize("entry", ["x", None, 7, {}, {"file": None}, {"file": 3}])
+def test_unlisted_files_rejects_malformed_entries(env, entry):
+    """Finding 4: malformed metadata is a CacheError, not TypeError/KeyError."""
+    _, src, manifest, out = env
+    index = extract_sessions(src, out, [VAL[0]], manifest)
+    index["sessions"][VAL[0]] = entry
+    with pytest.raises(CacheError, match="malformed"):
+        unlisted_files(out, index)
+
+
+@pytest.mark.parametrize("index", [None, [], "x", {"format": "other"}])
+def test_unlisted_files_rejects_a_malformed_index(env, index):
+    _, _, _, out = env
+    out.mkdir()
+    with pytest.raises(CacheError):
+        unlisted_files(out, index)
+
+
+def test_unlisted_files_still_lists_unpublished_json(env):
+    _, src, manifest, out = env
+    index = extract_sessions(src, out, [VAL[0]], manifest)
+    (out / "stray.json").write_text("{}")
+    assert unlisted_files(out, index) == ["stray.json"]
+
+
+@pytest.mark.parametrize("pair", [("task1/x", "task1__x"), ("a_/b", "a/_b")])
+def test_colliding_cache_file_names_are_refused(tmp_path, pair):
+    """Finding 5: IDs that map to one cache file name are refused before any read."""
+    assert session_filename(pair[0]) == session_filename(pair[1])
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"train": TRAIN, "validation": list(pair), "test": TEST}))
+    src = tmp_path / "source.json"
+    src.write_text(json.dumps({"annotator-id_0": {sid: record([3, 0, 3]) for sid in pair}}))
+    out = tmp_path / "cache"
+    for requested in ([pair[0]], list(pair)):
+        with pytest.raises(ExtractionRefused, match="same cache file"):
+            extract_sessions(src, out, requested, manifest)
+    assert not out.exists() or not list(out.glob("*.json"))
+
+
+def test_real_style_ids_keep_the_existing_file_names():
+    assert session_filename("task1/train/mouse005_task1_annotator1") == \
+        "task1__train__mouse005_task1_annotator1.json"
+
+
+def test_analysis_refuses_a_forged_index_under_a_colliding_manifest(env):
+    """Extraction never builds such a cache; a forged one is refused by name."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, [VAL[0]], manifest)
+    twin = VAL[0].replace("/", "__", 1)  # same cache file name as VAL[0]
+    manifest.write_text(json.dumps({**MANIFEST, "validation": VAL + [twin]}))
+    _edit_index(out, lambda ix: (ix["manifest"].__setitem__("sha256", digest(manifest)),
+                                 ix["split_label_summary"].__setitem__(twin, ix["split_label_summary"][VAL[0]])))
+    with pytest.raises(ExtractionRefused, match="same cache file"):
+        verified_sessions(out, manifest)
+
+
+def test_two_sessions_sharing_one_file_are_refused(env):
+    """Implied by canonical file names (no separate check is needed)."""
+    _, src, manifest, out = env
+    extract_sessions(src, out, VAL, manifest)
+    _edit_index(out, lambda ix: ix["sessions"].__setitem__(VAL[1], dict(ix["sessions"][VAL[0]])))
+    with pytest.raises((CacheError, ExtractionRefused)):
+        verified_sessions(out, manifest)
+    assert "reuse_check" not in extract_sessions(src, out, VAL, manifest)

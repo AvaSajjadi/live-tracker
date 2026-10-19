@@ -1,5 +1,10 @@
 """EXPERIMENTAL (Investigation mode, Stage 3): the real `query_events` tool (new file).
 
+Stage 4 adds get_window_features and check_tracking_quality
+(investigation_windows.py); they read the cache through the same
+AnnotationEventSource.snapshot() and are reached through the same
+CalMS21InvestigationTools. compare_windows is not implemented yet.
+
 Read-only. Returns behavioral episodes as Stage 2 contract results
 (investigation_contracts, CONTRACT_VERSION), from event sources plugged in by
 name:
@@ -27,6 +32,8 @@ tool refuses a source bound to a different policy object. On every query:
 3. Stage 1's verifier is given a private, frozen copy of the snapshot, so the
    cache index must be bound to that same manifest, and every session the
    index lists is checked against it BEFORE any session file is opened.
+Checks 1 and 2 are repeated just before the result is returned (finalize), so
+a manifest or policy that changed while the query computed refuses it.
 
 One immutable metadata snapshot per query
 -----------------------------------------
@@ -82,7 +89,7 @@ __all__ = ["AnnotationEventSource", "CalMS21InvestigationTools", "EventQuery", "
            "SourceUnavailable", "behavior_runs", "merge_runs"]
 
 IMPLEMENTATION = "live-tracker-calms21-events"
-IMPLEMENTATION_VERSION = "0.3-experimental"
+IMPLEMENTATION_VERSION = "0.4-experimental"
 
 
 class SourceUnavailable(RuntimeError):
@@ -162,6 +169,28 @@ def _canonical_sha(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+@dataclass
+class VerifiedSnapshot:
+    """Verified sessions and provenance from one immutable cache-index snapshot."""
+    index: dict
+    sessions: dict            # session id -> parsed {group: {session: record}}
+    data: list                # provenance data items
+    synthetic: bool
+    finalize: object          # callable: refuses if the binding or the index changed since the snapshot
+
+
+def session_labels(sid, data):
+    """Per-frame label names of one verified session (Igor's loader), refused
+    unless frames are 0..n-1 and times are frame / FPS."""
+    _, labels = load_calms21(data)
+    labels = labels.sort_values("frame").reset_index(drop=True)
+    frames = labels["frame"].to_numpy()
+    if not np.array_equal(frames, np.arange(len(frames))) or \
+            not np.allclose(labels["time_s"].to_numpy(), frames / FPS, rtol=0, atol=1e-9):
+        raise SourceUnavailable(f"{sid}: frames / times are not 0..n-1 at {FPS} fps")
+    return labels["label"].to_numpy()
+
+
 class AnnotationEventSource:
     """CalMS21 validation annotations from the Stage 1 verified cache, bound to
     one manifest snapshot and to the EvidencePolicy that describes it."""
@@ -198,7 +227,13 @@ class AnnotationEventSource:
         if self.policy.split_of != self._mapping or self.policy.annotation_split != "validation":
             raise SourceUnavailable("the evidence policy no longer matches the manifest snapshot")
 
-    def query(self, request):
+    def snapshot(self, sessions):
+        """Verified data for `sessions` (None: every verified session) from ONE
+        immutable index snapshot: binding checks, Stage 1 verification against the
+        frozen manifest snapshot, provenance items, and a finalize() that refuses
+        if the manifest / policy binding or the index changed before the result
+        is returned. Shared by every tool
+        that reads the cache."""
         self._check_binding()
         with tempfile.TemporaryDirectory() as tmp:  # Stage 1 verifies against the frozen snapshot
             frozen = Path(tmp) / "manifest.json"
@@ -209,25 +244,51 @@ class AnnotationEventSource:
                 raise SourceUnavailable(f"validated CalMS21 cache unavailable ({type(exc).__name__})") from None
         index = copy.deepcopy(index)                 # the one immutable snapshot for this query
         available = {sid: data for sid, data in verified}
-        wanted = sorted(available) if request["sessions"] is None else sorted(request["sessions"])
+        wanted = sorted(available) if sessions is None else sorted(sessions)
         missing = [sid for sid in wanted if sid not in available]
         if missing:
             raise SourceUnavailable(f"{len(missing)} requested session(s) are not in the validated "
                                     f"cache: {missing[:3]}")
         synthetic = any("SYNTHETIC" in sid for sid in available)
+        kind = "synthetic_fixture" if synthetic else "calms21_validation_cache"
+        label = "SYNTHETIC test fixture, not CalMS21 data" if synthetic else \
+            "verified CalMS21 Task 1 validation-session cache (Stage 1)"
+        data = [{"kind": kind, "path": str(self.cache_dir / INDEX_NAME), "sha256": _canonical_sha(index),
+                 "description": f"{label}: extraction index (sha256 of its canonical JSON, as verified)"},
+                {"kind": kind, "path": index["source"]["path"], "sha256": index["source"]["sha256"],
+                 "description": f"{label}: source file the cache was extracted from (read once, read-only)"}]
+        for sid in wanted:
+            data.append({"kind": kind, "path": str(self.cache_dir / index["sessions"][sid]["file"]),
+                         "sha256": index["sessions"][sid]["sha256"], "description": f"{label}: {sid}"})
+
+        def finalize():
+            """Just before the result is returned: the manifest / policy binding
+            still holds, and the whole index, re-read under the lock, equals the
+            snapshot."""
+            self._check_binding()
+            try:
+                with cache_lock(self.cache_dir):
+                    live = json.loads((self.cache_dir / INDEX_NAME).read_bytes())
+            except (OSError, ValueError) as exc:
+                raise SourceUnavailable(f"validated CalMS21 cache changed while reading "
+                                        f"({type(exc).__name__})") from None
+            if live != index:
+                raise SourceUnavailable("validated CalMS21 cache changed while reading "
+                                        "(extraction index differs from the verified snapshot)")
+
+        return VerifiedSnapshot(index=index, sessions={sid: available[sid] for sid in wanted},
+                                data=data[:20], synthetic=synthetic, finalize=finalize)
+
+    def query(self, request):
+        snap = self.snapshot(request["sessions"])
+        index, wanted = snap.index, sorted(snap.sessions)
         episodes = []
         for sid in wanted:
             entry = index["sessions"][sid]
-            _, labels = load_calms21(available[sid])
-            labels = labels.sort_values("frame").reset_index(drop=True)
-            frames = labels["frame"].to_numpy()
-            if not np.array_equal(frames, np.arange(len(frames))) or \
-                    not np.allclose(labels["time_s"].to_numpy(), frames / FPS, rtol=0, atol=1e-9):
-                raise SourceUnavailable(f"{sid}: frames / times are not 0..n-1 at {FPS} fps")
-            rec = next(iter(available[sid].values()))[sid]
+            labels = session_labels(sid, snap.sessions[sid])
+            rec = next(iter(snap.sessions[sid].values()))[sid]
             annotator = f"annotator-id_{rec['metadata'].get('annotator-id', 'unknown')}"
-            runs = merge_runs(behavior_runs(labels["label"].to_numpy() == request["behavior"]),
-                              request["merge_gap_frames"])
+            runs = merge_runs(behavior_runs(labels == request["behavior"]), request["merge_gap_frames"])
             for start, end, annotated in runs:
                 if request["min_duration_frames"] is not None and end - start < request["min_duration_frames"]:
                     continue
@@ -240,17 +301,6 @@ class AnnotationEventSource:
                     "provenance": {"split": "validation", "annotator": annotator[:40],
                                    "file_sha256": entry["sha256"]}})
 
-        kind = "synthetic_fixture" if synthetic else "calms21_validation_cache"
-        label = "SYNTHETIC test fixture, not CalMS21 data" if synthetic else \
-            "verified CalMS21 Task 1 validation-session cache (Stage 1)"
-        snapshot_sha = _canonical_sha(index)
-        data = [{"kind": kind, "path": str(self.cache_dir / INDEX_NAME), "sha256": snapshot_sha,
-                 "description": f"{label}: extraction index (sha256 of its canonical JSON, as verified)"},
-                {"kind": kind, "path": index["source"]["path"], "sha256": index["source"]["sha256"],
-                 "description": f"{label}: source file the cache was extracted from (read once, read-only)"}]
-        for sid in wanted:
-            data.append({"kind": kind, "path": str(self.cache_dir / index["sessions"][sid]["file"]),
-                         "sha256": index["sessions"][sid]["sha256"], "description": f"{label}: {sid}"})
         span_note = ("measured on the episode span [start, end); with merging, merged gap frames "
                      "count toward it although they are not annotated as the behavior")
         methodology = [
@@ -267,37 +317,25 @@ class AnnotationEventSource:
             _method("fps", FPS, "calms21.FPS"),
         ]
         limitations = list(ANNOTATION_LIMITATIONS)
-        if synthetic:
+        if snap.synthetic:
             limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
         if request["merge_gap_frames"]:
             limitations.append("Merged episodes span unannotated gap frames: end_frame - start_frame "
                                "is elapsed span, annotated_frames is the observed behavior.")
-
-        def finalize():
-            """Re-read the whole index under the lock; it must equal the snapshot."""
-            try:
-                with cache_lock(self.cache_dir):
-                    live = json.loads((self.cache_dir / INDEX_NAME).read_bytes())
-            except (OSError, ValueError) as exc:
-                raise SourceUnavailable(f"validated CalMS21 cache changed while reading "
-                                        f"({type(exc).__name__})") from None
-            if live != index:
-                raise SourceUnavailable("validated CalMS21 cache changed while reading "
-                                        "(extraction index differs from the verified snapshot)")
-
-        return EventQuery(episodes=episodes, sessions_searched=wanted, data=data[:20],
-                          methodology=methodology, limitations=limitations, finalize=finalize)
+        return EventQuery(episodes=episodes, sessions_searched=wanted, data=snap.data,
+                          methodology=methodology, limitations=limitations, finalize=snap.finalize)
 
 
-# ---- the InvestigationTools implementation (query_events only in Stage 3) ----
+# ---- the InvestigationTools implementation ----
 
 def _code_sha256():
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 class CalMS21InvestigationTools(ic.UnavailableTools):
-    """InvestigationTools with a real query_events. The other three tools
-    still answer 'not_implemented' (later stages)."""
+    """InvestigationTools with real query_events (Stage 3), get_window_features
+    and check_tracking_quality (Stage 4, investigation_windows). compare_windows
+    still answers 'not_implemented'."""
 
     implementation = IMPLEMENTATION
     implementation_version = IMPLEMENTATION_VERSION
@@ -350,6 +388,14 @@ class CalMS21InvestigationTools(ic.UnavailableTools):
                                  methodology=q.methodology, limitations=q.limitations,
                                  provenance=self._provenance(q.data))
             ic.validate_result("query_events", page_req, res, self.policy)
+
+    def get_window_features(self, request):
+        from .investigation_windows import get_window_features
+        return get_window_features(self, request)
+
+    def check_tracking_quality(self, request):
+        from .investigation_windows import check_tracking_quality
+        return check_tracking_quality(self, request)
 
     def query_events(self, request):
         ic.validate_request("query_events", request, self.policy)  # nothing is read before this

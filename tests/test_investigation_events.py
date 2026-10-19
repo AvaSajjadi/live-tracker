@@ -654,6 +654,25 @@ def test_metadata_changed_after_verification_is_refused(env, monkeypatch, change
     assert res["status"] == "error" and "verified snapshot" in res["errors"][0]["message"]
 
 
+def test_manifest_changed_while_computing_is_refused(env, monkeypatch):
+    """The binding is rechecked just before the result is returned: a manifest
+    rewritten (same sessions, different bytes) after verification, while the
+    index stays unchanged, refuses the query."""
+    tools, policy, cache, manifest = env[:4]
+    real = ev.session_labels
+
+    def labels_then_rewrite(*a, **k):
+        out = real(*a, **k)
+        manifest.write_text(json.dumps(MANIFEST, indent=1))
+        return out
+    monkeypatch.setattr(ev, "session_labels", labels_then_rewrite)
+    index_before = (cache / INDEX_NAME).read_bytes()
+    res = call_tool(tools, "query_events", request(), policy)
+    assert res["status"] == "error" and res["errors"][0]["code"] == "source_unavailable"
+    assert "manifest changed" in res["errors"][0]["message"]
+    assert (cache / INDEX_NAME).read_bytes() == index_before
+
+
 def test_provenance_comes_from_the_verified_snapshot(env):
     res = run(env)
     index = json.loads((env[2] / INDEX_NAME).read_text())

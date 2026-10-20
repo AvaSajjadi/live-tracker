@@ -732,12 +732,18 @@ class _EmulatedOpenRouter:
     re-measured once with a narrower clearance (30 frames) and compared
     again, and the run ends with whatever that evidence supports
     (effect_described, or insufficient_evidence with sufficiency_not_met).
-    `legacy=True` keeps the legacy (pre-M3) finish for legacy-mode plans."""
+    `legacy=True` keeps the legacy (pre-M3) finish for legacy-mode plans.
+    Stage 9 (S9-6): `source` names the event source it queries (default
+    validation_annotation; classifier_prediction / monitor_event for the
+    offline integration), and `with_quality=True` adds one
+    check_tracking_quality call on each feature result's included pre-event
+    windows before comparing. The defaults keep the Stage 8 behavior."""
 
     CLEARANCES = (150, 30)
 
-    def __init__(self, legacy=False):
-        self.requests, self.legacy = [], legacy
+    def __init__(self, legacy=False, source="validation_annotation", with_quality=False, max_baselines_per_session=500):
+        self.requests, self.legacy, self.source, self.with_quality = [], legacy, source, with_quality
+        self.max_baselines = max_baselines_per_session
 
     def __call__(self, request):
         import httpx2
@@ -753,7 +759,10 @@ class _EmulatedOpenRouter:
                     r = json.loads(b["content"])
                     if "evidence_id" in r:
                         results.append(r)
-        text, name, args = self.decide(results)
+        def attempts(tool):
+            return sum(1 for m in body["messages"] if m["role"] == "assistant" and isinstance(m["content"], list)
+                       for b in m["content"] if b.get("type") == "tool_use" and b.get("name") == tool)
+        text, name, args = self.decide(results, attempts("check_tracking_quality"), attempts("compare_windows"))
         content = [{"type": "text", "text": text},
                    {"type": "tool_use", "id": f"toolu_dry_{len(self.requests)}", "name": name, "input": args}]
         return httpx2.Response(200, json={
@@ -762,13 +771,12 @@ class _EmulatedOpenRouter:
             "usage": {"input_tokens": 3000, "output_tokens": 300, "cache_read_input_tokens": 0,
                       "cache_creation_input_tokens": 0, "cost": 0.0}})
 
-    def decide(self, results):
+    def decide(self, results, quality_attempts=0, compare_attempts=None):
         def of(tool):
             return [r for r in results if r.get("tool") == tool]
         queries, feats, comps = of("query_events"), of("get_window_features"), of("compare_windows")
         if not queries:
-            return "Dry run: find the attack episodes.", "query_events", {"source": "validation_annotation",
-                                                                         "behavior": "attack"}
+            return "Dry run: find the attack episodes.", "query_events", {"source": self.source, "behavior": "attack"}
         q = queries[-1]
         if self.legacy:
             return "Dry run (legacy finish).", ia.FINISH, {
@@ -780,20 +788,43 @@ class _EmulatedOpenRouter:
                 "finding": "insufficient_evidence", "primary_evidence_id": None,
                 "observations": [{"evidence_id": q["evidence_id"], "field": "status"}],
                 "claims": [{"type": "no_comparison", "evidence_ids": [], "params": {}}], "next_investigations": []}
+        # a feature request the tool refused as too large (an error result) is retried with longer windows
+        # (pre-event and baseline lengths stay equal, as compare_windows requires), at most twice
+        failed = [f for f in feats if f["status"] == "error"]
+        feats = [f for f in feats if f["status"] != "error"]
+        length = 30 * 2 ** len(failed)
+        if len(failed) > 2:
+            return "The window features could not be measured.", ia.FINISH, {
+                "finding": "insufficient_evidence", "primary_evidence_id": None,
+                "observations": [{"evidence_id": q["evidence_id"], "field": "status"}],
+                "claims": [{"type": "no_comparison", "evidence_ids": [], "params": {}}], "next_investigations": []}
         if len(feats) == len(comps) and len(feats) < len(self.CLEARANCES) and \
                 (not comps or comps[-1]["status"] == "insufficient_evidence"):
             clearance = self.CLEARANCES[len(feats)]
             why = ("Measure dist_rate before each attack and in distant baselines." if not feats else
                    "The comparison was insufficient: re-measure with baselines closer to the events.")
+            if failed:
+                why = "Too many windows: measure again with longer windows."
             return why, "get_window_features", {
                 "episodes_from": {"evidence_id": q["evidence_id"]},
-                "pre_event": {"length_frames": 30, "gap_frames": 0},
-                "baseline": {"length_frames": 30, "clearance_frames": clearance, "max_windows_per_session": 500},
+                "pre_event": {"length_frames": length, "gap_frames": 0},
+                "baseline": {"length_frames": length, "clearance_frames": clearance,
+                             "max_windows_per_session": self.max_baselines},
                 "features": ["dist_rate"]}
         f = feats[-1]
-        if len(comps) < len(feats):
+        if self.with_quality and quality_attempts < len(feats):        # one attempt per feature result
+            return "Check tracking quality of the pre-event windows.", "check_tracking_quality", {
+                "windows_from": {"evidence_id": f["evidence_id"], "status": "included", "kind": "pre_event"},
+                "history_frames": [1]}
+        refused_compare = compare_attempts is not None and compare_attempts > len(comps)
+        if len(comps) < len(feats) and not refused_compare:
             return "Compare pre-event windows with baselines.", "compare_windows", {
                 "feature": "dist_rate", "windows_from": {"evidence_id": f["evidence_id"]}}
+        if not comps:                                  # the comparison was refused: finish without one
+            return "The comparison could not be run.", ia.FINISH, {
+                "finding": "insufficient_evidence", "primary_evidence_id": None,
+                "observations": [{"evidence_id": q["evidence_id"], "field": "status"}],
+                "claims": [{"type": "no_comparison", "evidence_ids": [], "params": {}}], "next_investigations": []}
         c = comps[-1]
         pid = c["evidence_id"]
         if c["status"] == "ok":

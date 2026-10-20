@@ -18,7 +18,8 @@ import live_tracker.investigation_context as ctx
 import live_tracker.investigation_contracts as ic
 import live_tracker.investigation_report as ir
 import live_tracker.investigation_report_v2 as v2
-from live_tracker.investigation_agent import Budget, investigate
+from live_tracker.investigation_agent import Budget
+from test_investigation_agent import investigate  # legacy/1, explicitly (M3)
 from live_tracker.investigation_events import CalMS21InvestigationTools
 from live_tracker.investigation_report import ReportIntegrityError
 import live_tracker.investigation_agent as ia
@@ -716,8 +717,11 @@ def test_fingerprint_mismatch_is_refused_after_revalidation(effect_run):
     e = refused(lambda: v2.render_v2(bad, policy=policy), "claims[1] (no_comparison)")
     assert not any("fingerprint" in x for x in e.problems)
     # the fingerprint binds the claims: same evidence, other valid claims, old fingerprint
-    other = {**p, "claims": [C("descriptive_effect", pid), C("coverage", aspect="primary_comparison")]}
-    refused(lambda: v2.render_v2(other, policy=policy), "fingerprint mismatch")
+    other = copy.deepcopy({**p, "claims": [C("descriptive_effect", pid), C("coverage", aspect="primary_comparison")]})
+    next(t for t in other["trace"] if t["kind"] == "finish")["arguments"]["claims"] = copy.deepcopy(other["claims"])
+    refused(lambda: v2.render_v2(other, policy=policy), "fingerprint mismatch")      # trace and claims agree; F not
+    unbound = {**p, "claims": other["claims"]}                                       # M3: the finish binds the claims
+    refused(lambda: v2.render_v2(unbound, policy=policy), "execution: the accepted finish's arguments")
 
 
 def test_tampered_evidence_is_refused(effect_run):

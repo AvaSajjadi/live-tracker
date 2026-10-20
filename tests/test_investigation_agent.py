@@ -17,7 +17,14 @@ import pytest
 import live_tracker.investigation_agent as ia
 import live_tracker.investigation_contracts as ic
 import live_tracker.investigation_events as ev
-from live_tracker.investigation_agent import Budget, ModelReply, ModelUnavailable, investigate
+from live_tracker.investigation_agent import Budget, ModelReply, ModelUnavailable
+
+
+def investigate(*args, **kw):
+    """These Stage 6 tests exercise the legacy finish (prose + lexical checks):
+    legacy/1 is asked for explicitly, as every legacy caller must (M3)."""
+    kw.setdefault("findings_format", "legacy/1")
+    return ia.investigate(*args, **kw)
 from live_tracker.investigation_contracts import PROVISIONAL_SUFFICIENCY, SufficiencyCriteria
 from live_tracker.investigation_data import INDEX_NAME
 from live_tracker.investigation_events import CalMS21InvestigationTools

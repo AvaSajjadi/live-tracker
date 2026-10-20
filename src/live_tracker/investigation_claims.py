@@ -863,5 +863,23 @@ def incomplete_findings(*, evidence, trace, policy, stopping_reason):
                       fingerprint=ctx.content_fingerprint(payload))
 
 
+def finish_arguments_problems(proposal, trace):
+    """Problems binding a finished run's trace to its proposal (M3): the trace
+    has exactly one accepted finish, whose arguments are exactly the proposal
+    (the five structured keys, canonical bytes equal). Empty when bound."""
+    try:
+        finishes = [t for t in trace if isinstance(t, dict) and t.get("kind") == "finish"
+                    and t.get("outcome") == "accepted"]
+        if len(finishes) != 1:
+            return ["a finished run has exactly one accepted finish"]
+        args = finishes[0].get("arguments")
+        want = {k: proposal[k] for k in PROPOSAL_KEYS}
+        if not isinstance(args, dict) or ctx.canonical_bytes(args) != ctx.canonical_bytes(want):
+            return ["the accepted finish's arguments are not the report's structured findings"]
+        return []
+    except Exception as exc:                     # malformed input is a problem, never another exception
+        return [f"the finish could not be compared ({type(exc).__name__})"]
+
+
 __all__ = ["CLAIM_TYPES", "FINDINGS", "FindingsV2", "GRID_VERSION", "NEXT_ACTIONS", "PARAMS", "REGISTRY_VERSION",
-           "incomplete_findings", "validate_findings"]
+           "finish_arguments_problems", "incomplete_findings", "validate_findings"]

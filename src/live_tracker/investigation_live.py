@@ -1,8 +1,12 @@
 """EXPERIMENTAL (Investigation mode, Stage 8): live-model provider setup, preflight and budget (new file).
 
-Runs the unchanged Stage 6 loop (investigation_agent.investigate) with its
-unchanged Claude adapter (ClaudeInvestigationModel) against a configurable
-provider, and renders the result with the unchanged Stage 7 renderer.
+Runs the Stage 6 loop (investigation_agent.investigate) with its unchanged
+Claude adapter (ClaudeInvestigationModel) against a configurable provider,
+and renders the result with Stage 7. Since checkpoint M3 the run uses the
+structured findings/2 finish (LivePlan.findings_format, default
+"findings/2", rendered by investigation_report_v2); "legacy/1" (the legacy
+finish and renderer) only by explicit choice. run.json's summary records the
+format, registry, grid, report schema, fingerprint and publication status.
 
 Providers
 ---------
@@ -63,7 +67,9 @@ Modes
 -----
 dry_run() (the default of the CLI) never touches the network: the real
 SDK and loop run over an in-process transport that emulates the OpenRouter
-endpoint. preflight(online=True) makes only free metadata GET requests
+endpoint, with a deterministic investigator that chooses each call from the
+results it is sent and finishes with structured findings/2 claims
+(_EmulatedOpenRouter). preflight(online=True) makes only free metadata GET requests
 (model list, key status). run_live() makes paid requests and is only
 reachable with an explicit budget confirmation.
 
@@ -89,6 +95,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import investigation_agent as ia
+from . import investigation_context as ctx
 from . import investigation_contracts as ic
 
 __all__ = ["DEFAULT_PROVIDER", "PRICE_SNAPSHOT", "PROVIDERS", "GuardedClient", "LivePlan", "Prices",
@@ -155,6 +162,7 @@ class LivePlan:
     max_result_chars: int = 10_000           # tool result shown to the model (Stage 6 rendering)
     coverage: str = "complete"               # "partial" only by explicit choice (disclosed in every result)
     cache_dir: str | None = None             # verified validation cache (default data/raw/calms21_validation)
+    findings_format: str = ctx.V2_FORMAT     # structured finish (M3); "legacy/1" only by explicit choice
 
     def __post_init__(self):
         if self.provider not in PROVIDERS:
@@ -163,6 +171,8 @@ class LivePlan:
             raise ValueError("target_usd must be in (0, 5]")
         if self.coverage not in ("complete", "partial"):
             raise ValueError("coverage must be 'complete' or 'partial'")
+        if self.findings_format not in ia.FINDINGS_FORMATS:
+            raise ValueError(f"findings_format must be one of {list(ia.FINDINGS_FORMATS)}")
 
     @property
     def model_id(self):
@@ -249,13 +259,16 @@ def snapshot_prices(model):
 
 # ---- budget ----
 
-def _base_tokens():
-    return math.ceil((len(ia.SYSTEM_PROMPT) + len(json.dumps(ia.TOOL_SPECS))) / CHARS_PER_TOKEN) + 200
+def _base_tokens(findings_format=ctx.V2_FORMAT):
+    """System prompt and tool schemas of the format the run uses (sent with every request)."""
+    prompt, specs = ((ia.SYSTEM_PROMPT_V2, ia.TOOL_SPECS_V2) if findings_format == ctx.V2_FORMAT
+                     else (ia.SYSTEM_PROMPT, ia.TOOL_SPECS))
+    return math.ceil((len(prompt) + len(json.dumps(specs))) / CHARS_PER_TOKEN) + 200
 
 
 def plan_budget(plan, prices):
     """The Stage 6 Budget for a plan, and the estimate behind it."""
-    base = _base_tokens()
+    base = _base_tokens(plan.findings_format)
     growth = math.ceil(plan.max_result_chars / CHARS_PER_TOKEN) + plan.per_request_max_tokens  # per turn, worst
     worst_request_in = base + (plan.max_model_turns - 1) * growth
     reserve = worst_request_in * prices.input_usd_mtok / 1e6          # one request that overruns the cap
@@ -664,16 +677,38 @@ def _tools_and_policy(plan):
 
 
 def _render(report, policy):
+    """Stage 7: findings/2 reports through the deterministic v2 renderer (M2),
+    legacy reports through the unchanged legacy renderer."""
     from . import investigation_report as ir
+    from . import investigation_report_v2 as v2
     try:
-        doc, md = ir.render(report, policy=policy)
+        if isinstance(report, ia.InvestigationReportV2):
+            doc, md = v2.render_v2(report, policy=policy)
+        else:
+            doc, md = ir.render(report, policy=policy)
         return {"doc": doc, "markdown": md, "error": None}
     except ir.ReportIntegrityError as exc:
         return {"doc": None, "markdown": None, "error": exc.problems}
 
 
+def _coverage(report, doc):
+    if doc is None:
+        return None
+    return doc["recorded"]["coverage"] if isinstance(report, ia.InvestigationReportV2) else doc["coverage"]
+
+
+def _format(report, doc):
+    if not isinstance(report, ia.InvestigationReportV2):
+        return {"findings_format": ctx.LEGACY_FORMAT}
+    return {"findings_format": report.findings_format, "registry_version": report.registry_version,
+            "grid_version": report.grid_version, "fingerprint": report.fingerprint,
+            "report_schema": doc["schema"] if doc else None,
+            "publication": doc["status"]["publication"] if doc else None}
+
+
 def _summary(report, rendered, ledger, estimate):
-    return {"coverage": rendered["doc"]["coverage"] if rendered["doc"] else None, "finding": report.finding, "stopping_reason": report.stopping_reason, "finished": report.finished,
+    return {"coverage": _coverage(report, rendered["doc"]), "format": _format(report, rendered["doc"]),
+            "finding": report.finding, "stopping_reason": report.stopping_reason, "finished": report.finished,
             "usage": copy.deepcopy(report.usage), "n_evidence": len(report.evidence),
             "tools_used": [t["tool"] for t in report.trace if t["kind"] in ("tool_call", "finish")],
             "report_verified": rendered["error"] is None, "report_problems": rendered["error"],
@@ -685,11 +720,24 @@ def _summary(report, rendered, ledger, estimate):
 
 class _EmulatedOpenRouter:
     """In-process stand-in for POST /api/v1/messages (no network). It records
-    what the SDK sends and answers like the endpoint: one query_events call,
-    then a finish citing the result."""
+    what the SDK sends (never header values) and answers like the endpoint,
+    with a deterministic investigator that chooses each call from the tool
+    results it has been sent, and finishes with structured findings/2 claims.
 
-    def __init__(self):
-        self.requests = []
+    Adaptive: it queries attack episodes; with none it finishes
+    insufficient_evidence (no_comparison). Otherwise it measures dist_rate
+    with a wide baseline clearance (150 frames) and compares; an "ok"
+    comparison ends in effect_described (descriptive_effect, coverage, the
+    mover definition, descriptive-only method); an insufficient one is
+    re-measured once with a narrower clearance (30 frames) and compared
+    again, and the run ends with whatever that evidence supports
+    (effect_described, or insufficient_evidence with sufficiency_not_met).
+    `legacy=True` keeps the legacy (pre-M3) finish for legacy-mode plans."""
+
+    CLEARANCES = (150, 30)
+
+    def __init__(self, legacy=False):
+        self.requests, self.legacy = [], legacy
 
     def __call__(self, request):
         import httpx2
@@ -698,23 +746,74 @@ class _EmulatedOpenRouter:
         self.requests.append({"method": request.method, "url": str(request.url),     # never header values
                               "has_authorization": "authorization" in names, "has_x_api_key": "x-api-key" in names,
                               "has_anthropic_beta": "anthropic-beta" in names, "body_keys": sorted(body)})
-        results = [b for m in body["messages"] if isinstance(m["content"], list) for b in m["content"]
-                   if b.get("type") == "tool_result"]
-        if not results:
-            content = [{"type": "text", "text": "Dry run: find the attack episodes."},
-                       {"type": "tool_use", "id": "toolu_dry_1", "name": "query_events",
-                        "input": {"source": "validation_annotation", "behavior": "attack"}}]
-        else:
-            eid = json.loads(results[-1]["content"])["evidence_id"]
-            content = [{"type": "tool_use", "id": f"toolu_dry_{len(self.requests)}", "name": ia.FINISH,
-                        "input": {"finding": "inconclusive", "observations": [
-                            {"evidence_id": eid, "field": "measurements.n_episodes_total"}],
-                            "next_steps": ["Run the investigation with a live model."]}}]
+        results = []
+        for m in body["messages"]:
+            for b in m["content"] if isinstance(m["content"], list) else []:
+                if b.get("type") == "tool_result" and not b.get("is_error"):
+                    r = json.loads(b["content"])
+                    if "evidence_id" in r:
+                        results.append(r)
+        text, name, args = self.decide(results)
+        content = [{"type": "text", "text": text},
+                   {"type": "tool_use", "id": f"toolu_dry_{len(self.requests)}", "name": name, "input": args}]
         return httpx2.Response(200, json={
             "id": f"msg_dry_{len(self.requests)}", "type": "message", "role": "assistant", "model": body["model"],
             "content": content, "stop_reason": "tool_use", "stop_sequence": None,
             "usage": {"input_tokens": 3000, "output_tokens": 300, "cache_read_input_tokens": 0,
                       "cache_creation_input_tokens": 0, "cost": 0.0}})
+
+    def decide(self, results):
+        def of(tool):
+            return [r for r in results if r.get("tool") == tool]
+        queries, feats, comps = of("query_events"), of("get_window_features"), of("compare_windows")
+        if not queries:
+            return "Dry run: find the attack episodes.", "query_events", {"source": "validation_annotation",
+                                                                         "behavior": "attack"}
+        q = queries[-1]
+        if self.legacy:
+            return "Dry run (legacy finish).", ia.FINISH, {
+                "finding": "inconclusive", "observations": [{"evidence_id": q["evidence_id"],
+                                                              "field": "measurements.n_episodes_total"}],
+                "next_steps": ["Run the investigation with a live model."]}
+        if q["status"] != "ok" or not q["measurements"]["n_episodes_total"]:
+            return "No attack episodes: nothing to compare.", ia.FINISH, {
+                "finding": "insufficient_evidence", "primary_evidence_id": None,
+                "observations": [{"evidence_id": q["evidence_id"], "field": "status"}],
+                "claims": [{"type": "no_comparison", "evidence_ids": [], "params": {}}], "next_investigations": []}
+        if len(feats) == len(comps) and len(feats) < len(self.CLEARANCES) and \
+                (not comps or comps[-1]["status"] == "insufficient_evidence"):
+            clearance = self.CLEARANCES[len(feats)]
+            why = ("Measure dist_rate before each attack and in distant baselines." if not feats else
+                   "The comparison was insufficient: re-measure with baselines closer to the events.")
+            return why, "get_window_features", {
+                "episodes_from": {"evidence_id": q["evidence_id"]},
+                "pre_event": {"length_frames": 30, "gap_frames": 0},
+                "baseline": {"length_frames": 30, "clearance_frames": clearance, "max_windows_per_session": 500},
+                "features": ["dist_rate"]}
+        f = feats[-1]
+        if len(comps) < len(feats):
+            return "Compare pre-event windows with baselines.", "compare_windows", {
+                "feature": "dist_rate", "windows_from": {"evidence_id": f["evidence_id"]}}
+        c = comps[-1]
+        pid = c["evidence_id"]
+        if c["status"] == "ok":
+            return "A descriptive comparison is available.", ia.FINISH, {
+                "finding": "effect_described", "primary_evidence_id": pid,
+                "observations": [{"evidence_id": pid, "field": "measurements.effect.value"},
+                                 {"evidence_id": pid, "field": "measurements.n_sessions_paired"}],
+                "claims": [{"type": "descriptive_effect", "evidence_ids": [pid], "params": {}},
+                           {"type": "coverage", "evidence_ids": [], "params": {"aspect": "primary_comparison"}},
+                           {"type": "measurement_context", "evidence_ids": [f["evidence_id"]],
+                            "params": {"aspect": "mover_unidentified"}},
+                           {"type": "methodological_limitation", "evidence_ids": [pid],
+                            "params": {"kind": "descriptive_only"}}],
+                "next_investigations": []}
+        status_claim = {"insufficient_evidence": "sufficiency_not_met", "no_data": "comparison_no_data",
+                        "error": "comparison_unavailable"}[c["status"]]
+        return "The evidence does not meet the sufficiency criteria.", ia.FINISH, {
+            "finding": "insufficient_evidence", "primary_evidence_id": pid,
+            "observations": [{"evidence_id": pid, "field": "status"}],
+            "claims": [{"type": status_claim, "evidence_ids": [pid], "params": {}}], "next_investigations": []}
 
 
 def dry_run(plan=None):
@@ -724,13 +823,13 @@ def dry_run(plan=None):
     plan = plan or LivePlan()
     require_clean_environment()
     provider = PROVIDERS[plan.provider]
-    emulator = _EmulatedOpenRouter()
+    emulator = _EmulatedOpenRouter(legacy=plan.findings_format == ctx.LEGACY_FORMAT)
     prices = snapshot_prices(plan.model_id) or Prices(1.0, 1.0, "dry-run placeholder")
     budget, estimate = plan_budget(plan, prices)
     model, ledger = build_model(plan, env={provider.key_env: "dry-run-placeholder-not-a-key"},
                                 http_client=httpx2.Client(transport=httpx2.MockTransport(emulator)))
     tools, policy = _tools_and_policy(plan)
-    report = ia.investigate(plan.question, tools, policy, model, budget=budget)
+    report = ia.investigate(plan.question, tools, policy, model, budget=budget, findings_format=plan.findings_format)
     rendered = _render(report, policy)
     out = _summary(report, rendered, ledger, estimate)
     out["emulated_requests"] = emulator.requests
@@ -758,7 +857,7 @@ def run_live(plan, *, confirm_budget_usd, env=None, out_dir=None, http_get=None,
                                 compat={"output_config": pre["compatibility"]["keep_output_config"],
                                         "cache_control": pre["compatibility"]["keep_cache_control"]})
     tools, policy = _tools_and_policy(plan)
-    report = ia.investigate(plan.question, tools, policy, model, budget=budget)
+    report = ia.investigate(plan.question, tools, policy, model, budget=budget, findings_format=plan.findings_format)
     rendered = _render(report, policy)
     summary = _summary(report, rendered, ledger, estimate)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

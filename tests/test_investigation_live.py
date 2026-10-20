@@ -68,8 +68,8 @@ class Metadata:
 class Endpoint:
     """Stand-in for POST /api/v1/messages: query_events, then a finish."""
 
-    def __init__(self, cost=0.01, status=200, error_type=None):
-        self.cost, self.status, self.error_type, self.seen = cost, status, error_type, []
+    def __init__(self, cost=0.01, status=200, error_type=None, legacy=False):
+        self.cost, self.status, self.error_type, self.seen, self.legacy = cost, status, error_type, [], legacy
 
     def __call__(self, request):
         body = json.loads(request.content)
@@ -84,9 +84,12 @@ class Endpoint:
                         "input": {"source": "validation_annotation", "behavior": "attack"}}]
         else:
             eid = json.loads(results[-1]["content"])["evidence_id"]
-            content = [{"type": "tool_use", "id": f"toolu_{len(self.seen)}", "name": ia.FINISH,
-                        "input": {"finding": "inconclusive", "observations": [
-                            {"evidence_id": eid, "field": "measurements.n_episodes_total"}]}}]
+            obs = [{"evidence_id": eid, "field": "measurements.n_episodes_total"}]
+            args = ({"finding": "inconclusive", "observations": obs} if self.legacy else   # legacy/1 vs findings/2
+                    {"finding": "insufficient_evidence", "primary_evidence_id": None, "observations": obs,
+                     "claims": [{"type": "no_comparison", "evidence_ids": [], "params": {}}],
+                     "next_investigations": []})
+            content = [{"type": "tool_use", "id": f"toolu_{len(self.seen)}", "name": ia.FINISH, "input": args}]
         return httpx2.Response(200, json={
             "id": "msg", "type": "message", "role": "assistant", "model": body["model"], "content": content,
             "stop_reason": "tool_use", "stop_sequence": None,
@@ -273,9 +276,11 @@ def test_expensive_model_does_not_fit_the_initial_budget():
 
 @needs_data
 def test_dry_run_is_offline_and_end_to_end():
-    out = live.dry_run()
-    assert out["finished"] and out["report_verified"] and out["tools_used"] == ["query_events", ia.FINISH]
-    assert len(out["emulated_requests"]) == 2
+    out = live.dry_run()                          # findings/2: adaptive emulator, structured finish (M3)
+    assert out["finished"] and out["report_verified"], out["report_problems"]
+    assert out["format"]["findings_format"] == "findings/2" and out["format"]["publication"] == "publishable"
+    assert out["tools_used"][0] == "query_events" and out["tools_used"][-1] == ia.FINISH
+    assert len(out["emulated_requests"]) == len(out["tools_used"])
     for r in out["emulated_requests"]:
         assert r["url"] == "https://openrouter.ai/api/v1/messages" and "headers" not in r
         assert r["has_authorization"] and not r["has_x_api_key"] and not r["has_anthropic_beta"]
@@ -294,11 +299,13 @@ def test_live_run_needs_explicit_confirmation(tmp_path):
 
 
 @needs_data
-def test_emulated_live_run_writes_reports_without_the_key(tmp_path):
-    endpoint = Endpoint(cost=0.004)
-    out = live.run_live(LivePlan(), confirm_budget_usd=0.50, env={"OPENROUTER_API_KEY": FAKE_OR}, out_dir=tmp_path,
-                        http_get=Metadata(), http_client=client_for(endpoint))
+@pytest.mark.parametrize("fmt", ["findings/2", "legacy/1"])
+def test_emulated_live_run_writes_reports_without_the_key(tmp_path, fmt):
+    endpoint = Endpoint(cost=0.004, legacy=fmt == "legacy/1")
+    out = live.run_live(LivePlan(findings_format=fmt), confirm_budget_usd=0.50, env={"OPENROUTER_API_KEY": FAKE_OR},
+                        out_dir=tmp_path, http_get=Metadata(), http_client=client_for(endpoint))
     assert out["finished"] and out["report_verified"] and out["provider_reported_cost_usd"] == pytest.approx(0.008)
+    assert out["format"]["findings_format"] == fmt
     files = sorted(p.name for p in Path(out["output_dir"]).iterdir())
     assert files == ["investigation_report.json", "report.json", "report.md", "run.json"]
     for p in Path(out["output_dir"]).iterdir():
@@ -806,7 +813,9 @@ def test_valid_cost_tool_response_still_works():
         eid = next(json.loads(b["content"])["evidence_id"] for m in body["messages"] if isinstance(m["content"], list)
                    for b in m["content"] if b.get("type") == "tool_result")
         return [{"type": "tool_use", "id": "toolu_f3", "name": ia.FINISH, "input": {
-            "finding": "inconclusive", "observations": [{"evidence_id": eid, "field": "status"}]}}]
+            "finding": "insufficient_evidence", "primary_evidence_id": None,
+            "observations": [{"evidence_id": eid, "field": "status"}],
+            "claims": [{"type": "no_comparison", "evidence_ids": [], "params": {}}], "next_investigations": []}}]
     handler, attempts = scripted_endpoint((QUERY, "0.02"), (finish_citing, "0.03"))
     report, ledger, tools = run_loop(handler)
     assert report.finished and report.stopping_reason == "finished" and tools.executed == ["query_events"]

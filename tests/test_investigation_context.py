@@ -21,7 +21,8 @@ import live_tracker.investigation_agent as ia
 import live_tracker.investigation_context as ctx
 import live_tracker.investigation_contracts as ic
 import live_tracker.investigation_report as ir
-from live_tracker.investigation_agent import Budget, investigate
+from live_tracker.investigation_agent import Budget
+from test_investigation_agent import investigate  # legacy/1, explicitly (M3)
 from test_investigation_agent import LOOSE, QUESTION, Investigator, Scripted, _until_compare, no_network  # noqa: F401
 from test_investigation_windows import MANIFEST, build
 

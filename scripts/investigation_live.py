@@ -32,6 +32,8 @@ def main(argv=None):
     ap.add_argument("--timeout-s", type=float, default=600.0)
     ap.add_argument("--coverage", choices=("complete", "partial"), default="complete",
                     help="complete (default): every eligible validation session must be cached")
+    ap.add_argument("--findings-format", choices=("findings/2", "legacy/1"), default="findings/2",
+                    help="findings/2 (default): structured finish; legacy/1 only when asked for")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--preflight", action="store_true", help="offline readiness checks only")
     mode.add_argument("--preflight-online", action="store_true", help="readiness checks with free metadata GETs")
@@ -41,7 +43,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     plan = live.LivePlan(provider=a.provider, model=a.model, question=a.question, target_usd=a.target_usd,
                          max_model_turns=a.max_model_turns, max_tool_calls=a.max_tool_calls, timeout_s=a.timeout_s,
-                         coverage=a.coverage)
+                         coverage=a.coverage, findings_format=a.findings_format)
     try:
         if a.preflight or a.preflight_online:
             out = live.preflight(plan, online=a.preflight_online)

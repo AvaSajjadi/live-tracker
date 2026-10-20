@@ -13,7 +13,8 @@ import pytest
 import live_tracker.investigation_claims as cl
 import live_tracker.investigation_context as ctx
 import live_tracker.investigation_contracts as ic
-from live_tracker.investigation_agent import Budget, investigate
+from live_tracker.investigation_agent import Budget
+from test_investigation_agent import investigate  # legacy/1, explicitly (M3)
 from live_tracker.investigation_contracts import PROVISIONAL_SUFFICIENCY
 from live_tracker.investigation_events import CalMS21InvestigationTools
 from test_investigation_agent import (LOOSE, QUESTION, Investigator, Scripted, _until_compare, call,  # noqa: F401
@@ -36,8 +37,26 @@ def check(report, policy, finding, primary=None, claims=(), observations=(), nex
     proposal = {"finding": finding, "primary_evidence_id": primary, "observations": list(observations),
                 "claims": list(claims), "next_investigations": list(next_)}
     trace = report.trace[:-1] if mode == "prefix" else report.trace       # the freeze-point prefix: no stop event
-    return cl.validate_findings(proposal, evidence=report.evidence, trace=trace, policy=policy, mode=mode,
-                                stopping_reason=report.stopping_reason, finished=report.finished)
+    return provider_schema_holds(proposal, cl.validate_findings(
+        proposal, evidence=report.evidence, trace=trace, policy=policy, mode=mode,
+        stopping_reason=report.stopping_reason, finished=report.finished))
+
+
+def provider_schema_holds(proposal, result):
+    """Every proposal M1 accepts also satisfies the provider-facing finish
+    schema (Stage 6 FINISH_SPEC_V2), by the local validator and by jsonschema."""
+    if result.accepted:
+        import live_tracker.investigation_agent as ia
+        spec = ia.FINISH_SPEC_V2["input_schema"]
+        problems = []
+        ia._schema_problems(proposal, spec, "arguments", problems)
+        assert problems == [], problems
+        try:                                           # optional reference check: never skips the M1 test
+            import jsonschema
+        except ImportError:
+            return result
+        jsonschema.validate(proposal, spec)
+    return result
 
 
 def refused(result, text):
@@ -544,10 +563,10 @@ from live_tracker.investigation_contracts import SufficiencyCriteria  # noqa: E4
 def complete(report, policy, finding, primary=None, claims=(), finished=None, reason=None, trace=None):
     proposal = {"finding": finding, "primary_evidence_id": primary, "observations": [], "claims": list(claims),
                 "next_investigations": []}
-    return cl.validate_findings(proposal, evidence=report.evidence, trace=report.trace if trace is None else trace,
-                                policy=policy, mode="complete",
-                                stopping_reason=report.stopping_reason if reason is None else reason,
-                                finished=report.finished if finished is None else finished)
+    return provider_schema_holds(proposal, cl.validate_findings(
+        proposal, evidence=report.evidence, trace=report.trace if trace is None else trace, policy=policy,
+        mode="complete", stopping_reason=report.stopping_reason if reason is None else reason,
+        finished=report.finished if finished is None else finished))
 
 
 # ---- 1. complete mode: only an actually finished run ----

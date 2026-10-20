@@ -20,7 +20,8 @@ import live_tracker.investigation_agent as ia
 import live_tracker.investigation_contracts as ic
 import live_tracker.investigation_report as ir
 import test_investigation_contracts as tc
-from live_tracker.investigation_agent import Budget, investigate
+from live_tracker.investigation_agent import Budget
+from test_investigation_agent import investigate  # legacy/1, explicitly (M3)
 from live_tracker.investigation_contracts import PROVISIONAL_SUFFICIENCY, make_result
 from live_tracker.investigation_events import CalMS21InvestigationTools
 from live_tracker.investigation_report import ReportIntegrityError, build_report, render, render_markdown

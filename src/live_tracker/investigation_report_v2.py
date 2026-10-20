@@ -592,6 +592,8 @@ def _load(payload):
     if isinstance(payload, ia.InvestigationReport):
         raise ReportIntegrityError(["a legacy InvestigationReport is never rendered as findings/2 (legacy reports "
                                     "are not upgraded)"])
+    if isinstance(payload, ia.InvestigationReportV2):
+        payload = payload.to_json()
     fmt = ir.report_format(payload)            # mixed / unknown / malformed markers refuse here
     if fmt != ctx.V2_FORMAT:
         raise ReportIntegrityError(["a legacy/1 payload is never rendered as findings/2 (legacy reports are not "
@@ -612,7 +614,10 @@ def _load(payload):
     if not types_ok:
         raise ReportIntegrityError(["findings/2 payload: malformed field types"])
     for t in data["trace"]:
-        args = t.get("arguments") if isinstance(t, dict) and t.get("kind") == "finish" else None
+        # only the accepted finish carries the report's findings; a refused attempt is recorded history (never
+        # rendered: the trace's arguments are not part of the document)
+        args = t.get("arguments") if isinstance(t, dict) and t.get("kind") == "finish" and \
+            t.get("outcome") == "accepted" else None
         if isinstance(args, dict) and any(args.get(k) for k in LEGACY_FINISH_PROSE):
             raise ReportIntegrityError(["mixed payload: the trace's finish carries legacy model-authored prose"])
     return data
@@ -636,6 +641,10 @@ def _revalidate(data, policy):
                                       mode="complete", stopping_reason=data["stopping_reason"], finished=True)
     if not result.accepted:
         raise ReportIntegrityError([f"claims: {p}" for p in result.problems] or ["claims: refused"])
+    if data["finished"]:                             # M3: the accepted finish carried exactly these findings
+        bound = cl.finish_arguments_problems(proposal, data["trace"])
+        if bound:
+            raise ReportIntegrityError([f"execution: {p}" for p in bound])
     if result.fingerprint != data["fingerprint"]:    # compared only for content that passed re-validation
         raise ReportIntegrityError([f"fingerprint mismatch: recorded {data['fingerprint'][:80]!r}, recomputed "
                                     f"{result.fingerprint!r}"])
@@ -958,6 +967,8 @@ def render_payload(payload, *, policy=None):
 
 
 def _dispatch(payload, policy):
+    if isinstance(payload, ia.InvestigationReportV2):
+        payload = payload.to_json()
     if isinstance(payload, ia.InvestigationReport):
         if ir.report_format(payload) != ctx.LEGACY_FORMAT:
             raise ReportIntegrityError(["an InvestigationReport object is legacy/1 only"])

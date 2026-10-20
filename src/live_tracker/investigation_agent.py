@@ -31,8 +31,35 @@ ID lists can be passed by reference (episodes_from / windows_from: the
 IDs of an earlier validated result of this run), so the model never has to
 copy or invent IDs.
 
-No fabricated evidence
-----------------------
+Findings formats (checkpoint M3)
+--------------------------------
+investigate(..., findings_format="findings/2") (the default) sends the
+structured finish (FINISH_SPEC_V2, SYSTEM_PROMPT_V2, generated from the
+claims/2.0 registry): finding, primary_evidence_id, observations
+({evidence_id, field} references), claims ({type, evidence_ids, params} with
+closed params) and next_investigations; no prose, direction, number or
+statement is accepted. At the accepted finish (the freeze point) the
+proposal is validated by investigation_claims.validate_findings against the
+run's evidence and the execution prefix (the trace up to and including this
+finish); a refused finish goes back to the model with the problems and
+never enters the report. The accepted proposal, the exact evidence and the
+prefix are frozen with the content fingerprint (fp/1). At the stop, the
+completed trace must be that prefix plus one stop event, the evidence
+byte-identical, the finish's arguments the frozen proposal and the
+complete-mode validation must reproduce the fingerprint
+(finished_v2_problems); otherwise FinishVerificationError is raised and no
+report is returned. A run that stops without an accepted finish is
+represented only by investigation_claims.incomplete_findings. The result is
+an InvestigationReportV2, rendered by investigation_report_v2 (Stage 7 M2).
+The legacy lexical prose checks below are never used for findings/2.
+
+findings_format="legacy/1" must be asked for explicitly: the legacy finish
+(below) and the legacy InvestigationReport, unchanged. The formats never mix:
+each run sends only its own finish schema, and legacy finish fields are
+argument errors in findings/2 (as v2 fields are in legacy/1).
+
+No fabricated evidence (legacy/1)
+---------------------------------
 The run ends normally only through finish_investigation, whose answer is
 verified before it is accepted (otherwise the model gets the problems back
 and may revise):
@@ -107,12 +134,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from . import investigation_claims as cl
 from . import investigation_context as ctx
 from . import investigation_contracts as ic
 
-__all__ = ["AGENT_LIMITATIONS", "Budget", "ClaudeInvestigationModel", "FINDINGS", "InvestigationModel",
-           "InvestigationReport", "ModelReply", "ModelUnavailable", "RequestLimits", "STOP_REASONS",
-           "SYSTEM_PROMPT", "TOOL_SPECS", "investigate"]
+__all__ = ["AGENT_LIMITATIONS", "Budget", "ClaudeInvestigationModel", "FINDINGS", "FINDINGS_FORMATS",
+           "FinishVerificationError", "InvestigationModel", "InvestigationReport", "InvestigationReportV2",
+           "ModelReply", "ModelUnavailable", "RequestLimits", "STOP_REASONS", "SYSTEM_PROMPT", "SYSTEM_PROMPT_V2",
+           "TOOL_SPECS", "TOOL_SPECS_V2", "investigate"]
 
 FINISH = "finish_investigation"
 SCIENCE_TOOLS = ic.TOOLS
@@ -305,6 +334,115 @@ AGENT_LIMITATIONS = [
     "by the model; no confidence interval or significance test is available.",
 ]
 
+# ---- findings/2 (checkpoint M3): the structured finish, generated from the claims/2.0 registry ----
+
+FINDINGS_FORMATS = (ctx.V2_FORMAT, ctx.LEGACY_FORMAT)
+LEGACY_FINISH_FIELDS = ("direction", "interpretations", "additional_limitations", "next_steps", "statement", "text")
+
+
+def _claim_catalogue():
+    lines = []
+    for t, params in cl.PARAMS.items():
+        shown = ", ".join(f"{k}: {' | '.join(v)}" for k, v in params.items())
+        lines.append(f"  {t}" + (f" (params {shown})" if shown else " (params {})"))
+    return "\n".join(lines)
+
+
+def _action_catalogue():
+    return "\n".join(f"  {a}" + (f" (params {', '.join(f'{k}: evidence_id' for k in keys)})" if keys else " (params {})")
+                     for a, keys in cl.NEXT_ACTIONS.items())
+
+
+_EVIDENCE_ID = r"^ev:[a-z_]+:[0-9a-f]{24}$"
+# the tool whose evidence each next-investigation parameter names (closed, like cl.NEXT_ACTIONS)
+NEXT_PARAM_TOOLS = {"windows_from": "get_window_features", "quality": "check_tracking_quality"}
+assert {k for keys in cl.NEXT_ACTIONS.values() for k in keys} <= set(NEXT_PARAM_TOOLS)
+
+
+def _claim_schema(claim_type):
+    """The closed schema of one claim type: its exact params (enum values from
+    cl.PARAMS; {} when it has none), no other key anywhere."""
+    params = cl.PARAMS[claim_type]
+    return {"type": "object", "additionalProperties": False, "required": ["type", "evidence_ids", "params"],
+            "properties": {
+                "type": {"const": claim_type},
+                "evidence_ids": {"type": "array", "items": {"type": "string", "pattern": _EVIDENCE_ID}},
+                "params": {"type": "object", "additionalProperties": False, "required": sorted(params),
+                           "properties": {k: {"type": "string", "enum": list(v)} for k, v in params.items()}}}}
+
+
+def _next_schema(action):
+    """The closed schema of one next-investigation action: exactly its
+    evidence-id params (cl.NEXT_ACTIONS), each the id of the named tool."""
+    keys = cl.NEXT_ACTIONS[action]
+    return {"type": "object", "additionalProperties": False, "required": ["action", "params", "because"],
+            "properties": {
+                "action": {"const": action},
+                "params": {"type": "object", "additionalProperties": False, "required": list(keys),
+                           "properties": {k: {"type": "string",
+                                              "pattern": rf"^ev:{NEXT_PARAM_TOOLS[k]}:[0-9a-f]{{24}}$"}
+                                          for k in keys}},
+                "because": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 0}}}}
+
+
+FINISH_SPEC_V2 = {
+    "name": FINISH,
+    "description": ("Submit the final answer as structured findings (findings/2, registry "
+                    f"{cl.REGISTRY_VERSION}). Every claim is checked against the validated results of this run "
+                    "and the answer is refused (with the problems) if any claim is not supported. There is no "
+                    "free text: the report's sentences are generated from your claims by the investigation."),
+    "input_schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["finding", "primary_evidence_id", "observations", "claims", "next_investigations"],
+        "properties": {
+            "finding": {"enum": list(FINDINGS)},
+            "primary_evidence_id": {"type": ["string", "null"],
+                                    "description": "the compare_windows result the finding rests on, or null"},
+            "observations": {"type": "array", "description": (
+                "references to result fields; the investigation reads each value itself"),
+                "items": {"type": "object", "additionalProperties": False, "required": ["evidence_id", "field"],
+                          "properties": {"evidence_id": {"type": "string"}, "field": {"type": "string"}}}},
+            "claims": {"type": "array", "description": "registry claims:\n" + _claim_catalogue(),
+                       "items": {"anyOf": [_claim_schema(t) for t in cl.CLAIM_TYPES]}},
+            "next_investigations": {"type": "array", "description": "registry actions:\n" + _action_catalogue(),
+                                    "items": {"anyOf": [_next_schema(a) for a in cl.NEXT_ACTIONS]}}}},
+}
+TOOL_SPECS_V2 = [t for t in TOOL_SPECS if t["name"] != FINISH] + [FINISH_SPEC_V2]
+assert tuple(t["name"] for t in TOOL_SPECS_V2) == TOOL_NAMES
+
+SYSTEM_PROMPT_V2 = f"""\
+You are the investigator in Live Tracker's experimental Investigation mode. You answer a research \
+question about mouse social behavior in the CalMS21 Task 1 validation sessions, using only the tools \
+provided. Each tool result is a validated measurement with an evidence_id, its methodology and its \
+limitations.
+
+Work iteratively: decide what to measure, call a tool, read the result, and choose the next step from \
+what it actually shows. When evidence is insufficient, excluded or affected by tracking quality, \
+investigate why (other sessions, window choices, tracking quality, sensitivity checks) before you \
+conclude. Stop when further calls would not change the answer.
+
+Rules:
+- Facts come only from tool results. Never invent measurements, IDs or evidence_ids.
+- finish_investigation takes structured findings only (findings/2, registry {cl.REGISTRY_VERSION}): \
+finding, primary_evidence_id, observations, claims, next_investigations. There is no free text, no \
+direction and no number in it: the investigation reads values from the cited results and writes the \
+report itself. Each claim cites evidence_ids of this run and is checked against them; an unsupported \
+claim refuses the answer and you may revise it.
+- finding "effect_described" needs an "ok" compare_windows result as primary_evidence_id and exactly one \
+descriptive_effect claim citing it. "insufficient_evidence" needs the primary comparison's status claim \
+(sufficiency_not_met, comparison_no_data or comparison_unavailable), or no_comparison with a null \
+primary when no comparison was run. "inconclusive" needs at least one evidence-grounded limitation claim.
+- The comparison is descriptive: there is no confidence interval, p-value or significance test, and an \
+association before attack is not a cause.
+- Your budget of turns and tool calls is limited; repeated identical requests are refused."""
+
+
+class FinishVerificationError(RuntimeError):
+    """A findings/2 finish accepted at its freeze point does not verify against
+    the completed run (evidence, trace or fingerprint changed). No report is
+    returned: an inconsistent finish never becomes an accepted final report."""
+
+
 _BANNED = [(re.compile(p, re.I), w) for p, w in (
     (r"\bsignifican", "significance"), (r"\bp\s*-?\s*values?\b", "p-value"), (r"\bp\s*[<=>]\s*0?\.\d", "p-value"),
     (r"\bconfidence\s+intervals?\b", "confidence interval"), (r"\bstatistical(ly)?\b", "statistical claim"),
@@ -400,13 +538,47 @@ class InvestigationReport:
         return ctx.content_consistency(self.evidence)
 
 
+@dataclass(frozen=True)
+class InvestigationReportV2:
+    """A findings/2 Stage 6 report: structured findings frozen at the accepted
+    finish (or `incomplete`), the evidence, the trace and the content
+    fingerprint (fp/1). It holds no prose; Stage 7 renders it
+    (investigation_report_v2)."""
+    findings_format: str
+    registry_version: str
+    grid_version: str
+    question: str
+    finished: bool
+    stopping_reason: str
+    finding: str                    # FINDINGS, or "incomplete"
+    primary_evidence_id: str | None
+    observations: list              # [{evidence_id, field}]: references, read by Stage 7
+    claims: list                    # [{type, evidence_ids, params}]
+    next_investigations: list       # [{action, params, because}]
+    evidence: list
+    trace: list
+    usage: dict
+    fingerprint: str
+
+    def to_json(self):
+        return copy.deepcopy(self.__dict__)
+
+    def verify_evidence(self):
+        return ctx.content_consistency(self.evidence)
+
+
 class _Run:
-    def __init__(self, question, tools, policy, model, budget, sufficiency, clock):
+    def __init__(self, question, tools, policy, model, budget, sufficiency, clock, findings_format=ctx.V2_FORMAT):
         if not isinstance(tools, ic.InvestigationTools):
             raise TypeError("tools must implement investigation_contracts.InvestigationTools")
         ic._require_policy(policy)
         if not isinstance(question, str) or not question.strip() or len(question) > ic.MAX_TEXT:
             raise ValueError("question must be non-empty text of at most MAX_TEXT characters")
+        if findings_format not in FINDINGS_FORMATS:
+            raise ValueError(f"findings_format must be one of {FINDINGS_FORMATS}")
+        self.v2 = findings_format == ctx.V2_FORMAT
+        self.specs, self.prompt = (TOOL_SPECS_V2, SYSTEM_PROMPT_V2) if self.v2 else (TOOL_SPECS, SYSTEM_PROMPT)
+        self.frozen = None              # findings/2: the content validated at the accepted finish
         self.question, self.tools, self.policy, self.model = question, tools, policy, model
         self.budget, self.clock = budget, clock
         self.sufficiency = sufficiency.to_json()
@@ -473,9 +645,11 @@ class _Run:
             return "max_tool_calls"      # its one last turn was used without an accepted answer
         return None
 
+    def entry(self, kind, **kw):
+        return {"step": len(self.trace), "kind": kind, "elapsed_s": round(self.clock() - self.start, 3), **kw}
+
     def log(self, kind, **kw):
-        self.trace.append({"step": len(self.trace), "kind": kind, "elapsed_s": round(self.clock() - self.start, 3),
-                           **kw})
+        self.trace.append(self.entry(kind, **kw))
 
     # -- one run --
 
@@ -486,7 +660,7 @@ class _Run:
                 return self.stop(reason)
             try:
                 limits = {"limits": self.request_limits()} if self.pass_limits else {}
-                reply = self.model.respond(SYSTEM_PROMPT, copy.deepcopy(TOOL_SPECS), copy.deepcopy(self.messages),
+                reply = self.model.respond(self.prompt, copy.deepcopy(self.specs), copy.deepcopy(self.messages),
                                            **limits)
             except ModelUnavailable as exc:
                 self.log("model_error", reason=exc.reason)
@@ -587,14 +761,23 @@ class _Run:
                 raise _Rejected("unknown_tool", f"unknown tool {str(name)[:80]!r}; available: {', '.join(TOOL_NAMES)}")
             if not isinstance(args, dict):
                 raise _Rejected("invalid_arguments", "tool input must be a JSON object")
-            spec = next(t for t in TOOL_SPECS if t["name"] == name)["input_schema"]
+            spec = next(t for t in self.specs if t["name"] == name)["input_schema"]
             problems = []
+            if name == FINISH and self.v2 and set(args) & set(LEGACY_FINISH_FIELDS):
+                problems.append(f"arguments: {sorted(set(args) & set(LEGACY_FINISH_FIELDS))} are not part of the "
+                                "findings/2 finish (no prose, direction or statements; use claims)")
             _schema_problems(args, spec, "arguments", problems)
             if problems:
                 hint = "" if name == FINISH or not problems[0].startswith("arguments: unknown") else (
                     " (sufficiency, uncertainty, policy and contract fields are set by the investigation)")
                 raise _Rejected("final_answer_rejected" if name == FINISH else "invalid_arguments",
                                 "; ".join(problems)[:3000] + hint)
+            if name == FINISH and self.v2:
+                finish = self.entry("finish", **entry, outcome="accepted")
+                final = _guarded(self.verify_final_v2, args, finish)
+                self.trace.append(finish)
+                self.rejected_in_a_row = 0
+                return json.dumps({"accepted": True, "fingerprint": final["fingerprint"]}), False, final
             if name == FINISH:
                 final = _guarded(self.verify_final, args)
                 self.log("finish", **entry, outcome="accepted")
@@ -767,6 +950,29 @@ class _Run:
         return {"finding": finding, "direction": direction, "primary_evidence_id": primary,
                 "observations": observations, "interpretations": interpretations, **texts}
 
+    def evidence_list(self):
+        return [{"evidence_id": e, "tool": v["tool"], "status": v["result"]["status"],
+                 "request": copy.deepcopy(v["request"]), "result": copy.deepcopy(v["result"])}
+                for e, v in self.evidence.items()]
+
+    def verify_final_v2(self, a, finish):
+        """The findings/2 freeze point: the structured proposal is validated by
+        the M1 registry against the evidence and the execution prefix (the
+        trace up to and including this finish), then the exact evidence,
+        prefix and proposal are frozen with the content fingerprint."""
+        proposal = copy.deepcopy(a)               # schema-checked: exactly the five structured keys
+        evidence = self.evidence_list()
+        prefix = copy.deepcopy(self.trace) + [copy.deepcopy(finish)]
+        result = cl.validate_findings(proposal, evidence=evidence, trace=prefix, policy=self.policy, mode="prefix")
+        if not result.accepted:
+            raise _Rejected("final_answer_rejected", "; ".join(result.problems)[:3000])
+        bound = cl.finish_arguments_problems(proposal, prefix)
+        if bound:
+            raise _Rejected("final_answer_rejected", "; ".join(bound))
+        self.frozen = {"proposal": proposal, "evidence": ctx.canonical_bytes(evidence),
+                       "prefix": ctx.canonical_bytes(prefix), "fingerprint": result.fingerprint}
+        return {"proposal": copy.deepcopy(proposal), "fingerprint": result.fingerprint}
+
     def observe(self, eid, path):
         """(observation, None) for a field of a stored result, or (None, problem).
         The value and statement come from the stored result, never the model."""
@@ -791,6 +997,8 @@ class _Run:
     # -- the report --
 
     def stop(self, reason, final=None):
+        if self.v2:
+            return self.stop_v2(reason, final)
         self.log("stop", stopping_reason=reason)
         limitations, seen = [], set()
         for eid, ev in self.evidence.items():
@@ -838,10 +1046,71 @@ class _Run:
             trace=copy.deepcopy(self.trace))
 
 
+    def stop_v2(self, reason, final):
+        """The findings/2 report. A finished run is re-verified on its completed
+        trace (finished_v2_problems); an incomplete run is represented only by
+        incomplete_findings (nothing the model proposed enters it)."""
+        self.log("stop", stopping_reason=reason)
+        evidence, trace = self.evidence_list(), copy.deepcopy(self.trace)
+        usage = {"model_turns": self.turns, "tool_calls": self.tool_calls, "repeated_calls": self.repeats,
+                 "input_tokens": self.tokens_in, "output_tokens": self.tokens_out, "cost_usd": self.cost(),
+                 "turns_without_usage": self.unreported, "elapsed_s": round(self.clock() - self.start, 3)}
+        if final is not None:
+            problems = finished_v2_problems(self.frozen, evidence, trace, self.policy, reason)
+            if problems:
+                raise FinishVerificationError("; ".join(problems))
+            proposal, fingerprint = copy.deepcopy(self.frozen["proposal"]), self.frozen["fingerprint"]
+        else:
+            result = cl.incomplete_findings(evidence=evidence, trace=trace, policy=self.policy, stopping_reason=reason)
+            if not result.accepted:
+                raise FinishVerificationError("; ".join(result.problems))
+            proposal = {"finding": "incomplete", "primary_evidence_id": None, "observations": [], "claims": [],
+                        "next_investigations": []}
+            fingerprint = result.fingerprint
+        return InvestigationReportV2(
+            findings_format=ctx.V2_FORMAT, registry_version=cl.REGISTRY_VERSION, grid_version=cl.GRID_VERSION,
+            question=self.question, finished=final is not None, stopping_reason=reason, **proposal,
+            evidence=evidence, trace=trace, usage=usage, fingerprint=fingerprint)
+
+
+def finished_v2_problems(frozen, evidence, trace, policy, stopping_reason):
+    """Why a finished findings/2 run does not verify on its completed trace
+    (empty: it does). The completed trace must be the frozen execution prefix
+    plus exactly one stop event with reason "finished"; the evidence must be
+    byte-identical to the frozen evidence (no tool after the finish); the
+    accepted finish's arguments must be the frozen proposal; and the complete-
+    mode registry validation must accept the proposal with the frozen
+    fingerprint."""
+    if frozen is None:
+        return ["no finish was frozen"]
+    problems = []
+    if stopping_reason != "finished":
+        problems.append(f"a finished run stops with reason 'finished', not {stopping_reason!r}")
+    try:
+        if ctx.canonical_bytes(evidence) != frozen["evidence"]:
+            problems.append("the evidence changed after the finish was frozen")
+        if not (isinstance(trace, list) and trace and ctx.canonical_bytes(trace[:-1]) == frozen["prefix"]
+                and ctx.prefix_extends(trace[:-1], trace)):
+            problems.append("the completed trace is not the frozen execution prefix plus one stop event")
+    except (TypeError, ValueError) as exc:
+        problems.append(f"the run could not be serialized ({type(exc).__name__})")
+    problems += cl.finish_arguments_problems(frozen["proposal"], trace)
+    result = cl.validate_findings(frozen["proposal"], evidence=evidence, trace=trace, policy=policy, mode="complete",
+                                  stopping_reason=stopping_reason, finished=True)
+    if not result.accepted:
+        problems += [f"completed-trace validation: {p}" for p in result.problems]
+    elif result.fingerprint != frozen["fingerprint"]:
+        problems.append("the completed run's fingerprint differs from the frozen fingerprint")
+    return problems
+
+
 def investigate(question, tools, policy, model, *, budget=None, sufficiency=ic.PROVISIONAL_SUFFICIENCY,
-                clock=time.monotonic):
-    """Run one bounded investigation; always returns an InvestigationReport."""
-    return _Run(question, tools, policy, model, budget or Budget(), sufficiency, clock).run()
+                clock=time.monotonic, findings_format=ctx.V2_FORMAT):
+    """Run one bounded investigation. findings_format "findings/2" (the
+    default) returns an InvestigationReportV2 (structured finish, no prose);
+    "legacy/1" must be asked for explicitly and returns the legacy
+    InvestigationReport (lexically checked prose). The two never mix."""
+    return _Run(question, tools, policy, model, budget or Budget(), sufficiency, clock, findings_format).run()
 
 
 # ---- helpers ----
@@ -966,11 +1235,18 @@ def _json_type(x):
 
 
 def _schema_problems(x, schema, path, out):
-    """Check model arguments against the subset of JSON Schema TOOL_SPECS use
-    (type, enum, properties / required / additionalProperties, items,
-    minimum / maximum). A field given as null is a type error unless the
+    """Check model arguments against the subset of JSON Schema TOOL_SPECS and
+    TOOL_SPECS_V2 use (type, enum, const, pattern, anyOf over const-
+    discriminated alternatives, properties / required / additionalProperties,
+    items / minItems, minimum / maximum). A field given as null is a type error unless the
     schema allows null; a field left out is checked only by `required`."""
     if len(out) >= 10:
+        return
+    if "anyOf" in schema:
+        _any_of_problems(x, schema["anyOf"], path, out)
+        return
+    if "const" in schema and not (x == schema["const"] and _json_type(x) == _json_type(schema["const"])):
+        out.append(f"{path} must be {schema['const']!r}")
         return
     if "enum" in schema and not any(x == e and _json_type(x) == _json_type(e) for e in schema["enum"]):
         out.append(f"{path} must be one of {schema['enum']}")
@@ -994,13 +1270,42 @@ def _schema_problems(x, schema, path, out):
             if k in schema["properties"]:
                 _schema_problems(v, schema["properties"][k], f"{path}.{k}", out)
     elif isinstance(x, list) and "items" in schema:
+        if "minItems" in schema and len(x) < schema["minItems"]:
+            out.append(f"{path} needs at least {schema['minItems']} items")
         for i, v in enumerate(x):
             _schema_problems(v, schema["items"], f"{path}[{i}]", out)
+    elif isinstance(x, str) and "pattern" in schema and not re.search(schema["pattern"], x):
+        out.append(f"{path} {x[:60]!r} is not of the required form")
     elif isinstance(x, (int, float)) and not isinstance(x, bool):
         if "minimum" in schema and x < schema["minimum"]:
             out.append(f"{path} must be >= {schema['minimum']}")
         if "maximum" in schema and x > schema["maximum"]:
             out.append(f"{path} must be <= {schema['maximum']}")
+
+
+def _any_of_problems(x, branches, path, out):
+    """anyOf over closed alternatives discriminated by const properties (the
+    claim `type`, the next-investigation `action`): the value is checked
+    against the one alternative its discriminator selects, so the problems
+    reported are that alternative's; with no selected alternative it is
+    refused with the allowed discriminator values."""
+    keys = {k for b in branches for k, v in b.get("properties", {}).items() if "const" in v}
+    chosen = [b for b in branches if isinstance(x, dict) and keys and
+              all(k in x and x[k] == v["const"] for k, v in b["properties"].items() if "const" in v)]
+    if len(chosen) == 1:
+        _schema_problems(x, chosen[0], path, out)
+        return
+    if any(not _probe(x, b, path) for b in branches):       # an alternative accepts it
+        return
+    allowed = sorted({v["const"] for b in branches for v in b.get("properties", {}).values() if "const" in v})
+    out.append(f"{path} must match one of the alternatives" + (f" ({'/'.join(sorted(keys))} one of {allowed})"
+                                                                 if allowed else ""))
+
+
+def _probe(x, schema, path):
+    found = []
+    _schema_problems(x, schema, path, found)
+    return found
 
 
 def _prose_problems(text, finding):

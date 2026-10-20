@@ -474,6 +474,34 @@ widens a claim's semantics.
   inputs; four (`real_full`, the live run, each with and without a policy)
   need git-ignored local inputs and are skipped without them.
 
+### 10.2 M3 structured finish (implemented)
+
+- `investigate(..., findings_format="findings/2")` is the default; legacy
+  needs `findings_format="legacy/1"` (and `LivePlan.findings_format` /
+  `--findings-format` in Stage 8). Each run sends only its own finish schema
+  and system prompt; the findings/2 ones (`FINISH_SPEC_V2`,
+  `SYSTEM_PROMPT_V2`) are generated from the registry (claim types, closed
+  params, actions). The four scientific tools, their schemas, budgets,
+  refusals and repeated-call rules are unchanged; nothing fixes a sequence.
+- Freeze point: the accepted finish's proposal is validated by
+  `validate_findings(mode="prefix")` on the trace up to and including that
+  finish; the proposal, evidence bytes and prefix bytes are frozen with the
+  fingerprint. A refused finish is returned to the model and never enters F.
+- Stop: `finished_v2_problems` requires the completed trace to be the frozen
+  prefix plus one stop event, the evidence byte-identical, the accepted
+  finish's arguments equal to the proposal, and the complete-mode validation
+  to reproduce the fingerprint; otherwise `FinishVerificationError` and no
+  report (an inconsistent finish never becomes an accepted report).
+  Incomplete runs: `incomplete_findings` only.
+- Stage 7 (M2 renderer) now also binds a finished payload's accepted finish
+  arguments to its proposal (`finish_arguments_problems`), and checks only
+  the accepted finish for legacy prose (a refused attempt is recorded history
+  and never rendered).
+- Stage 8: the offline emulator chooses from the evidence (no episodes ->
+  `no_comparison`; `ok` comparison -> `effect_described`; insufficient ->
+  one re-measurement with a narrower baseline clearance, then whatever that
+  evidence supports) and finishes with findings/2 claims.
+
 ## 11. Decisions on the open questions
 
 Codex's answers, adopted:

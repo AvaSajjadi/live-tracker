@@ -239,16 +239,17 @@ def _check(report, policy):
                 o.get("statement") != statement:
             problems.append(f"observations[{i}]: value or statement differs from the evidence")
 
-    # model prose
+    # model prose (legacy/1 only: the lexical checks are imported here, never by findings/2)
+    from . import investigation_lexical as lx
     for i, it in enumerate(report.interpretations):
         ids = it.get("evidence_ids") if isinstance(it, dict) else None
         if not ids or any(e not in snaps for e in ids) or it.get("kind") != "interpretation" or \
                 not isinstance(it.get("statement"), str):
             problems.append(f"interpretations[{i}]: cites evidence that is not in the report")
             continue
-        problems += [f"interpretations[{i}]: {x}" for x in ia._prose_problems(it["statement"], finding)]
+        problems += [f"interpretations[{i}]: {x}" for x in lx.prose_problems(it["statement"], finding)]
     for i, s in enumerate(report.next_steps):
-        problems += [f"next_steps[{i}]: {x}" for x in ia._prose_problems(s, finding)]
+        problems += [f"next_steps[{i}]: {x}" for x in lx.prose_problems(s, finding)]
 
     # limitations: the tools' exactly, model ones checked
     tool_lims = {l["text"] for l in report.limitations if l.get("source") == "tool"}
@@ -262,7 +263,7 @@ def _check(report, policy):
         elif l["source"] == "model":
             if finding == "incomplete":
                 problems.append("an incomplete investigation carries model-authored limitations")
-            problems += [f"model limitation: {x}" for x in ia._prose_problems(l["text"], finding)]
+            problems += [f"model limitation: {x}" for x in lx.prose_problems(l["text"], finding)]
         elif l["source"] == "agent" and l["text"] not in agent_texts:
             problems.append("an investigation limitation is not one of the loop's fixed texts")
 

@@ -502,6 +502,29 @@ widens a claim's semantics.
   one re-measurement with a narrower baseline clearance, then whatever that
   evidence supports) and finishes with findings/2 claims.
 
+### 10.3 M4 lexical isolation (implemented)
+
+- The legacy lexical prose checks moved unchanged (verified byte-for-byte)
+  from `investigation_agent` to `investigation_lexical`. Only the legacy
+  paths import it, lazily: `_Run.verify_final` (legacy/1 finish) and
+  `investigation_report._check` (legacy Stage 7). Legacy names
+  (`investigation_agent._prose_problems`, the patterns, `MAX_STATEMENT`)
+  still resolve through a lazy module attribute, so legacy callers and the
+  lexical tests, including the 11 strict xfails of `test_known_lexical_limits`
+  (documented known limits; unchanged), run as before. The lexical tests stay
+  in `tests/test_investigation_agent.py` rather than moving to a separate
+  legacy-warning module (section 10): the user asked for them unchanged.
+- Gate: no module on the findings/2 path imports `investigation_lexical` at
+  module level (AST test), and a full offline findings/2 pipeline in a fresh
+  interpreter (Stage 6 runs, Stage 7 rendering, saved-document
+  re-verification, the Stage 8 emulated dry run) ends with the module not
+  loaded. Template vocabulary is tested on the rendered findings.
+- End-to-end tests (`tests/test_findings_v2_end_to_end.py`): descriptive,
+  insufficient, no data, contaminated with sensitivity, budget-stopped and
+  recovered-after-refusals runs through question -> model-chosen tools ->
+  structured finish -> report -> saved JSON -> Markdown from the saved JSON,
+  with tampering, authorization and prefix / fingerprint checks per run.
+
 ## 11. Decisions on the open questions
 
 Codex's answers, adopted:

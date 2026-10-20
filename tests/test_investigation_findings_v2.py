@@ -195,7 +195,9 @@ def test_a_refused_finish_never_becomes_a_report(env):
 def test_the_legacy_lexical_validator_is_never_used_for_findings_v2(env, monkeypatch):
     def forbidden(*a, **k):
         raise AssertionError("the legacy prose validator ran in findings/2 mode")
-    monkeypatch.setattr(ia, "_prose_problems", forbidden)
+    import live_tracker.investigation_lexical as lx         # M4: the lexical checks live here (legacy/1 only)
+    monkeypatch.setattr(lx, "_prose_problems", forbidden)
+    monkeypatch.setattr(lx, "prose_problems", forbidden)
     monkeypatch.setattr(ia._Run, "verify_final", forbidden)
     report = run(env, InvestigatorV2(), sufficiency=LOOSE)
     assert report.finished and report.finding == "effect_described"

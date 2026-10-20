@@ -451,3 +451,59 @@ def test_seek_pause_and_speed_change_re_anchor(monkeypatch):
     clock["t"] += 0.5
     at.run()
     assert frame(at) == 150
+
+
+# ======================================================================
+# D4-1: the session summary in the end-of-session view only
+# ======================================================================
+
+def summary_shown(at):
+    return any(s.value == "Session summary" for s in at.subheader)
+
+
+def test_the_summary_appears_only_at_the_end_of_the_session():
+    at = start(workflow())
+    for f in (0, 280, 719):                                                     # every frame, even the last row
+        at = seek(at, f)
+        assert not summary_shown(at) and not at.get("download_button")
+    click(at, "End of session")
+    assert summary_shown(at) and len(at.get("download_button")) == 2
+    md = text(at.markdown)
+    assert "# Session summary: SYNTHETIC_demo_01" in md and "**SYNTHETIC test data" in md
+    assert "Alerts: 1, asks: 1, logs: 0" in md and "0 confirmed, 0 rejected, 1 unanswered" in md
+    assert "Total: 1 (missing_coordinates: 1)" in md                           # the separate warning source
+    replay = next(iter(at.session_state["replay_cache"].values()))
+    assert replay.run_id in md
+    at.slider[0].set_value(300).run()                                          # back into the replay: hidden
+    assert frame(at) == 300 and not summary_shown(at) and not at.get("download_button")
+
+
+def test_the_summary_includes_answers_and_only_this_run():
+    at = seek(start(workflow()), 280)
+    click(at, "Confirm")
+    click(at, "End of session")
+    md = text(at.markdown)
+    assert "1 confirmed, 0 rejected, 0 unanswered" in md and "confirmed (frame 280)" in md
+    at.selectbox(key="replay_session").set_value(TRACK).run()
+    click(at, "End of session")
+    md = text(at.markdown)
+    assert "# Session summary: SYNTHETIC_tracking_02" in md and "confirmed (frame 280)" not in md
+    assert "SYNTHETIC_demo_01" not in md
+
+
+def test_without_a_warning_source_the_summary_says_so(monkeypatch):
+    _replace_demo(monkeypatch, lambda e: dataclasses.replace(e, pose=e.pose.drop(columns=["score"])))
+    at = start(workflow())
+    click(at, "End of session")
+    assert "No tracking-warning source supplied." in text(at.markdown)
+
+
+def test_a_summary_that_cannot_be_written_is_an_error(monkeypatch):
+    def refuse(*a, **k):
+        raise sm.SummaryError("journal contradiction (test)")
+    import live_tracker.summary as sm
+    monkeypatch.setattr(sm, "summary_from_replay", refuse)
+    at = start(workflow())
+    click(at, "End of session")
+    assert "The session summary cannot be written: journal contradiction (test)" in text(at.error)
+    assert not at.get("download_button")

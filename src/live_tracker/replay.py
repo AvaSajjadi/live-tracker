@@ -344,6 +344,11 @@ class ReplaySession:
         return len(self.frames)
 
     @property
+    def fps(self):
+        """The frame rate the monitor ran at."""
+        return self._monitor.fps
+
+    @property
     def source_note(self):
         return SYNTHETIC_NOTE if self.synthetic else "recorded classifier scores"
 

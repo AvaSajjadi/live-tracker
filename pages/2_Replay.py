@@ -16,6 +16,9 @@ State, all in st.session_state:
 
 Answers are written through ReplaySession.answer (journal + answer position);
 a second, different answer is refused there.
+
+The session summary (summary.py, from this run's journal only) is shown in
+the end-of-session view only, never while an earlier frame is shown.
 """
 
 import pandas as pd
@@ -23,6 +26,7 @@ import streamlit as st
 
 from live_tracker import replay as rp
 from live_tracker import replay_view as rv
+from live_tracker import summary as sm
 from live_tracker.rule_workflow import is_valid_workflow
 
 WORKFLOW_KEY = "rule_workflow"
@@ -32,6 +36,8 @@ SPEED_KEY = "replay_speed"
 ACTIVE_RUN = "replay_active_run"
 SPEEDS = {"1×": 1.0, "2×": 2.0, "5×": 5.0}
 TICK_S = 0.25                                      # playback refresh while playing
+WARNING_SOURCE = ("replay.tracking_warnings over Ava's features.tracking_warning_events, on this session's "
+                  "SYNTHETIC pose (provisional flags and thresholds)")
 
 
 def keys(run_id):
@@ -275,6 +281,30 @@ def render(state):
         st.dataframe(pd.DataFrame(wrows), hide_index=True, width="stretch")
     else:
         st.caption("No tracking warning so far.")
+
+    if state.at_end:
+        render_summary()
+
+
+def render_summary():
+    st.subheader("Session summary")
+    st.caption("Written only from this run's event log (and the separately labelled tracking-warning source). "
+               "No new detection, statistics or LLM wording.")
+    source = WARNING_SOURCE if pose_problem is None else None
+    try:
+        summary = sm.summary_from_replay(replay, warning_source=source)
+    except sm.SummaryError as exc:
+        st.error(f"The session summary cannot be written: {exc}")
+        return
+    md = summary.to_markdown()
+    with st.container(border=True):
+        st.markdown(md)
+    slug = entry.session.replace("/", "_")
+    d1, d2 = st.columns(2)
+    d1.download_button("Download summary (Markdown)", md, file_name=f"{slug}_summary.md", mime="text/markdown",
+                       key=f"replay_summary_md_{run}")
+    d2.download_button("Download summary (JSON)", summary.to_json(), file_name=f"{slug}_summary.json",
+                       mime="application/json", key=f"replay_summary_json_{run}")
 
 
 view()

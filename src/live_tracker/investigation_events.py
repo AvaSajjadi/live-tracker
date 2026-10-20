@@ -13,8 +13,8 @@ name:
                             annotations, read only through the Stage 1 verified
                             cache (investigation_data.verified_sessions) and
                             Igor's calms21.load_calms21. No other file is opened.
-    classifier_prediction   not available yet -> explicit "source_unavailable"
-    monitor_event           not available yet -> explicit "source_unavailable"
+    classifier_prediction   investigation_sources.ClassifierEventSource (Stage 9 S9-3), when plugged in
+    monitor_event           investigation_sources.MonitorEventSource (Stage 9 S9-3), when plugged in
 
 A request for a source that is not plugged in is refused with an error result;
 annotations are never substituted for predictions or monitor events. Adding a
@@ -477,6 +477,8 @@ class CalMS21InvestigationTools(ic.UnavailableTools):
             q = source.query(copy.deepcopy(request))
         except SourceUnavailable as exc:
             return self._error(request, "source_unavailable", str(exc))
+        except ic.ForbiddenEvidence as exc:          # e.g. a held-out test session named for a prediction source
+            return self._error(request, "forbidden_split", str(exc))
         episodes = copy.deepcopy(list(q.episodes))
         self._check_all(request, q, episodes)          # every episode, before anything is counted
         episodes.sort(key=lambda e: (e["session"], e["start_frame"]))

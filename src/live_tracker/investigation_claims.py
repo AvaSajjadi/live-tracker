@@ -28,11 +28,14 @@ Distinctions kept explicit in the result:
   under partial coverage carries its scope; `unknown` coverage refuses it);
 - an inconclusive finding vs a supported descriptive effect.
 
-Not in this registry version: measurement_context(mover_unidentified) (the
-design grounds it in `dist_rate_meaning`, which only get_window_features
-records, while the design's status table admits only compare_windows
-evidence for measurement_context: withheld until the design is corrected),
-alternative-feature / window-size sensitivity, grid-based actions.
+measurement_context(mover_unidentified) is the design's aspect-specific
+exception (revision 3, section 6, checkpoint M2): it cites exactly one
+get_window_features result, never a comparison, and is grounded only in the
+exact registry markers of that result (MOVER_MARKERS); it is a definitional
+fact, never a limitation that justifies `inconclusive`.
+
+Not in this registry version: alternative-feature / window-size
+sensitivity, grid-based actions.
 """
 
 from __future__ import annotations
@@ -72,7 +75,11 @@ TRACKING_KINDS = {   # claim kind -> Stage 7 tracking-item sources (context.trac
 }
 OPERATIONAL_KINDS = ("quality_never_called", "quality_check_refused", "quality_check_failed", "model_selected_plan")
 CONFOUNDERS = ("investigation_label",)
-MEASUREMENT_CONTEXT = ("session_timing", "pixel_units")
+MEASUREMENT_CONTEXT = ("session_timing", "pixel_units", "mover_unidentified")
+# mover_unidentified: the exact Stage 4 dist_rate_meaning value and the pair-level qualification its limitations
+# carry; a missing or altered marker refuses the claim
+MOVER_MARKERS = {"dist_rate_meaning": "negative = body-centre distance decreasing",
+                 "qualification": "It does not say which mouse moved or that either mouse approached the other"}
 # exact registry markers: a tool_disclosure claim cites a snapshot whose own limitations contain one
 DISCLOSURE_MARKERS = {
     "approach_unlabelled": {"query_events": "CalMS21 Task 1 has no 'approach' label; approach can only be measured",
@@ -346,16 +353,16 @@ def _p_descriptive(c, k, finding):
     if cov is None or cov["group"] is None or cov["status"] not in ("complete", "partial"):
         raise ClaimProblem("primary coverage is not established "
                            f"({cov['reason'] if cov else 'no primary coverage'})")
-    group = k.coverage["groups"][cov["group"]] if cov["group"] is not None else None
+    group = k.coverage["groups"][cov["group"]]
     out = {"feature": m["feature"], "value": eff["value"], "unit": ctx._unit(snap), "direction": _sign(eff["value"]),
            "n_sessions_paired": m["n_sessions_paired"], "contributing_sessions": list(cov["contributing"]),
            "coverage_status": cov["status"], "cross_snapshot_status": k.cross["status"],
            "scope": "the contributing sessions only, not the whole authorized split"}
     if cov["status"] == "partial":
-        out["coverage"] = {"searched": len(group["searched"]) if group else None,
-                           "eligible": group["eligible_count"] if group else None,
-                           "not_searched": list(group["not_searched"] or []) if group else None,
-                           "behavior": group["behavior"] if group else None, "reason": cov["reason"]}
+        out["coverage"] = {"searched": len(group["searched"]), "eligible": group["eligible_count"],
+                           "not_searched": None if group["not_searched"] is None else list(group["not_searched"]),
+                           "behavior": group["behavior"], "reason": cov["reason"],
+                           "definition": {x: group[x] for x in ("source", "merge_gap_frames", "min_duration_frames")}}
     return out
 
 
@@ -366,7 +373,9 @@ def _p_coverage(c, k, finding):
             raise ClaimProblem("cites no evidence (the primary comparison's coverage comes from the context)")
         if k.coverage["primary"] is None:
             raise ClaimProblem("there is no primary comparison")
-        return {"aspect": aspect, **k.coverage["primary"]}
+        prim = k.coverage["primary"]
+        return {"aspect": aspect, **prim,
+                "query_group": None if prim["group"] is None else dict(k.coverage["groups"][prim["group"]])}
     if aspect in ("query_group", "truncated_query"):
         snap = _one(k.snaps, c, "query_events", ("ok", "no_data"))
         group = next((g for g in k.coverage["groups"] if snap["evidence_id"] in g["query_evidence_ids"]), None)
@@ -461,7 +470,9 @@ def _p_confounder(c, k, finding):
     if pre["investigation"] * sum(base.values()) <= base["investigation"] * sum(pre.values()):
         raise ClaimProblem("contradicted: the measured investigation share before the event is not higher than "
                            "in the baseline")
+    behaviors = {ic.parse_window_id(w)["behavior"] for w in snap["request"]["pre_window_ids"]}
     return {"confounder": "investigation_label", "category": "potential_confounder", "predicate": "measured",
+            "behavior": behaviors.pop() if len(behaviors) == 1 else None,
             "label_frames_pre": pre, "label_frames_baseline": base,
             "rule": "investigation share pre-event > baseline (provisional, owner approval pending)"}
 
@@ -549,8 +560,19 @@ def _p_sensitivity(c, k, finding):
 
 
 def _p_measurement_context(c, k, finding):
-    snap = _one(k.snaps, c, "compare_windows", ("ok", "insufficient_evidence", "no_data"))
     aspect = c["params"]["aspect"]
+    if aspect == "mover_unidentified":                       # the design's aspect-specific exception
+        snap = _one(k.snaps, c, "get_window_features", ("ok", "no_data"))
+        if "dist_rate" not in snap["request"]["features"]:
+            raise ClaimProblem("not assessed: dist_rate is not among the result's requested features")
+        if ctx._method(snap["result"], "dist_rate_meaning") != MOVER_MARKERS["dist_rate_meaning"]:
+            raise ClaimProblem("not assessed: the result does not record the registry dist_rate_meaning marker")
+        if not any(MOVER_MARKERS["qualification"] in t for t in snap["result"]["limitations"]):
+            raise ClaimProblem("not assessed: the result's limitations do not carry the pair-level qualification")
+        # definitional: grounded in the markers' presence only; the tool's prose is never passed on
+        return {"aspect": aspect, "category": "definitional_fact", "feature": "dist_rate",
+                "markers": dict(MOVER_MARKERS)}
+    snap = _one(k.snaps, c, "compare_windows", ("ok", "insufficient_evidence", "no_data"))
     if aspect == "session_timing":
         pre, base = (_start_spread(ctx._method(snap["result"], f"window_start_s_{g}")) for g in ("pre", "baseline"))
         if pre is None or base is None:

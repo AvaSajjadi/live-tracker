@@ -528,9 +528,10 @@ def report_format(report):
 
 def load_report(data):
     """An InvestigationReport from a JSON payload, after strict format
-    detection (legacy/1 only until checkpoint M2)."""
+    detection (legacy/1 only; findings/2 is rendered by investigation_report_v2)."""
     if report_format(data) != ctx.LEGACY_FORMAT:
-        raise ReportIntegrityError(["findings/2 reports are not rendered before checkpoint M2"])
+        raise ReportIntegrityError(["findings/2 reports are not rendered by the legacy renderer (use "
+                                    "investigation_report_v2.render_payload)"])
     return ia.InvestigationReport(**copy.deepcopy(dict(data)))
 
 
@@ -538,7 +539,8 @@ def build_report(report, *, policy=None):
     """The verified report as a JSON-ready dict; raises ReportIntegrityError.
     With a policy, every snapshot is re-accepted by validate_result."""
     if isinstance(report, ia.InvestigationReport) and report_format(report) != ctx.LEGACY_FORMAT:
-        raise ReportIntegrityError(["findings/2 reports are not rendered before checkpoint M2"])
+        raise ReportIntegrityError(["findings/2 reports are not rendered by the legacy renderer (use "
+                                    "investigation_report_v2.render_payload)"])
     context = _verify(report, policy)
     snaps = context.snapshot_dicts()
     cross = ctx.thaw(context.cross_snapshot)

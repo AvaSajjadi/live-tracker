@@ -134,7 +134,7 @@ def test_unknown_or_mixed_v2_payloads_are_refused(change, problem):
 
 def test_known_v2_payload_is_detected_but_not_rendered_before_m2():
     assert ctx.detect_format(V2_MINIMAL) == ctx.V2_FORMAT
-    with pytest.raises(ir.ReportIntegrityError, match="not rendered before checkpoint M2"):
+    with pytest.raises(ir.ReportIntegrityError, match="not rendered by the legacy renderer"):
         ir.load_report(V2_MINIMAL)
 
 

@@ -341,7 +341,7 @@ measured values of {eid}" and a claim of that condition is refused.
 | `potential_confounder` | `investigation_label` | compare `label_frames_pre` / `label_frames_baseline` parsed to four counts | measured when investigation share pre > baseline; contradicted when <=; else not_assessed |
 | `measurement_context` | `session_timing` | `window_start_s_pre` and `window_start_s_baseline` each parse as the producer's "min / median / max" seconds: exactly three finite, non-negative numbers, min <= median <= max; anything else (missing, reordered, negative, NaN, infinite, prose) is not_assessed | a measured fact grounded only in the parsed numbers (unit s, scope: the comparison's used windows), never the producer text; never a confounder (drift is not measured) |
 | `measurement_context` | `pixel_units` | the compare's own `units` contains `px` | a measured fact about scale; not a confounder |
-| `measurement_context` | `mover_unidentified` | aspect-specific exception: cites exactly one `get_window_features` result (status `ok` / `no_data`); `dist_rate` among its requested features; its methodology records `dist_rate_meaning` with exactly the marker "negative = body-centre distance decreasing"; its limitations carry the pair-level qualification that the measurement does not identify which mouse approached; a missing or altered marker or qualification refuses the claim | definitional fact rendered from fixed registry text (never the methodology prose); never justifies `inconclusive` on its own. Not implemented in `claims/2.0` M1 (fail-closed: the aspect is refused); required before M2 relies on it |
+| `measurement_context` | `mover_unidentified` | aspect-specific exception: cites exactly one `get_window_features` result (status `ok` / `no_data`); `dist_rate` among its requested features; its methodology records `dist_rate_meaning` with exactly the marker "negative = body-centre distance decreasing"; its limitations carry the pair-level qualification that the measurement does not identify which mouse approached; a missing or altered marker or qualification refuses the claim | definitional fact rendered from fixed registry text (never the methodology prose); never justifies `inconclusive` on its own. Implemented at M2 (`investigation_claims.MOVER_MARKERS`; category `definitional_fact`; rendered from fixed registry text) |
 | `tool_disclosure` | `approach_unlabelled` | query, features or compare limitation with the registry marker; dataset-scoped (query evidence allowed) | disclosure |
 | `tool_disclosure` | `motion_accuracy_unverified` | compare / quality limitation marker | disclosure |
 | `tracking_concern` | `smoothing_contamination`, `usable_fraction`, `tracking_exclusions`, `quality_verdict`, `quality_contamination_detected` | existing typed Stage 7 tracking items | measured; several items: with `evidence_id` those of that snapshot, else all, ordered primary chain, evidence order, source field, sorted window ids |
@@ -403,6 +403,76 @@ limitation. The v2 system prompt is generated from the registry.
 | Stage 6 tests | fake investigators and scripted finishes move to v2; budget / termination / refusal / usage tests unchanged; lexical tests and the 11 xfail leaks move to a legacy-warning module. |
 | Stage 7 tests | v2 fixtures; legacy fixtures and the live run assert `legacy_verified`; identity, coverage, tamper tests for both formats. |
 | Stage 8 | unchanged except the dry-run emulator's finish (M3); `run.json` records format, registry, grid, schema, fingerprint. |
+
+### 10.1 M2 rendering decisions (implemented; owner review pending)
+
+Recorded so a reviewer can check them; none adds a scientific conclusion or
+widens a claim's semantics.
+
+- **Saved documents are untrusted.** A findings/2 document (schema 0.2)
+  carries its `canonical` payload (evidence, trace, execution state,
+  structured proposal, recorded fingerprint). `render_markdown_v2` /
+  `verify_saved_v2` rebuild the whole document from that payload through the
+  M0 context and the M1 registry (order 3.3, under the policy given at render
+  time) and refuse any saved document that is not exactly the rebuild. No
+  grounding, number, direction, sentence, summary, publication status,
+  authorization label, fingerprint status, verification or policy statement
+  is read from the saved document. The fingerprint is a consistency check
+  over evidence and claims, not proof of origin; the trace, question and
+  usage are not in F (3.1), so they are bound only by L0 (evidence) and the
+  execution assessment, and are never rendered as findings.
+- **Publication status.** `publishable`: authorization `rechecked` under a
+  policy given at render time and a finished run with a validated finding.
+  `diagnostic`: no policy (Q4), with a banner. `record_only`: an incomplete
+  run under a policy; it never has a finding. A saved `publishable` document
+  rendered without the policy is refused, never downgraded silently.
+- **`definitional_fact`.** The category of
+  `measurement_context(mover_unidentified)`: a definition the tool records
+  (what `dist_rate` measures), rendered from fixed registry text; neither a
+  measurement of this data nor a limitation that justifies `inconclusive`.
+- **Legacy quarantine wrapper.** Legacy/1 reports render through the
+  unchanged legacy renderer (JSON and Markdown byte-identical to the pre-M0
+  baseline). `render_payload` returns them in a `RenderedReport` labelled
+  `legacy_verified`, whose `quarantine` metadata and `notice` mark the
+  interpretations, next steps and model limitations as "legacy model-authored
+  prose (unverified)". The quarantine lives outside the legacy bytes: a
+  consumer that exports only the inner legacy document or Markdown drops the
+  label (the legacy Markdown still heads that prose "Model interpretations
+  (not evidence; model-authored, unverified)" and "Suggested next steps
+  (model suggestions, not evidence; unverified)", but does not use the
+  quarantine wording). Exports should carry the wrapper's notice.
+- **Untrusted text is not rendered.** Tool notes, methodology notes,
+  limitation texts, `decided_by`, model reasoning, finish arguments and
+  observation values that are free text appear in the JSON (canonical
+  evidence / trace) but never in the Markdown; a textual observation is shown
+  as "(text value; see the evidence snapshot)". Identifiers must match a
+  closed grammar; context-generated texts (coverage reasons, eligibility
+  bases, tracking facts) must match closed patterns; anything else refuses
+  the report (`TemplateError`). The research question is operator text,
+  escaped and labelled "not evidence".
+- **Behaviour-specific confound wording.** `potential_confounder` says
+  "rather than time before {behavior}" using the compared windows' single
+  event behaviour (from the window ids), or "the event" when not single; the
+  section 7 example ("attack") is the attack case of this template.
+- **Partial-coverage reason.** The `descriptive_effect` coverage clause adds
+  "; reason: {reason}" inside its parenthesis when the context records one
+  (for example a truncated originating query), so a partial status is never
+  shown without its cause.
+- **Unit allowlist.** Units are rendered only from the known set
+  (`investigation_compare.UNITS`: px, px/s, s, correlation (unitless)); a
+  missing unit renders "(unit not recorded)". Any other unit text refuses the
+  report through a controlled `ReportIntegrityError`, even when the registry
+  accepted the claim (the registry checks evidence, the renderer the output
+  grammar).
+- **Controlled failures.** Every public entry point (`render_payload`,
+  `build_report_v2`, `render_v2`, `verify_saved_v2`, `render_markdown_v2`)
+  raises `ReportIntegrityError` for malformed input, never another exception.
+- **Legacy byte-identity cases.** `scripts/legacy_golden.py` and
+  `tests/test_legacy_golden.py` render 14 fixed cases against SHA-256 values
+  computed with the pre-M0 source (c62711d), pinned in
+  `tests/fixtures/legacy_golden/manifest.json`. Ten use tracked synthetic
+  inputs; four (`real_full`, the live run, each with and without a policy)
+  need git-ignored local inputs and are skipped without them.
 
 ## 11. Decisions on the open questions
 

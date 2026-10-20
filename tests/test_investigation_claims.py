@@ -716,7 +716,7 @@ def test_measurement_context_citations(effect_run):
                                                                limit]), "is a get_window_features result")
     refused(check(report, policy, "inconclusive", pid, claims=[C("measurement_context", pid,
                                                                  aspect="mover_unidentified"), limit]),
-            "params.aspect must be one of")                       # withheld: design contradiction (reported)
+            "is a compare_windows result, not get_window_features")   # M2: features evidence only
 
 
 @pytest.mark.parametrize("tool, disclosure, accepted", [

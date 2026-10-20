@@ -535,3 +535,57 @@ def test_real_session_without_attacks_is_listed_unpaired(real_env):
     r = rows(res)[REAL_NO_ATTACK]
     assert r["pre_windows"] == [] and r["difference"] is None and len(r["baseline_windows"]) == 3
     assert res["measurements"]["n_sessions_paired"] == 1
+
+
+# ---- full authorized coverage: Stage 5 on every eligible validation session (real data) ----
+
+def _full_comparison(real_env, clearance, feature="dist_rate", length=30):
+    tools, policy = real_env[0], real_env[1]
+    q = call_tool(tools, "query_events", {"contract_version": CONTRACT_VERSION, "source": "validation_annotation",
+                                          "behavior": "attack", "sessions": None, "max_episodes": 500,
+                                          "merge_gap_frames": None, "min_duration_frames": None}, policy)
+    f = call_tool(tools, "get_window_features",
+                  freq([e["episode_id"] for e in q["measurements"]["episodes"]], length=length,
+                       baseline=base(length=length, clearance=clearance, max_windows=500)), policy)
+    w = f["measurements"]["windows"]
+    req = creq([x["window_id"] for x in w if x["kind"] == "pre_event" and x["status"] == "included"],
+               [x["window_id"] for x in w if x["kind"] == "baseline" and x["status"] == "included"],
+               crit=PROVISIONAL_SUFFICIENCY, feature=feature)
+    return q, call_tool(tools, "compare_windows", req, policy)
+
+
+def test_real_full_query_searches_every_eligible_session(real_env):
+    q, _ = _full_comparison(real_env, clearance=150)
+    m = q["measurements"]
+    manifest = json.loads(REAL_MANIFEST.read_text())
+    assert m["sessions_searched"] == sorted(manifest["validation"]) and m["n_episodes_total"] == 56
+    assert {x["name"]: x["value"] for x in q["methodology"]}["session_coverage"] == "complete"
+
+
+def test_real_full_comparison_sufficiency_depends_on_baseline_clearance(real_env):
+    """With a 150-frame clearance the two short, attack-dense sessions have no
+    eligible baseline: 2 paired sessions, insufficient. With 30 frames all four
+    attack-bearing sessions pair and the provisional criteria are met; the
+    result is descriptive only (no interval, no test)."""
+    _, wide = _full_comparison(real_env, clearance=150)
+    m = wide["measurements"]
+    assert wide["status"] == "insufficient_evidence" and m["n_sessions_paired"] == 2
+    assert m["sufficiency"]["reasons_not_met"] == ["min_sessions"] and m["effect"]["value"] is None
+    unpaired = sorted(s["session"].split("/")[-1][:8] for s in m["per_session"] if s["difference"] is None)
+    assert unpaired == ["mouse028", "mouse045"]
+    _, near = _full_comparison(real_env, clearance=30)
+    m = near["measurements"]
+    assert near["status"] == "ok" and m["sufficiency"]["met"] and m["n_sessions_paired"] == 4
+    assert (m["n_windows_pre"], m["n_windows_baseline"]) == (30, 265)
+    assert m["effect"]["ci_low"] is None and m["effect"]["ci_high"] is None
+    diffs = [s["difference"] for s in m["per_session"]]
+    assert m["effect"]["value"] == pytest.approx(statistics.median(diffs))         # session-level aggregation
+    assert m["effect"]["value"] == pytest.approx(-7.8208981232627455)
+
+
+def test_real_windows_are_not_independent_sessions(real_env):
+    _, c = _full_comparison(real_env, clearance=30)
+    m = c["measurements"]
+    assert m["n_windows_pre"] == 30 and m["n_sessions_paired"] == 4 == len(m["per_session"])
+    assert sum(len(s["pre_windows"]) for s in m["per_session"]) == 30            # 30 windows, 4 units
+    assert any("not independent replicates" in l for l in c["limitations"])

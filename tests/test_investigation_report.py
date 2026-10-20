@@ -405,14 +405,14 @@ def test_real_validation_report(real_env):
     doc, md = render(report, policy=real_env[1])
     p, prov = doc["primary_result"], doc["provenance"]
     assert doc["status"]["finding"] == "insufficient_evidence" and p["effect_value"] is None
-    assert (p["independent_sessions"], p["n_windows_pre"], p["n_windows_baseline"]) == (1, 5, 128)
+    assert (p["independent_sessions"], p["n_windows_pre"], p["n_windows_baseline"]) == (2, 30, 164)
     assert p["per_session"][0]["pre_windows_used"] == 5 and p["unit"] == "px/s"
     assert prov["synthetic"] is False and prov["split"]["values"] == ["validation"]
     assert [s["class"] for s in prov["event_sources"]] == ["ground_truth_annotation"]
     assert {d["kind"] for d in prov["data"]} == {"calms21_validation_cache"}
     assert prov["classifier"]["model_ids"] is None and prov["investigator_model_ids"] == ["fake-investigator"]
     assert prov["tracking_quality"]["assessed"] and prov["tracking_quality"]["motion_accuracy_verified"] is False
-    assert doc["counts"]["behavior_bouts"][0]["n_bouts_total"] == 7
+    assert doc["counts"]["behavior_bouts"][0]["n_bouts_total"] == 56
     assert len(doc["limitations"]["confounders"]) >= 2
     assert "no aggregate effect is reported" in section(md, "Executive summary") and "SYNTHETIC" not in md
     assert all(s.startswith("task1/") for s in prov["session_ids"])
@@ -444,7 +444,7 @@ def forge(report, tool, mutate, k=0, check=True):
         if o["evidence_id"] == new:
             o["value"] = ir._resolve(e["result"], o["field"])
             o["statement"] = f"{tool} {new}: {o['field']} = {json.dumps(o['value'])}"
-    if d["direction"] is not None and m is not None:
+    if d["direction"] is not None and m is not None and tool == "compare_windows":
         d["direction"] = ir._sign(m["effect"]["value"])
     forged = ia.InvestigationReport(**d)
     for x in forged.evidence if check else ():         # every snapshot is individually valid
@@ -788,3 +788,538 @@ def test_contradiction_with_matching_units_is_still_refused(two_comparisons):
         render(forged)
     a, b = [x["evidence_id"] for x in forged.evidence if x["tool"] == "compare_windows"]
     assert any(f"{a} and {b} disagree on dist_rate" in p for p in e.value.problems), e.value.problems
+
+
+# ---- Stage 8 live-run audit: tracking quality is surfaced from the evidence ----
+
+LIVE_RUN = Path(__file__).resolve().parents[1] / "outputs" / "investigation_live" / "20261019T220059Z_openrouter"
+
+
+def tracking(doc):
+    return doc["limitations"]["tracking"]
+
+
+def test_contaminated_windows_used_by_the_primary_comparison_are_surfaced(tmp_path):
+    env = build(tmp_path, contaminated)
+    report = investigate(QUESTION, env[0], env[1], Scripted(*_until_compare(LOOSE), finish(GOOD)), sufficiency=LOOSE)
+    doc, md = render(report)
+    pid = report.primary_evidence["evidence_id"]
+    compare = snapshot(report, "compare_windows")["result"]
+    note = next(m["note"] for m in compare["methodology"] if m["name"] == "smoothing_contamination_windows_pre")
+    n = next(m["value"] for m in compare["methodology"] if m["name"] == "smoothing_contamination_windows_pre")
+    item = next(t for t in tracking(doc) if t["source"] == "methodology.smoothing_contamination_windows_pre")
+    assert n >= 1 and item["evidence_id"] == pid and item["primary"] and item["tool_note"] == note   # verbatim note
+    summary = section(md, "Executive summary")
+    assert "Tracking quality (from the evidence; no severity assigned)" in summary and item["text"] in summary
+    assert "### Tracking quality (from the evidence; no severity assigned)" in md and note in md
+    assert any(t["source"] == "trace" and "check_tracking_quality was never called" in t["text"] for t in tracking(doc))
+
+
+def test_a_quality_check_run_replaces_the_not_assessed_notice(tmp_path):
+    env = build(tmp_path, contaminated)
+    report = investigate(QUESTION, env[0], env[1], Investigator(), sufficiency=LOOSE)
+    items = tracking(build_report(report))
+    assert not any(t["source"] == "trace" for t in items)
+    q = snapshot(report, "check_tracking_quality")
+    detected = sum(w["smoothing_contamination"]["status"] == "detected" for w in q["result"]["measurements"]["windows"])
+    found = [t for t in items if t["source"] == "measurements.windows[].smoothing_contamination"]
+    assert detected and found and found[0]["evidence_id"] == q["evidence_id"] and str(detected) in found[0]["text"]
+
+
+def test_clean_evidence_lists_only_what_is_recorded(effect_report):
+    items = tracking(build_report(effect_report))
+    assert all(t["evidence_id"] in {e["evidence_id"] for e in effect_report.evidence} | {None} for t in items)
+    for t in items:                                         # every item points at a real recorded fact
+        if t["source"].startswith("methodology."):
+            e = next(x for x in effect_report.evidence if x["evidence_id"] == t["evidence_id"])
+            value = next(m["value"] for m in e["result"]["methodology"] if m["name"] == t["source"].split(".", 1)[1])
+            assert value not in (0, 1.0)                     # zero counts / full fractions are not listed
+
+
+def test_tracking_items_survive_the_json_round_trip(tmp_path):
+    env = build(tmp_path, contaminated)
+    report = investigate(QUESTION, env[0], env[1], Investigator(), sufficiency=LOOSE)
+    doc, md = render(report)
+    assert render_markdown(json.loads(ir.to_json_text(doc))) == md
+    for t in tracking(doc):
+        assert t["text"] in md
+
+
+@pytest.mark.skipif(not (LIVE_RUN / "investigation_report.json").exists(), reason="live-run artifacts not present")
+def test_live_run_contamination_is_now_surfaced_without_touching_the_artifacts(real_env):
+    import hashlib
+    before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in LIVE_RUN.iterdir()}
+    report = ia.InvestigationReport(**json.loads((LIVE_RUN / "investigation_report.json").read_text()))
+    doc, md = render(report, policy=real_env[1])                       # rendered in memory only
+    summary = section(md, "Executive summary")
+    assert "1 used pre-event window with smoothing contamination" in summary
+    assert "check_tracking_quality was never called" in summary
+    assert {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in LIVE_RUN.iterdir()} == before
+
+
+# ---- Codex 1 review: tracking notes belong to their windows; three quality-check states ----
+
+def quality_run(tmp_path, window_ids, change=contaminated, name="q"):
+    env = build(tmp_path, change, name=name)
+    model = Scripted([call("check_tracking_quality", window_ids=window_ids, history_frames=[1])])
+    return investigate(QUESTION, env[0], env[1], model, budget=Budget(max_model_turns=1)), env
+
+
+def window_pair():
+    from test_investigation_windows import VAL_A, ep
+    return "win:pre:20:0:" + ep(VAL_A, 300), "win:pre:20:0:" + ep(VAL_A, 100)     # clean, contaminated
+
+
+def test_contamination_note_comes_from_the_contaminated_window_not_window_0(tmp_path):
+    clean, flagged = window_pair()
+    report, _ = quality_run(tmp_path, [clean, flagged])
+    windows = snapshot(report, "check_tracking_quality")["result"]["measurements"]["windows"]
+    assert [w["window_id"] for w in windows] == [clean, flagged]
+    assert [w["smoothing_contamination"]["status"] for w in windows] == ["none_detected", "detected"]
+    marker = "CLEAN WINDOW NOTE - must never be quoted for contamination"
+
+    def relabel_window_0(req, res):
+        res["measurements"]["windows"][0]["smoothing_contamination"]["note"] = marker
+    forged = forge(report, "check_tracking_quality", relabel_window_0)
+    doc, md = render(forged)
+    real_note = windows[1]["smoothing_contamination"]["note"]
+    (item,) = [t for t in tracking(doc) if t["source"] == "measurements.windows[].smoothing_contamination"]
+    q = snapshot(forged, "check_tracking_quality")
+    assert item["evidence_id"] == q["evidence_id"] and item["window_ids"] == [flagged]
+    assert item["tool_note"] == real_note and item["text"] == "1 window with detected smoothing contamination"
+    rendered = {k: v for k, v in json.loads(ir.to_json_text(doc)).items() if k != "evidence_snapshots"}
+    assert marker not in json.dumps(rendered["limitations"]) and marker in json.dumps(doc["evidence_snapshots"])
+    line = next(l for l in md.splitlines() if "with detected smoothing contamination —" in l)
+    assert marker not in line and flagged in line and clean not in line and real_note in line
+    assert render_markdown(json.loads(ir.to_json_text(doc))) == md
+
+
+def two_contaminated(sid, kp, sc):
+    from test_investigation_windows import VAL_A
+    if sid == VAL_A:
+        sc[68, 0, 3] = 0.01          # smoother memory of [80, 100)
+        sc[268, 0, 3] = 0.01         # smoother memory of [280, 300)
+
+
+def test_windows_with_identical_notes_are_grouped(tmp_path):
+    clean, flagged = window_pair()
+    report, _ = quality_run(tmp_path, [clean, flagged], change=two_contaminated)
+    doc, md = render(report)
+    (item,) = [t for t in tracking(doc) if t["source"] == "measurements.windows[].smoothing_contamination"]
+    assert item["window_ids"] == [clean, flagged] and item["text"].startswith("2 windows")
+    assert f"windows: `{clean}`, `{flagged}`" in md
+
+
+def test_tracking_check_never_called(effect_report_no_quality):
+    items = tracking(build_report(effect_report_no_quality))
+    assert [t["text"] for t in items if t["source"] in ("trace", "status")] == [
+        "check_tracking_quality was never called in this investigation: per-window tracking quality was not "
+        "assessed beyond the counts other tools record"]
+
+
+@pytest.fixture
+def effect_report_no_quality(env):
+    return investigate(QUESTION, env[0], env[1], Scripted(*_until_compare(LOOSE), finish(GOOD)), sufficiency=LOOSE)
+
+
+def test_tracking_check_called_but_unavailable(tmp_path, monkeypatch):
+    from live_tracker.investigation_events import CalMS21InvestigationTools as Tools
+
+    def unavailable(self, request):
+        raise RuntimeError("quality backend unavailable")         # call_tool returns a valid error result
+    monkeypatch.setattr(Tools, "check_tracking_quality", unavailable)
+    clean, flagged = window_pair()
+    report, _ = quality_run(tmp_path, [clean, flagged])
+    q = snapshot(report, "check_tracking_quality")
+    assert q["status"] == "error"
+    doc, md = render(report)
+    texts = {t["source"]: t for t in tracking(doc)}
+    assert texts["status"]["evidence_id"] == q["evidence_id"]
+    assert texts["status"]["text"] == ("check_tracking_quality was called but returned status error (error codes: "
+                                       "internal_error); it assessed no window")
+    assert texts["trace"]["text"].startswith("check_tracking_quality was called but no call returned an assessment")
+    assert "never called" not in md and "was called but returned status error" in section(md, "Executive summary")
+
+
+def test_tracking_check_with_usable_results_has_no_missing_notice(tmp_path):
+    clean, flagged = window_pair()
+    report, _ = quality_run(tmp_path, [clean, flagged])
+    items = tracking(build_report(report))
+    assert not [t for t in items if t["source"] in ("trace", "status")]
+
+
+def test_a_failed_and_a_successful_quality_check_are_both_reported(tmp_path, monkeypatch):
+    from live_tracker.investigation_events import CalMS21InvestigationTools as Tools
+    real = Tools.check_tracking_quality
+    calls = []
+
+    def flaky(self, request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        return real(self, request)
+    monkeypatch.setattr(Tools, "check_tracking_quality", flaky)
+    clean, flagged = window_pair()
+    env = build(tmp_path, contaminated, name="flaky")
+    model = Scripted([call("check_tracking_quality", window_ids=[clean, flagged], history_frames=[1])],
+                     [call("check_tracking_quality", window_ids=[flagged], history_frames=[1])])
+    report = investigate(QUESTION, env[0], env[1], model, budget=Budget(max_model_turns=2))
+    items = tracking(build_report(report))
+    assert [t["source"] for t in items if t["source"] in ("trace", "status")] == ["status"]   # attempt + success
+    assert any(t["source"] == "measurements.windows[].smoothing_contamination" for t in items)
+
+
+# ---- coverage per compatible query group, primary coverage from provenance ----
+
+from test_investigation_agent import last_result  # noqa: E402
+from test_investigation_windows import VAL_A, VAL_B, VAL_C  # noqa: E402
+
+
+def coverage(doc):
+    return doc["coverage"]
+
+
+def scripted(env, *turns, turns_budget=None):
+    return investigate(QUESTION, env[0], env[1], Scripted(*turns), budget=Budget(max_model_turns=turns_budget or len(turns)))
+
+
+def test_attack_in_one_session_and_investigation_in_the_others_are_never_combined(env):
+    report = scripted(env, [query(sessions=[VAL_A])], [call("query_events", source="validation_annotation",
+                                                             behavior="investigation", sessions=[VAL_B, VAL_C])])
+    doc, md = render(report, policy=env[1])
+    cov = coverage(doc)
+    by = {g["behavior"]: g for g in cov["groups"]}
+    assert cov["status"] == "per_query_group" and cov["primary"] is None
+    assert (by["attack"]["status"], by["attack"]["searched"]) == ("partial", [VAL_A])
+    assert (by["investigation"]["status"], by["investigation"]["searched"]) == ("partial", [VAL_B, VAL_C])
+    summary = section(md, "Executive summary")
+    assert "searched 3 of 3" not in summary and not re.search(r"\bcomplete\b", summary.split("Descriptive only")[0])
+    assert "PARTIAL: searched 1 of 3 eligible sessions" in summary and "PARTIAL: searched 2 of 3" in summary
+    assert cov["sessions_touched"]["count"] == 3 and "not scientific coverage" in cov["sessions_touched"]["note"]
+
+
+def test_same_behavior_in_disjoint_sessions_with_compatible_settings_is_combined(env):
+    report = scripted(env, [query(sessions=[VAL_A])], [query(sessions=[VAL_B, VAL_C])])
+    (g,) = coverage(build_report(report, policy=env[1]))["groups"]
+    assert g["status"] == "complete" and g["searched"] == [VAL_A, VAL_B, VAL_C] and len(g["query_evidence_ids"]) == 2
+
+
+@pytest.mark.parametrize("second", [dict(merge_gap_frames=5), dict(min_duration_frames=10)])
+def test_same_behavior_with_incompatible_event_definitions_is_not_combined(env, second):
+    report = scripted(env, [query(sessions=[VAL_A])], [query(sessions=[VAL_B, VAL_C], **second)])
+    cov = coverage(build_report(report, policy=env[1]))
+    assert len(cov["groups"]) == 2 and {g["status"] for g in cov["groups"]} == {"partial"}
+
+
+def _fake_query(eid, source, sessions, with_episodes=()):
+    return {"evidence_id": eid, "tool": "query_events", "status": "ok",
+            "request": {"source": source, "behavior": "attack", "sessions": sessions, "merge_gap_frames": None,
+                        "min_duration_frames": None},
+            "result": {"evidence_id": eid, "status": "ok", "methodology": [], "provenance": {"data": []}, "limitations": [],
+                       "measurements": {"sessions_searched": sessions, "episodes": [], "truncated": False,
+                                        "sessions_without_episodes": [x for x in sessions if x not in with_episodes]}}}
+
+
+def test_same_behavior_from_incompatible_sources_is_not_combined(env):
+    snaps = {"q1": _fake_query("q1", "validation_annotation", [VAL_A]),
+             "q2": _fake_query("q2", "classifier_prediction", [VAL_B, VAL_C])}
+    cov = ir._coverage(snaps, env[1], None)
+    by = {g["source"]: g for g in cov["groups"]}
+    assert by["validation_annotation"]["status"] == "partial"
+    assert by["classifier_prediction"]["status"] == "unknown"           # no eligible set for predictions
+    assert by["classifier_prediction"]["basis"] == "not established for this source"
+
+
+def test_primary_without_query_provenance_is_unknown(env):
+    """Windows built from explicit episode IDs, no query: never complete."""
+    from test_investigation_windows import ep
+    feats = call("get_window_features", episode_ids=[ep(VAL_A, 100), ep(VAL_B, 200)],
+                 pre_event={"length_frames": 20, "gap_frames": 0},
+                 baseline={"length_frames": 20, "clearance_frames": 10, "max_windows_per_session": 500},
+                 features=["dist_rate"])
+    compare = lambda m: [call("compare_windows", feature="dist_rate",                       # noqa: E731
+                              windows_from={"evidence_id": last_result(m)["evidence_id"]})]
+    report = investigate(QUESTION, env[0], env[1], Scripted([feats], compare, finish(GOOD)), sufficiency=LOOSE)
+    doc, md = render(report, policy=env[1])
+    prim = coverage(doc)["primary"]
+    assert prim["status"] == "unknown" and "no compatible query_events group" in prim["reason"]
+    assert doc["coverage"]["status"] == "unknown" and "not established" in section(md, "Executive summary")
+
+
+def test_primary_with_a_truncated_query_is_unknown(env):
+    turns = [[query(max_episodes=1)]] + _until_compare(LOOSE)[1:] + [finish(GOOD)]
+    report = investigate(QUESTION, env[0], env[1], Scripted(*turns), sufficiency=LOOSE)
+    cov = coverage(build_report(report, policy=env[1]))
+    prim = cov["primary"]
+    assert cov["groups"][0]["truncated"] and cov["groups"][0]["status"] == "complete"   # every session searched ...
+    assert prim["status"] == "partial" and "truncated" in prim["reason"]               # ... but not every bout
+
+
+def test_partial_coverage_propagates_through_downstream_tools_without_query(tmp_path):
+    from test_investigation_windows import ep
+    env = build(tmp_path, sessions=(VAL_A, VAL_B), name="partial")
+    tools = CalMS21InvestigationTools.for_validation_cache(env[2], env[3], env[1], coverage="partial")
+    feats = call("get_window_features", episode_ids=[ep(VAL_A, 100), ep(VAL_B, 200)],
+                 pre_event={"length_frames": 20, "gap_frames": 0},
+                 baseline={"length_frames": 20, "clearance_frames": 10, "max_windows_per_session": 500},
+                 features=["dist_rate"])
+    compare = lambda m: [call("compare_windows", feature="dist_rate",                       # noqa: E731
+                              windows_from={"evidence_id": last_result(m)["evidence_id"]})]
+    report = investigate(QUESTION, tools, env[1], Scripted([feats], compare, finish(GOOD)), sufficiency=LOOSE)
+    for e in report.evidence:                                    # every downstream result records it
+        methods = {m["name"]: m["value"] for m in e["result"]["methodology"]}
+        assert methods["session_coverage"].startswith("partial") and methods["available_sessions"] == 2
+        assert any(l.startswith("PARTIAL COVERAGE") for l in e["result"]["limitations"])
+    doc, md = render(report, policy=env[1])
+    prim = coverage(doc)["primary"]
+    assert prim["status"] == "partial" and "partial cache coverage recorded by" in prim["reason"]
+    assert "Session coverage of the primary comparison is PARTIAL" in section(md, "Executive summary")
+
+
+def test_downstream_tools_on_a_complete_cache_still_need_a_query_for_complete(env):
+    from test_investigation_windows import ep
+    feats = call("get_window_features", episode_ids=[ep(VAL_A, 100)], pre_event={"length_frames": 20, "gap_frames": 0},
+                 baseline={"length_frames": 20, "clearance_frames": 10, "max_windows_per_session": 500},
+                 features=["dist_rate"])
+    report = scripted(env, [feats])
+    methods = {m["name"]: m["value"] for m in report.evidence[0]["result"]["methodology"]}
+    assert methods["session_coverage"] == "complete"            # the cache is complete ...
+    assert coverage(build_report(report, policy=env[1]))["status"] == "unknown"     # ... but nothing was queried
+
+
+def test_complete_primary_coverage_from_a_full_compatible_query(effect_report, env):
+    cov = coverage(build_report(effect_report, policy=env[1]))
+    prim = cov["primary"]
+    assert prim["status"] == "complete" == cov["status"] and prim["reason"] is None
+    g = cov["groups"][prim["group"]]
+    assert g["searched"] == g["eligible"] and prim["query_evidence_ids"] == g["query_evidence_ids"]
+    assert all(x["session"] not in prim["contributing"] for x in prim["excluded"])
+
+
+def test_coverage_without_a_policy_comes_from_the_recorded_metadata(effect_report):
+    (g,) = coverage(build_report(effect_report))["groups"]
+    assert g["status"] == "complete" and g["eligible"] is None and g["eligible_count"] == 3
+    assert "recorded by the tools" in g["basis"]
+
+
+def test_coverage_metadata_that_disagrees_with_the_policy_is_refused(effect_report):
+    other = ic.EvidencePolicy({"train": [], "validation": ["task1/train/SYNTHETIC_val_a"],
+                               "test": []}, allow_synthetic=True)
+    with pytest.raises(ReportIntegrityError):
+        render(effect_report, policy=other)
+
+
+def test_explicit_partial_cache_with_a_full_query_is_partial(tmp_path):
+    env = build(tmp_path, sessions=(VAL_A, VAL_B), name="partial2")
+    tools = CalMS21InvestigationTools.for_validation_cache(env[2], env[3], env[1], coverage="partial")
+    report = investigate(QUESTION, tools, env[1], Scripted([query()]), budget=Budget(max_model_turns=1))
+    (g,) = coverage(build_report(report, policy=env[1]))["groups"]
+    assert g["status"] == "partial" and g["available_count"] == 2 and g["not_searched"] == [VAL_C]
+
+
+@pytest.mark.skipif(not (LIVE_RUN / "investigation_report.json").exists(), reason="live-run artifacts not present")
+def test_the_original_live_run_is_reported_as_partial_coverage(real_env):
+    import hashlib
+    before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in LIVE_RUN.iterdir()}
+    report = ia.InvestigationReport(**json.loads((LIVE_RUN / "investigation_report.json").read_text()))
+    doc, md = render(report, policy=real_env[1])
+    prim = coverage(doc)["primary"]
+    g = coverage(doc)["groups"][prim["group"]]
+    assert prim["status"] == "partial" and len(g["searched"]) == 3 and g["eligible_count"] == 14
+    assert "PARTIAL: searched 3 of 14 eligible sessions" in section(md, "Executive summary")
+    assert coverage(build_report(report))["status"] == "unknown"    # no policy and no recorded metadata
+    assert {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in LIVE_RUN.iterdir()} == before
+
+
+def test_real_full_report_coverage_and_overlapping_exclusions(real_env):
+    report = investigate(QUESTION, *real_env, Investigator(length=30, clearance=150))
+    doc, md = render(report, policy=real_env[1])
+    prim = coverage(doc)["primary"]
+    g = coverage(doc)["groups"][prim["group"]]
+    assert prim["status"] == "complete" and len(g["searched"]) == 14 and len(g["with_behavior"]) == 4
+    assert [x.split("/")[-1][:8] for x in prim["contributing"]] == ["mouse005", "mouse064"]
+    assert [(x["session"].split("/")[-1][:8], x["reason"]) for x in prim["excluded"]] == [
+        ("mouse028", "no eligible baseline window"), ("mouse045", "no eligible baseline window")]
+    feats = next(a for a in doc["evidence_appendix"] if a["tool"] == "get_window_features")["summary"]
+    pre_reasons = sum(n for k, n in feats["exclusion_reason_counts"].items() if k.startswith("pre_event:"))
+    assert feats["excluded_windows"]["pre_event"] == 26 and pre_reasons == 29           # 3 windows have 2 reasons
+    assert "can overlap" in feats["exclusion_reason_note"]
+    assert any("(reasons can overlap)" in t["text"] for t in doc["limitations"]["tracking"])
+
+
+def test_a_complete_query_that_does_not_contain_the_compared_episodes_gives_unknown(env):
+    """The query searched every session but with a 25-frame minimum duration
+    that drops VAL_A's 20-frame bout at frame 100; the comparison uses that bout
+    through explicit IDs, so the query's complete coverage does not apply to it."""
+    from test_investigation_windows import ep
+    feats = call("get_window_features", episode_ids=[ep(VAL_A, 100), ep(VAL_B, 200)],
+                 pre_event={"length_frames": 20, "gap_frames": 0},
+                 baseline={"length_frames": 20, "clearance_frames": 10, "max_windows_per_session": 500},
+                 features=["dist_rate"])
+    compare = lambda m: [call("compare_windows", feature="dist_rate",                       # noqa: E731
+                              windows_from={"evidence_id": last_result(m)["evidence_id"]})]
+    report = investigate(QUESTION, env[0], env[1], Scripted([query(min_duration_frames=25)], [feats], compare,
+                                                            finish(GOOD)), sufficiency=LOOSE)
+    cov = coverage(build_report(report, policy=env[1]))
+    (g,) = cov["groups"]
+    compared = snapshot(report, "compare_windows")["request"]["pre_window_ids"]
+    assert g["status"] == "complete" and any(w.endswith(ep(VAL_A, 100)) for w in compared)
+    assert ep(VAL_A, 100) not in {x["episode_id"] for x in snapshot(report, "query_events")["result"]["measurements"]["episodes"]}
+    assert cov["primary"]["status"] == "unknown" and "every compared attack episode" in cov["primary"]["reason"]
+
+
+# ---- data identity along the primary comparison's provenance chain ----
+
+from live_tracker.investigation_data import INDEX_NAME  # noqa: E402
+
+def _prov(*items):
+    return {"evidence_id": "ev:x", "result": {"provenance": {"data": [dict(i) if isinstance(i, dict) else i
+                                                                      for i in items]}}}
+
+
+INDEX = {"kind": "calms21_validation_cache", "path": "/c/extraction_index.json", "sha256": "a" * 64, "description": "i"}
+SOURCE = {"kind": "calms21_validation_cache", "path": "/src/train.json", "sha256": "b" * 64, "description": "s"}
+S1 = {"kind": "calms21_validation_cache", "path": "/c/s1.json", "sha256": "c" * 64, "description": "s1"}
+S2 = {"kind": "calms21_validation_cache", "path": "/c/s2.json", "sha256": "d" * 64, "description": "s2"}
+
+
+@pytest.mark.parametrize("a, b, expected", [
+    (_prov(INDEX, SOURCE, S1, S2), _prov(INDEX, SOURCE, S1), None),          # a query lists more session files
+    (_prov(INDEX, SOURCE, S1), _prov(INDEX, SOURCE, S1), None),
+    (_prov(), _prov(INDEX, SOURCE, S1), "not recorded with hashes"),         # missing provenance
+    (_prov(INDEX, {**SOURCE, "sha256": None}), _prov(INDEX, SOURCE), "not recorded with hashes"),
+    (_prov(SOURCE, S1), _prov(SOURCE, S1), "exactly one verified extraction index"),   # no index identity
+    (_prov(INDEX, SOURCE), _prov({**INDEX, "sha256": "e" * 64}, SOURCE), "differs"),   # other index / manifest
+    (_prov(INDEX, SOURCE, S1), _prov(INDEX, SOURCE, {**S1, "sha256": "f" * 64}), "differs"),  # conflicting file
+    (_prov(INDEX, SOURCE), _prov({**INDEX, "kind": "synthetic_fixture"}, SOURCE), "differs"),
+    (_prov(INDEX, S1), _prov({**INDEX, "path": "/other/extraction_index.json", "sha256": "e" * 64}, S1),
+     "differs"),                                                              # another cache: index digests differ
+])
+def test_data_identity_helper(a, b, expected):
+    problem = ir._data_identity_problem(a, b)
+    assert (problem is None) if expected is None else (expected in problem)
+
+
+def _drop_feature_provenance(req, res):
+    res["provenance"]["data"] = []
+
+
+def test_codex_counterexample_missing_feature_provenance_is_unknown(effect_report, env):
+    assert coverage(build_report(effect_report, policy=env[1]))["primary"]["status"] == "complete"   # before
+    forged = forge(effect_report, "get_window_features", _drop_feature_provenance)   # contract-valid, re-hashed
+    doc, md = render(forged, policy=env[1])
+    prim = coverage(doc)["primary"]
+    assert prim["status"] == "unknown" and "not recorded with hashes" in prim["reason"]
+    assert doc["verification"]["cross_snapshot"]["status"] == "not_verified"          # the same identity notion
+    pair = doc["verification"]["cross_snapshot"]["pairs"][0]
+    assert "data provenance is not recorded with hashes" in pair["reasons"]
+    assert "Session coverage of the primary comparison not established" in section(md, "Executive summary")
+    (g,) = coverage(doc)["groups"]
+    assert g["status"] == "complete"                         # the query group's own coverage is unchanged
+
+
+@pytest.mark.parametrize("tool", ["get_window_features", "query_events", "compare_windows"])
+def test_conflicting_provenance_never_establishes_primary_coverage(effect_report, env, tool):
+    def other_index(req, res):
+        for d in res["provenance"]["data"]:
+            if d["path"].endswith(INDEX_NAME):
+                d["sha256"] = "0" * 64                       # another index / manifest binding
+    forged = forge(effect_report, tool, other_index)
+    doc, md = render(forged, policy=env[1])
+    prim = coverage(doc)["primary"]
+    assert prim["status"] == "unknown" and "data provenance differs" in prim["reason"]
+    assert "complete" not in section(md, "Executive summary").split("\n")[2]
+
+
+def test_a_conflicting_session_file_hash_never_establishes_primary_coverage(effect_report, env):
+    def other_file(req, res):
+        d = next(x for x in res["provenance"]["data"] if not x["path"].endswith(INDEX_NAME)
+                 and "source file" not in x["description"])
+        d["sha256"] = "1" * 64
+    prim = coverage(build_report(forge(effect_report, "get_window_features", other_file), policy=env[1]))["primary"]
+    assert prim["status"] == "unknown" and "data provenance differs" in prim["reason"]
+
+
+def test_compatible_provenance_with_missing_units_keeps_complete_coverage(effect_report, env):
+    forged = forge(effect_report, "compare_windows", lambda req, res: res["methodology"].__setitem__(
+        slice(None), [x for x in res["methodology"] if x["name"] != "units"]))
+    doc, _ = render(forged, policy=env[1])
+    assert coverage(doc)["primary"]["status"] == "complete"                           # identity, not units
+    assert doc["primary_result"]["unit"] is None
+
+
+def test_queries_over_different_data_are_never_combined_into_complete(env):
+    report = scripted(env, [query(sessions=[VAL_A])], [query(sessions=[VAL_B, VAL_C])])
+
+    def other_index(req, res):
+        for d in res["provenance"]["data"]:
+            if d["path"].endswith(INDEX_NAME):
+                d["sha256"] = "2" * 64
+    forged = forge(report, "query_events", other_index, k=1)
+    (g,) = coverage(build_report(forged, policy=env[1]))["groups"]
+    assert g["status"] == "unknown" and "do not share data identity" in g["basis"]
+
+
+def test_identity_failure_keeps_partial_cache_disclosure_in_the_reason(tmp_path):
+    env = build(tmp_path, sessions=(VAL_A, VAL_B), name="partial_id")
+    tools = CalMS21InvestigationTools.for_validation_cache(env[2], env[3], env[1], coverage="partial")
+    turns = [[query()]] + _until_compare(LOOSE)[1:] + [finish(GOOD)]
+    report = investigate(QUESTION, tools, env[1], Scripted(*turns), sufficiency=LOOSE)
+    assert coverage(build_report(report, policy=env[1]))["primary"]["status"] == "partial"   # disclosed as before
+    forged = forge(report, "get_window_features", _drop_feature_provenance)
+    prim = coverage(build_report(forged, policy=env[1]))["primary"]
+    assert prim["status"] == "unknown" and "partial cache coverage recorded by" in prim["reason"]
+
+
+# ---- provenance entries are validated before they are indexed by path ----
+
+CONFLICT = {**SOURCE, "sha256": "9" * 64}
+
+
+@pytest.mark.parametrize("entries", [(INDEX, CONFLICT, SOURCE), (INDEX, SOURCE, CONFLICT)])
+def test_conflicting_duplicate_paths_refuse_identity_in_either_order(entries):
+    for a, b in ((_prov(*entries), _prov(INDEX, SOURCE)), (_prov(INDEX, SOURCE), _prov(*entries))):  # both sides
+        assert "conflicting entries for /src/train.json" in ir._data_identity_problem(a, b)
+
+
+def test_conflicting_kind_for_one_path_refuses_identity():
+    other_kind = {**SOURCE, "kind": "synthetic_fixture"}
+    assert "conflicting entries" in ir._data_identity_problem(_prov(INDEX, SOURCE, other_kind), _prov(INDEX, SOURCE))
+
+
+def test_identical_duplicates_and_reordering_are_accepted():
+    assert ir._data_identity_problem(_prov(INDEX, SOURCE, SOURCE, S1), _prov(S1, SOURCE, INDEX)) is None
+    same_after_normalizing = {**SOURCE, "path": "/src/./train.json"}
+    assert ir._data_identity_problem(_prov(INDEX, SOURCE, same_after_normalizing), _prov(INDEX, SOURCE)) is None
+    assert "conflicting" in ir._data_identity_problem(
+        _prov(INDEX, SOURCE, {**same_after_normalizing, "sha256": "8" * 64}), _prov(INDEX, SOURCE))
+
+
+@pytest.mark.parametrize("bad, problem", [
+    ({**SOURCE, "path": None}, "malformed entry"), ({**SOURCE, "path": "  "}, "malformed entry"),
+    ({**SOURCE, "kind": ""}, "malformed entry"), ({k: v for k, v in SOURCE.items() if k != "kind"}, "malformed entry"),
+    ({**SOURCE, "sha256": ""}, "not recorded with hashes"), ({**SOURCE, "sha256": "xyz"}, "malformed entry"),
+    ({**SOURCE, "sha256": 7}, "malformed entry"), ("not an object", "malformed entry"),
+])
+def test_malformed_entries_refuse_identity_without_raising(bad, problem):
+    for a, b in ((_prov(INDEX, bad), _prov(INDEX, SOURCE)), (_prov(INDEX, SOURCE), _prov(INDEX, bad))):
+        assert problem in ir._data_identity_problem(a, b)
+    assert "missing or malformed" in ir._data_identity_problem({"evidence_id": "x", "result": {}}, _prov(INDEX))
+
+
+@pytest.mark.parametrize("first", [True, False])
+def test_conflicting_duplicate_provenance_cannot_establish_complete_primary_coverage(effect_report, env, first):
+    """A re-hashed, contract-valid features snapshot that records one session
+    file twice with different hashes (in either order)."""
+    def duplicate_conflict(req, res):
+        data = res["provenance"]["data"]
+        session = next(d for d in data if not d["path"].endswith(INDEX_NAME) and "source file" not in d["description"])
+        clash = {**session, "sha256": "7" * 64}
+        data.insert(data.index(session) + (0 if first else 1), clash)
+    assert coverage(build_report(effect_report, policy=env[1]))["primary"]["status"] == "complete"
+    forged = forge(effect_report, "get_window_features", duplicate_conflict)    # checks every snapshot's contract
+    doc, md = render(forged, policy=env[1])
+    prim = coverage(doc)["primary"]
+    assert prim["status"] == "unknown" and "conflicting entries" in prim["reason"]
+    assert "Session coverage of the primary comparison not established" in section(md, "Executive summary")
+    assert doc["verification"]["cross_snapshot"]["status"] == "not_verified"

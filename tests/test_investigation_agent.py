@@ -1022,21 +1022,28 @@ def real_env():
 
 
 def test_real_investigation_follows_up_and_reports_insufficient_evidence(real_env):
-    """On the three cached validation sessions (one with attacks), the model
-    finds tracking concerns, repeats the comparison without them, finds the
-    evidence insufficient, checks the excluded windows and stops."""
+    """On all 14 eligible validation sessions (4 with attacks), with a 150-frame
+    baseline clearance the two short attack-dense sessions have no baseline, so
+    only 2 sessions pair: the model finds tracking concerns, repeats the
+    comparison without them, finds the evidence insufficient, checks the
+    excluded windows and stops."""
     report = investigate(QUESTION, *real_env, Investigator(length=30, clearance=150))
     assert tools_used(report) == ["query_events", "get_window_features", "check_tracking_quality",
                                   "compare_windows", "compare_windows", "check_tracking_quality", ia.FINISH]
     assert report.stopping_reason == "finished" and report.finding == "insufficient_evidence"
     p = report.primary_evidence
     assert (p["status"], p["n_sessions_paired"], p["n_windows_pre"], p["n_windows_baseline"]) == \
-        ("insufficient_evidence", 1, 5, 128)
+        ("insufficient_evidence", 2, 30, 164)
     assert p["effect"]["value"] is None
-    assert p["sufficiency"]["reasons_not_met"] == ["min_sessions", "min_windows_per_group_pre"]
+    assert p["sufficiency"]["reasons_not_met"] == ["min_sessions"]
     compare = next(t for t in report.trace if t["kind"] == "tool_call" and t["tool"] == "compare_windows")
-    assert len(compare["request"]["baseline_window_ids"]) == 128              # passed whole by reference
-    assert all(e["status"] != "error" for e in report.evidence)
+    assert len(compare["request"]["baseline_window_ids"]) == 164              # passed whole by reference
+    errors = [e for e in report.evidence if e["status"] == "error"]
+    # the follow-up quality check on every excluded pre-event window includes mouse028's attack at frame 1,
+    # whose window starts before the session: Stage 4 answers that with a controlled invalid_request
+    assert [(e["tool"], [x["code"] for x in e["result"]["errors"]]) for e in errors] == \
+        [("check_tracking_quality", ["invalid_request"])]
+    assert "starts_before_session" in errors[0]["result"]["errors"][0]["message"]
     lims = [l["text"] for l in report.limitations if l["source"] == "tool"]
     for phrase in ("Investigation confound", "Session-timing confound", "Pixel scale", "Motion accuracy is not verified"):
         assert any(phrase in t for t in lims)
@@ -1062,4 +1069,187 @@ def test_real_investigation_cannot_be_talked_into_an_effect(real_env):
     msg = next(t for t in report.trace if t["kind"] == "finish")["message"]
     assert "status 'ok'" in msg
     (compare,) = [e for e in report.evidence if e["tool"] == "compare_windows"]      # kept whole although incomplete
-    assert compare["result"]["measurements"]["n_sessions_paired"] == 1 and report.verify_evidence() == []
+    assert compare["result"]["measurements"]["n_sessions_paired"] == 2 and report.verify_evidence() == []
+
+
+# ---- Stage 8 live-run audit: harmless wording is accepted, quantities and claims are not ----
+
+LIVE_RUN_REJECTED = [
+    # the two sentences the first live run had to rewrite (verbatim)
+    "Only one of the searched sessions contains annotated attacks, so the paired comparison of pre-attack "
+    "closing-distance rate against baseline fails the preset sufficiency criteria. The data do not support an "
+    "answer on whether approach precedes attack.",
+    "CalMS21 Task 1 has no approach label; distance change is only a proxy and does not say which mouse moved.",
+]
+
+
+@pytest.mark.parametrize("text", LIVE_RUN_REJECTED + [
+    "Only one session has attacks.", "No one window is decisive.", "One or more sessions should be added.",
+    "Compare the windows one by one.", "Annotations are by annotator 1.", "Stage 4 windows exclude their history.",
+    "Day 2 rules are not used here.", "Sessions mouse005 and mouse021 were searched.", "CalMS21 has no approach label.",
+])
+def test_harmless_wording_is_accepted(text):
+    assert ia._prose_problems(text, "insufficient_evidence") == []
+
+
+@pytest.mark.parametrize("text, problem", [
+    ("The effect was 10 px/s.", "numbers"), ("An effect of nine hundred px/s.", "number words"),
+    ("The effect was one px/s.", "number words"), ("One hundred windows were used.", "number words"),
+    ("Approach was one third faster.", "number words"), ("one-third of the windows", "number words"),
+    ("one percent of frames", "number words"), ("Only 1% of frames failed.", "numbers"),
+    ("point one px/s", "number words"), ("minus one px per frame", "number words"),
+    ("Task 1 shows 5 paired sessions.", "numbers"), ("Task 1.5 px/s", "numbers"), ("Day 2 at 3 px/s", "numbers"),
+    ("Approach was twice as fast.", "number words"), ("Two sessions agree.", "number words"),
+    ("The difference is statistically significant.", "significance"), ("Approach causes attack.", "causal claim"),
+    ("Closing distance predicts attack.", "prediction"), ("Report p < 0.05.", "p-value"),
+    ("This proves the effect.", "proof"),
+])
+def test_quantities_and_claims_are_still_refused(text, problem):
+    problems = ia._prose_problems(text, "effect_described")      # even where effect words are allowed
+    assert any(problem in p for p in problems), problems
+
+
+def test_effect_language_is_still_refused_without_an_effect():
+    assert any("effect language" in p for p in ia._prose_problems("Distance decreased before attack.",
+                                                                   "insufficient_evidence"))
+
+
+def test_live_run_wording_is_accepted_at_the_first_attempt(env):
+    """The live run's first final answer (verbatim prose) is now accepted
+    without the two extra turns."""
+    def first_answer(c):
+        return {"finding": "insufficient_evidence", "primary_evidence_id": c["evidence_id"],
+                "observations": [obs(c, "status"), obs(c, "measurements.n_sessions_paired")],
+                "interpretations": interp(c, LIVE_RUN_REJECTED[0]), "additional_limitations": [LIVE_RUN_REJECTED[1]]}
+    report = investigate(QUESTION, env[0], env[1], Scripted(*_until_compare(None), finish(first_answer)))
+    assert report.finished and [t["outcome"] for t in report.trace if t["kind"] == "finish"] == ["accepted"]
+
+
+# ---- Codex 1 review: fabricated measurements hidden behind the exemptions ----
+
+CODEX_BYPASSES = ["The effect was one metre per second.", "For Task 1 px/s was the measured effect."]
+
+
+@pytest.mark.parametrize("text", CODEX_BYPASSES + [
+    "The effect was a metre per second.", "The effect was a single pixel per frame.", "The effect was several px/s.",
+    "The effect was one millimetre.", "One unit of change was measured.", "The effect was one standard deviation.",
+    "The effect was 1 sd.", "Task 1 px was the effect.", "In Task 2 metres per second were measured.",
+    "Stage 4 frames per second were low.", "annotator 1 percent agreement", "The effect in Task 1 was one px/s.",
+    "one kilometre", "one in every session", "a couple of px/s", "Task 1 is the effect size.", "one window per second",
+    "The effect was one.", "Day 2 m/s", "an inch per frame", "Task 1 one px",
+])
+def test_quantities_behind_exemptions_are_refused(text):
+    assert any("number" in p for p in ia._prose_problems(text, "inconclusive")), text
+
+
+@pytest.mark.parametrize("text", ["The effect was large.", "There was a substantial difference.",
+                                  "The change was negligible.", "A pronounced shift was seen."])
+def test_magnitude_claims_are_effect_language_without_an_effect(text):
+    assert any("effect language" in p for p in ia._prose_problems(text, "inconclusive"))
+    assert not any("effect language" in p for p in ia._prose_problems(text, "effect_described"))
+
+
+@pytest.mark.parametrize("text", [
+    "Only one annotated session has attacks.", "Each one of the comparisons is descriptive.", "CalMS21 Task 1.",
+    "Rates are in pixels per second.", "Pixel distances are uncalibrated and motion accuracy is unverified.",
+    "Some pre-attack windows were excluded for overlapping another event or for too few usable frames.",
+    "Include more sessions that contain attacks, since the sufficiency criteria need more paired sessions.",
+])
+def test_ordinary_scientific_wording_is_still_accepted(text):
+    assert ia._prose_problems(text, "insufficient_evidence") == []
+
+
+@pytest.mark.parametrize("field, bypass", [("interpretations", CODEX_BYPASSES[0]),
+                                           ("additional_limitations", CODEX_BYPASSES[1]),
+                                           ("next_steps", "Report the effect as a metre per second.")])
+def test_bypasses_are_refused_end_to_end_then_revised(env, field, bypass):
+    def answer(text):
+        def build_args(c):
+            args = {"finding": "inconclusive", "observations": [obs(c, "status")]}
+            if text:
+                args[field] = interp(c, text) if field == "interpretations" else [text]
+            return args
+        return build_args
+    report = investigate(QUESTION, env[0], env[1], Scripted(*_until_compare(None), finish(answer(bypass)),
+                                                            finish(answer(None))))
+    refused, accepted = [t for t in report.trace if t["kind"] == "finish"]
+    assert refused["outcome"] == "refused" and "number" in refused["message"]
+    assert accepted["outcome"] == "accepted" and report.finished
+    assert bypass not in json.dumps([report.interpretations, report.next_steps, report.limitations])
+
+
+# ---- Codex 1 review: counts that are part of a rate, frequency or compound measurement ----
+
+CODEX_RATE_BYPASSES = ["The attack rate was one bout every second.",
+                       "The measured approach speed was one mouse length per second.",
+                       "The attack rate was one bout a second."]
+
+
+@pytest.mark.parametrize("text", CODEX_RATE_BYPASSES + [
+    "The attack rate was one bout each second.", "The attack rate was one bout per minute.", "One window per frame.",
+    "one attack an hour", "one bout every frame", "a session every minute", "one bout a second and then more",
+    "one bout every couple of seconds", "Attacks came every few seconds.", "Attacks came several times a minute.",
+    "Attacks occurred once a second.", "Attacks occurred about once a second.", "One bout per session was annotated.",
+    "The speed was a mouse length per second.", "Approach covered one mouse length.", "The approach was a body width.",
+    "The mice closed one body length before attack.",
+])
+def test_counts_inside_rates_and_compound_measurements_are_refused(text):
+    assert any("number" in p for p in ia._prose_problems(text, "insufficient_evidence")), text
+
+
+@pytest.mark.parametrize("text", ["Check one window, then a second window.", "Run a second session later.",
+                                  "Window lengths were chosen by the model.", "Rates are in pixels per second."])
+def test_ordinals_and_unit_mentions_are_not_rates(text):
+    assert ia._prose_problems(text, "insufficient_evidence") == []
+
+
+def test_original_live_run_prose_is_still_accepted():
+    for text in LIVE_RUN_REJECTED + ["Only one annotated session has attacks.", "CalMS21 Task 1."]:
+        assert ia._prose_problems(text, "insufficient_evidence") == [], text
+
+
+@pytest.mark.parametrize("field, bypass", [("interpretations", t) for t in CODEX_RATE_BYPASSES]
+                         + [("next_steps", "Report the rate as one bout every second.")])
+def test_rate_bypasses_are_refused_end_to_end(env, field, bypass):
+    def answer(text):
+        def build_args(c):
+            args = {"finding": "insufficient_evidence", "primary_evidence_id": c["evidence_id"],
+                    "observations": [obs(c, "status")]}
+            if text:
+                args[field] = interp(c, text) if field == "interpretations" else [text]
+            return args
+        return build_args
+    report = investigate(QUESTION, env[0], env[1], Scripted(*_until_compare(None), finish(answer(bypass)),
+                                                            finish(answer(None))))
+    refused, accepted = [t for t in report.trace if t["kind"] == "finish"]
+    assert refused["outcome"] == "refused" and "number" in refused["message"]
+    assert accepted["outcome"] == "accepted" and report.finding == "insufficient_evidence"
+    assert bypass not in json.dumps([report.interpretations, report.next_steps])
+
+
+# Known limits of the lexical validator (strict xfail: if one starts being refused, the list must be updated).
+# These unsupported quantitative / measurement claims still pass; closing them needs the evidence-rendered
+# prose design, not more patterns.
+@pytest.mark.xfail(strict=True, reason="lexical validator limitation: qualitative quantities are not detected")
+@pytest.mark.parametrize("text", [
+    "The attack rate was high.", "Attacks were frequent.", "Approach was brisk.", "The mice closed the gap quickly.",
+    "The speed matched a slow walk.", "Attacks happened roughly hourly.", "Approach distance halved.",
+    "Almost every window showed approach.", "Most sessions showed approach.", "Attack frequency was once per session.",
+    "The intruder was approached at jogging pace.",
+])
+def test_known_lexical_limits(text):
+    assert ia._prose_problems(text, "insufficient_evidence")
+
+
+def test_real_model_can_reach_every_eligible_session(real_env):
+    """Through the existing tools the model can search all eligible sessions
+    (no list is injected into its context) or name any one of them."""
+    manifest = json.loads(REAL_MANIFEST.read_text())
+    last = sorted(manifest["validation"])[-1]
+    model = Scripted([query()], [query(sessions=[last])], [query(sessions=[manifest["test"][0]])])
+    report = investigate(QUESTION, *real_env, model, budget=Budget(max_model_turns=3))
+    first, second = report.evidence[:2]
+    assert first["result"]["measurements"]["sessions_searched"] == sorted(manifest["validation"])
+    assert second["result"]["measurements"]["sessions_searched"] == [last]
+    assert [t.get("refused") for t in report.trace if t["kind"] == "tool_call"][-1] == "unauthorized"
+    assert not any(manifest["validation"][0] in json.dumps(m) for m in [ia.SYSTEM_PROMPT, ia.TOOL_SPECS])

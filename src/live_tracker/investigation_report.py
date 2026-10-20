@@ -44,6 +44,41 @@ Only an accepted effect_described finding on an "ok" comparison presents
 an aggregate effect (and a direction). For every other finding a recorded
 effect stays in the appendix, marked as not a finding.
 
+Session coverage
+----------------
+Coverage is computed per compatible query group: query_events results with
+the same source, behavior, merge_gap_frames and min_duration_frames.
+Queries for different behaviors or event definitions are never combined.
+Each group reports eligible sessions (the policy's split, or the count the
+tools recorded), sessions available in the cache, searched, not searched
+and with the behavior; it is "complete" only when its searched sessions
+provably equal the eligible ones and no tool recorded partial coverage.
+The primary comparison's coverage follows its provenance: compared
+pre-event windows -> the get_window_features result that produced them ->
+their episodes -> the compatible query group containing all of them, AND
+every link must read the same underlying data (_data_identity_problem: the
+same verified extraction index, which binds the source, the manifest and
+every session file; no conflicting provenance entry). Matching IDs alone
+never establish that. If the chain cannot be established the coverage is
+"unknown" (with the reason);
+any partial coverage recorded along the chain makes it "partial". Sessions
+touched by any tool are listed separately as an operational summary, never
+as scientific coverage. Coverage metadata that disagrees with a given policy
+refuses the report.
+
+Tracking quality
+----------------
+Tracking facts recorded in the evidence are listed in the main limitations
+and summarised in the executive summary, each with its evidence_id and
+source field, quoting the tool's own note: smoothing-contaminated or
+less-than-fully-usable windows used by a comparison, windows excluded for
+insufficient usable frames or missing data, quality verdicts other than
+usable, detected contamination (one item per distinct note, naming the
+contributing windows, so a note is only quoted for windows that carry it),
+and whether check_tracking_quality was never called, was called without
+returning an assessment (error result), or returned one. Every non-zero
+count is listed; no severity is assigned.
+
 Trust
 -----
 Tool limitations come from validated results (verbatim); investigation
@@ -69,11 +104,13 @@ from __future__ import annotations
 
 import copy
 import json
+import posixpath
 import re
 from collections import Counter
 
 from . import investigation_agent as ia
 from . import investigation_contracts as ic
+from .investigation_data import INDEX_NAME
 
 __all__ = ["REPORT_SCHEMA", "ReportIntegrityError", "build_report", "render", "render_markdown", "to_json_text"]
 
@@ -281,6 +318,12 @@ def _check(report, policy):
             if e["request"]["uncertainty"]["method"] != "none" or \
                     any(eff[k] is not None for k in ("ci_low", "ci_high", "ci_level")):
                 problems.append(f"{eid}: an interval or uncertainty method outside the descriptive policy")
+    if policy is not None:                      # recorded coverage metadata must agree with the policy
+        eligible = sum(1 for sp in policy.split_of.values() if sp == policy.annotation_split)
+        for eid, e in snaps.items():
+            n = _num(_method(e["result"], "eligible_sessions"))
+            if n is not None and n != eligible:
+                problems.append(f"{eid}: records {n} eligible sessions, the policy has {eligible}")
     cross = _reconcile(snaps)
     problems += cross.pop("contradictions")
     if problems:
@@ -323,6 +366,61 @@ def _window_values(e):
     return {}
 
 
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def _provenance_entries(e):
+    """(path -> (kind, sha256), None) for a snapshot's data provenance, or
+    (None, problem). Every entry is validated before the mapping is built;
+    paths are normalized; a path recorded twice with a different kind or
+    sha256 is a conflict whatever the order; identical duplicates collapse."""
+    try:
+        data = e["result"]["provenance"]["data"]
+    except (KeyError, TypeError):
+        return None, "data provenance is missing or malformed"
+    if not isinstance(data, list) or not data:
+        return None, "data provenance is not recorded with hashes"
+    entries = {}
+    for d in data:
+        if not isinstance(d, dict):
+            return None, "data provenance has a malformed entry"
+        kind, path, sha = d.get("kind"), d.get("path"), d.get("sha256")
+        if sha is None or sha == "":
+            return None, "data provenance is not recorded with hashes"
+        if not (isinstance(kind, str) and kind and isinstance(path, str) and path.strip()
+                and isinstance(sha, str) and _HEX64.fullmatch(sha)):
+            return None, "data provenance has a malformed entry (kind, path and sha256 are required)"
+        key = posixpath.normpath(path.strip())
+        if key in entries and entries[key] != (kind, sha):
+            return None, f"data provenance records conflicting entries for {key}"
+        entries[key] = (kind, sha)
+    return entries, None
+
+
+def _data_identity_problem(a, b):
+    """None when two snapshots provably read the same verified data, else why
+    not. Shared by the cross-snapshot check and the coverage provenance chain.
+    Identity = both record valid, conflict-free hashed data provenance with
+    exactly one verified extraction index, the index digests (hash of the
+    whole verified index: source sha256, manifest binding, every session file)
+    are equal, and any path recorded by both has the same kind and sha256.
+    Entries only one records (other sessions' files) are allowed. Units and
+    processing are comparability, not identity: they are not looked at here."""
+    recorded = []
+    for e in (a, b):
+        entries, problem = _provenance_entries(e)
+        if problem:
+            return problem
+        index = [p for p in entries if p.endswith(INDEX_NAME)]
+        if len(index) != 1:
+            return "data provenance does not record exactly one verified extraction index"
+        recorded.append((entries, entries[index[0]]))
+    (paths_a, index_a), (paths_b, index_b) = recorded
+    if index_a != index_b or any(paths_a[p] != paths_b[p] for p in set(paths_a) & set(paths_b)):
+        return "data provenance differs"
+    return None
+
+
 def _comparability(a, b):
     """Reasons two snapshots' window values cannot be compared (empty: comparable)."""
     reasons = []
@@ -336,11 +434,9 @@ def _comparability(a, b):
         differ = sorted(k for k in PROCESSING_METHOD if conf[0][k] != conf[1][k])
         if differ:
             reasons.append(f"processing configuration differs: {differ}")
-    data = [{(d["kind"], d["sha256"]) for d in e["result"]["provenance"]["data"]} for e in (a, b)]
-    if not data[0] or any(sha is None for d in data for _, sha in d):
-        reasons.append("data provenance is not recorded with hashes")
-    elif data[0] != data[1]:
-        reasons.append("data provenance differs")
+    problem = _data_identity_problem(a, b)        # the same notion of identity as coverage provenance
+    if problem:
+        reasons.append(problem)
     return reasons
 
 
@@ -492,7 +588,10 @@ def _summary(e):
         return {"features": list(req["features"]), "units": {f: None for f in req["features"]},
                 "units_note": "get_window_features records no unit",
                 "windows": {f"{k}_{s}": n for (k, s), n in sorted(by.items())},
-                "exclusion_reasons": {f"{k}:{r}": n for (k, r), n in sorted(reasons.items())},
+                "excluded_windows": {k: n for (k, st), n in sorted(by.items()) if st == "excluded"},
+                "exclusion_reason_counts": {f"{k}:{r}": n for (k, r), n in sorted(reasons.items())},
+                "exclusion_reason_note": "a window can fail several rules: reason counts can overlap and need "
+                                         "not sum to the excluded windows",
                 "sessions_with_included_windows": len({w["session"] for w in m["windows"]
                                                        if w["status"] == "included"})}
     if tool == "check_tracking_quality":
@@ -636,6 +735,231 @@ def _provenance(report, snaps):
     }
 
 
+TRACKING_REASONS = ("insufficient_usable_frames", "missing_data")
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _tracking_concerns(snaps, primary_id):
+    """Tracking-quality facts of the evidence, each with its source (no
+    severity is assigned: every recorded non-zero count is listed)."""
+    out = []
+
+    def add(eid, source, text, note=None, window_ids=None):
+        out.append({"evidence_id": eid, "source": source, "text": text, "tool_note": note,
+                    "window_ids": window_ids, "primary": eid is not None and eid == primary_id})
+    for eid, e in snaps.items():
+        res, m = e["result"], e["result"]["measurements"]
+        if m is None:
+            continue
+        if e["tool"] == "compare_windows":
+            for kind, label in (("pre", "pre-event window"), ("baseline", "baseline window")):
+                item = next((x for x in res["methodology"] if x["name"] == f"smoothing_contamination_windows_{kind}"),
+                            None)
+                n = _num(item and item["value"])
+                if n:
+                    add(eid, f"methodology.smoothing_contamination_windows_{kind}",
+                        f"{_n(n, 'used ' + label)} with smoothing contamination", item["note"])
+                item = next((x for x in res["methodology"] if x["name"] == f"usable_frame_fraction_{kind}"), None)
+                f = _num(item and item["value"])
+                if f is not None and f < 1:
+                    add(eid, f"methodology.usable_frame_fraction_{kind}",
+                        f"usable-frame fraction over used {label}s {_fmt(f)}", item["note"])
+            for reason, k in sorted(Counter(x["reason"] for x in m["excluded_windows"]
+                                            if x["reason"] in TRACKING_REASONS).items()):
+                add(eid, "measurements.excluded_windows", f"{_n(k, 'window')} excluded: {reason} (first reason)")
+        elif e["tool"] == "get_window_features":
+            counts = Counter((w["kind"], r) for w in m["windows"] for r in w["exclusion_reasons"]
+                             if r in TRACKING_REASONS)
+            for (kind, reason), k in sorted(counts.items()):
+                add(eid, "measurements.windows[].exclusion_reasons",
+                    f"{_n(k, kind.replace('_', '-') + ' window')} with exclusion reason {reason} (reasons can overlap)")
+        elif e["tool"] == "check_tracking_quality":
+            by_verdict = {}
+            for w in m["windows"]:
+                if w["verdict"] != "usable_with_caveats":
+                    by_verdict.setdefault(w["verdict"], []).append(w["window_id"])
+            for verdict, ids in sorted(by_verdict.items()):
+                add(eid, "measurements.windows[].verdict", f"{_n(len(ids), 'window')} with verdict {verdict}",
+                    window_ids=ids)
+            # one item per distinct note, quoting only the note of the contaminated windows it counts
+            by_note = {}
+            for w in m["windows"]:
+                if w["smoothing_contamination"]["status"] == "detected":
+                    by_note.setdefault(w["smoothing_contamination"]["note"], []).append(w["window_id"])
+            for note, ids in sorted(by_note.items()):
+                add(eid, "measurements.windows[].smoothing_contamination",
+                    f"{_n(len(ids), 'window')} with detected smoothing contamination", note, window_ids=ids)
+    quality = [(eid, e) for eid, e in snaps.items() if e["tool"] == "check_tracking_quality"]
+    for eid, e in quality:
+        if e["result"]["measurements"] is None:             # attempted, but no assessment came back
+            codes = ", ".join(x["code"] for x in e["result"]["errors"]) or "none recorded"
+            add(eid, "status", f"check_tracking_quality was called but returned status {e['status']} (error codes: "
+                               f"{codes}); it assessed no window")
+    if not quality:
+        add(None, "trace", "check_tracking_quality was never called in this investigation: per-window tracking "
+                           "quality was not assessed beyond the counts other tools record")
+    elif all(e["result"]["measurements"] is None for _, e in quality):
+        add(None, "trace", "check_tracking_quality was called but no call returned an assessment: per-window "
+                           "tracking quality was not assessed beyond the counts other tools record")
+    return out
+
+
+def _short(sid):
+    return sid.split("/")[-1]
+
+
+def _recorded_coverage(e):
+    """(eligible, available, session_coverage) a tool recorded, or Nones."""
+    r = e["result"]
+    return (_num(_method(r, "eligible_sessions")), _num(_method(r, "available_sessions")),
+            _method(r, "session_coverage"))
+
+
+def _definition(e):
+    r = e["request"]
+    return {"source": r["source"], "behavior": r["behavior"], "merge_gap_frames": r["merge_gap_frames"],
+            "min_duration_frames": r["min_duration_frames"]}
+
+
+def _definition_label(g):
+    return (f"{g['behavior']} from {g['source']}; merge gap {g['merge_gap_frames']}, "
+            f"minimum duration {g['min_duration_frames']}")
+
+
+def _group_coverage(definition, members, policy):
+    """Coverage of one compatible query group (never mixed with another)."""
+    searched = sorted({s for e in members for s in e["result"]["measurements"]["sessions_searched"]})
+    with_behavior = sorted({s for e in members for s in e["result"]["measurements"]["sessions_searched"]
+                            if s not in e["result"]["measurements"]["sessions_without_episodes"]})
+    recorded = [_recorded_coverage(e) for e in members]
+    partial_cache = any(c not in (None, "complete") for _, _, c in recorded)
+    eligible = None
+    if policy is not None and definition["source"] == "validation_annotation":
+        eligible = sorted(sid for sid, sp in policy.split_of.items() if sp == policy.annotation_split)
+        eligible_n, basis = len(eligible), f"split manifest via the evidence policy ({policy.annotation_split} split)"
+    elif recorded and all(n is not None for n, _, _ in recorded) and len({n for n, _, _ in recorded}) == 1:
+        eligible_n, basis = recorded[0][0], "recorded by the tools (no policy given)"
+    else:
+        eligible_n, basis = None, "not established for this source"
+    available = min((a for _, a, _ in recorded if a is not None), default=None)
+    identity = next((f"{p} between {x['evidence_id']} and {y['evidence_id']}"
+                     for x, y in zip(members, members[1:]) if (p := _data_identity_problem(x, y))), None)
+    if eligible is not None:
+        status = "complete" if searched == eligible and not partial_cache else "partial"
+    elif eligible_n is not None:
+        status = ("complete" if len(searched) == eligible_n and all(c == "complete" for _, _, c in recorded)
+                  else "partial" if partial_cache or len(searched) < eligible_n else "unknown")
+    else:
+        status = "partial" if partial_cache else "unknown"
+    if identity:                                 # queries over different data are never combined into coverage
+        status, basis = "unknown", f"{basis}; the group's queries do not share data identity ({identity})"
+    return {**definition, "query_evidence_ids": [e["evidence_id"] for e in members], "status": status,
+            "basis": basis, "eligible_count": eligible_n, "eligible": eligible, "available_count": available,
+            "searched": searched, "not_searched": sorted(set(eligible) - set(searched)) if eligible is not None
+            else None, "with_behavior": with_behavior,
+            "truncated": any(e["result"]["measurements"]["truncated"] for e in members)}
+
+
+def _primary_coverage(snaps, primary, groups, query_groups):
+    """The coverage that applies to the primary comparison, from its provenance."""
+    comp = snaps[primary["evidence_id"]]
+    rows = {r["session"]: r for r in primary["per_session"]}
+    contributing = sorted(sid for sid, r in rows.items() if r["paired"])
+    out = {"status": "unknown", "reason": None, "group": None, "contributing": contributing, "excluded": None,
+           "features_evidence_ids": [], "query_evidence_ids": []}
+    identity_failed = False
+    chain_partial = [eid for eid in [comp["evidence_id"]]
+                     if _recorded_coverage(comp)[2] not in (None, "complete")]
+    pre_ids = comp["request"]["pre_window_ids"]
+    parsed = [ic.parse_window_id(w) for w in pre_ids]
+    needed = {p["episode_id"] for p in parsed}
+    kinds = {(p["source"], p["behavior"]) for p in parsed}
+    feats = [e for e in snaps.values() if e["tool"] == "get_window_features" and e["result"]["measurements"]
+             and set(pre_ids) <= {w["window_id"] for w in e["result"]["measurements"]["windows"]}]
+    out["features_evidence_ids"] = [e["evidence_id"] for e in feats]
+    chain_partial += [e["evidence_id"] for e in feats if _recorded_coverage(e)[2] not in (None, "complete")]
+    if not feats:
+        out["reason"] = "no get_window_features result of this run produced the compared pre-event windows"
+    elif len(kinds) != 1:
+        out["reason"] = "the compared windows come from more than one event source or behavior"
+    else:
+        (source, behavior), = kinds
+        covering = [i for i, (definition, members) in enumerate(query_groups)
+                    if (definition["source"], definition["behavior"]) == (source, behavior)
+                    and needed <= {x["episode_id"] for e in members for x in e["result"]["measurements"]["episodes"]}]
+        if not covering:
+            out["reason"] = (f"no compatible query_events group of this run contains every compared {behavior} "
+                             "episode (missing, truncated or differently defined queries)")
+        elif len(covering) > 1 and len({groups[i]["status"] for i in covering}) > 1:
+            out["reason"] = "the compared episodes appear in several query groups with different coverage"
+        else:
+            g = groups[covering[0]]
+            members = query_groups[covering[0]][1]
+            links = [(comp, f) for f in feats] + [(f, q) for f in feats for q in members]
+            identity = next((f"{p} between {x['evidence_id']} and {y['evidence_id']}"
+                             for x, y in links if (p := _data_identity_problem(x, y))), None)
+            if identity:                         # matching IDs alone never establish the same data
+                identity_failed = True
+                out.update(query_evidence_ids=g["query_evidence_ids"],
+                           reason="the comparison's data identity is not established along its provenance chain: "
+                                  + identity)
+            else:
+                out.update(status=g["status"], group=covering[0], query_evidence_ids=g["query_evidence_ids"])
+                if g["truncated"] and g["status"] == "complete":
+                    out.update(status="partial", reason="the originating query was truncated: not every bout of "
+                                                        "the searched sessions was returned, so not every bout "
+                                                        "could be compared")
+                out["excluded"] = []
+                for sid in g["with_behavior"]:
+                    if sid in contributing:
+                        continue
+                    r = rows.get(sid)
+                    reason = ("no included pre-event window" if r is None or not r["pre_windows_used"] else
+                              "no eligible baseline window" if not r["baseline_windows_used"] else "not paired")
+                    out["excluded"].append({"session": sid, "reason": reason})
+    if chain_partial:                    # disclosed in every case; never lifts an unestablished identity
+        if not identity_failed:
+            out["status"] = "partial"
+        out["reason"] = (out["reason"] + "; " if out["reason"] else "") + \
+            f"partial cache coverage recorded by {', '.join(chain_partial)}"
+    return out
+
+
+def _coverage(snaps, policy, primary):
+    """Per-group scientific coverage, the primary comparison's coverage, and an
+    operational list of sessions touched by any tool."""
+    query_groups = []
+    for e in snaps.values():
+        if e["tool"] != "query_events" or e["result"]["measurements"] is None:
+            continue
+        definition = _definition(e)
+        for d, members in query_groups:
+            if d == definition:
+                members.append(e)
+                break
+        else:
+            query_groups.append((definition, [e]))
+    groups = [_group_coverage(d, members, policy) for d, members in query_groups]
+    prim = _primary_coverage(snaps, primary, groups, query_groups) if primary is not None else None
+    partial_anywhere = any(_recorded_coverage(e)[2] not in (None, "complete") for e in snaps.values())
+    if prim is not None:
+        status = prim["status"]
+    elif len(groups) == 1:
+        status = groups[0]["status"]
+    elif groups:
+        status = "per_query_group"
+    else:
+        status = "partial" if partial_anywhere else "unknown"
+    touched = sorted({sid for e in snaps.values() for sid in _sources_and_sessions(e)[2]})
+    return {"status": status, "primary": prim, "groups": groups,
+            "sessions_touched": {"count": len(touched), "sessions": touched,
+                                 "note": "operational: sessions read by any tool for any behavior; not scientific "
+                                         "coverage"}}
+
+
 def _counts(snaps, primary):
     queries = [e for e in snaps.values() if e["tool"] == "query_events" and e["result"]["measurements"]]
     bouts = [{"evidence_id": e["evidence_id"], "behavior": e["request"]["behavior"], **_query_counts(e)}
@@ -665,7 +989,9 @@ def build_report(report, *, policy=None):
                      "value": copy.deepcopy(o["value"]),
                      "unit": _unit_of(snaps[o["evidence_id"]], o["field"]), "statement": o["statement"]}
                     for o in report.observations]
-    lims = {"confounders": [], "tool": [], "agent": [], "model": [], "trust": dict(TRUST)}
+    lims = {"confounders": [], "tool": [], "agent": [], "model": [], "trust": dict(TRUST),
+            "tracking": _tracking_concerns(snaps, report.primary_evidence["evidence_id"]
+                                           if report.primary_evidence else None)}
     for l in report.limitations:
         lims[l["source"]].append(l["text"])
         if l["source"] == "tool" and "confound" in l["text"].lower():
@@ -686,6 +1012,7 @@ def build_report(report, *, policy=None):
                    "primary_evidence_id": report.primary_evidence["evidence_id"] if report.primary_evidence else None},
         "primary_result": primary,
         "counts": _counts(snaps, primary),
+        "coverage": _coverage(snaps, policy, primary),
         "observations": observations,
         "primary_evidence": (None if not report.primary_evidence else
                              {"evidence_id": report.primary_evidence["evidence_id"],
@@ -720,9 +1047,45 @@ def _step(t):
     return out
 
 
+def _group_sentence(g, lead):
+    word = {"complete": "complete", "partial": "PARTIAL", "unknown": "not established"}[g["status"]]
+    eligible = g["eligible_count"] if g["eligible_count"] is not None else "an unknown number of"
+    text = (f"{lead} ({_definition_label(g)}): {word}: searched {len(g['searched'])} of {eligible} eligible "
+            f"sessions ({g['basis']}); {_n(len(g['with_behavior']), 'session')} with {g['behavior']}")
+    if g["not_searched"]:
+        text += (f"; not searched: {', '.join(_short(x) for x in g['not_searched'][:6])}"
+                 + (" ..." if len(g["not_searched"]) > 6 else ""))
+    return text
+
+
+def _coverage_sentences(cov):
+    out, prim = [], cov["primary"]
+    if prim is not None:
+        if prim["group"] is not None:
+            g = cov["groups"][prim["group"]]
+            text = _group_sentence({**g, "status": prim["status"]}, "Session coverage of the primary comparison")
+            text += (f"; {len(prim['contributing'])} contributing to the comparison, "
+                     f"{len(prim['excluded'])} excluded from it")
+        else:
+            text = (f"Session coverage of the primary comparison {'is PARTIAL' if prim['status'] == 'partial' else 'not established'}: "
+                    f"{prim['reason']}; {len(prim['contributing'])} sessions contributing")
+        if prim["reason"] and prim["group"] is not None:
+            text += f" ({prim['reason']})"
+        out.append(text + ".")
+    for i, g in enumerate(cov["groups"]):
+        if prim is None or prim["group"] != i:
+            out.append(_group_sentence(g, "Query coverage") + ".")
+    if prim is None and not cov["groups"]:
+        out.append("Session coverage not established: no query_events result in this investigation"
+                   + (" (partial cache coverage was recorded by the tools)" if cov["status"] == "partial" else "")
+                   + ".")
+    return out
+
+
 def _executive_summary(doc):
     st, p, prov = doc["status"], doc["primary_result"], doc["provenance"]
     out = []
+    out += _coverage_sentences(doc["coverage"])
     if st["finding"] == "incomplete":
         out.append(f"Incomplete: the investigation stopped before a final answer ({st['stopping_reason']}). "
                    f"No finding was made; {doc['verification']['n_evidence']} validated results were collected "
@@ -772,6 +1135,14 @@ def _executive_summary(doc):
                    + "; ".join(f"{c['feature']} ({c['kind']}): "
                                + ", ".join(f"{_unit_label(r['unit'])} in {', '.join(r['evidence_ids'])}"
                                            for r in c["units"]) for c in cross["unit_conflicts"]) + ".")
+    tracking = doc["limitations"]["tracking"]
+    if tracking:
+        first = sorted(tracking, key=lambda t: 0 if t["primary"] else 1 if t["source"] in ("trace", "status")
+                       else 2)[:3]
+        out.append("Tracking quality (from the evidence; no severity assigned): "
+                   + "; ".join(f"{t['text']} ({t['evidence_id'] or t['source']})" for t in first)
+                   + (f"; {_n(len(tracking) - len(first), 'more item')} in Limitations" if len(tracking) > 3 else "")
+                   + ".")
     for b in doc["counts"]["behavior_bouts"] or []:
         if b["truncation_note"]:
             out.append(f"{b['evidence_id']}: {b['truncation_note']}")
@@ -869,6 +1240,33 @@ def render_markdown(doc):
         md += [f"- {b['truncation_note']}" for b in c["behavior_bouts"] if b["truncation_note"]]
         md += ["", "_Sessions with bouts (query total): sessions searched minus sessions without bouts, from the "
                "query summary._", "", f"_{c['unit_of_analysis']}_", ""]
+    cov = doc["coverage"]
+
+    def names(xs):
+        return "-" if xs is None else (", ".join(_short(x) for x in xs) or "none")
+    md += ["## Session coverage", "", f"Status: **{cov['status']}**.", ""]
+    prim = cov["primary"]
+    if prim is not None:
+        md += ["Primary comparison:", ""] + _table(["Field", "Value"], [
+            ("Coverage", prim["status"]), ("Reason", prim["reason"] or "-"),
+            ("Query group", "-" if prim["group"] is None else _definition_label(cov["groups"][prim["group"]])),
+            ("Query evidence", ", ".join(prim["query_evidence_ids"]) or "-"),
+            ("Window-feature evidence", ", ".join(prim["features_evidence_ids"]) or "-"),
+            ("Contributing sessions", f"{len(prim['contributing'])}: {names(prim['contributing'])}"),
+            ("Excluded sessions", "-" if prim["excluded"] is None else
+             (f"{len(prim['excluded'])}: " + (", ".join(f"{_short(x['session'])} ({x['reason']})"
+                                                       for x in prim["excluded"]) or "none")))]) + [""]
+    if cov["groups"]:
+        md += ["Query groups (coverage is never combined across groups):", ""] + _table(
+            ["Behavior", "Source", "Merge gap", "Min duration", "Coverage", "Eligible", "Available", "Searched",
+             "Not searched", "With the behavior", "Evidence"],
+            [(g["behavior"], g["source"], g["merge_gap_frames"], g["min_duration_frames"], g["status"],
+              g["eligible_count"], g["available_count"], len(g["searched"]), names(g["not_searched"]),
+              f"{len(g['with_behavior'])}: {names(g['with_behavior'])}", ", ".join(g["query_evidence_ids"]))
+             for g in cov["groups"]]) + [""]
+    t = cov["sessions_touched"]
+    md += [f"Sessions touched by any tool (operational, not scientific coverage): {t['count']}.", "",
+           "_Each session is one independent unit; bouts and windows within a session are not._", ""]
     md += ["## Verified observations", "",
            "Values read from the hash-verified evidence snapshots (not written by the model).", ""]
     md += _table(["#", "Field", "Value", "Unit", "Evidence"],
@@ -879,6 +1277,12 @@ def render_markdown(doc):
            for i in doc["interpretations"]] or ["None."]
     md += ["", "## Limitations and confounders", ""]
     trust = doc["limitations"]["trust"]
+    md += ["### Tracking quality (from the evidence; no severity assigned)", ""]
+    md += [f"- {_text(t['text'])} — `{t['evidence_id'] or 'investigation trace'}`, `{t['source']}`"
+           + (f"; windows: {', '.join(f'`{w}`' for w in t['window_ids'])}" if t["window_ids"] else "")
+           + (f" (tool note: {_text(t['tool_note'])})" if t["tool_note"] else "")
+           for t in doc["limitations"]["tracking"]] or ["None recorded."]
+    md += [""]
     for key, title in (("confounders", "Confounders (unresolved; from the tools)"),
                        ("tool", f"Tool limitations ({trust['tool']})"),
                        ("agent", f"Investigation limitations ({trust['agent']})"),

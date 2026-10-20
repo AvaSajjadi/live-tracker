@@ -57,11 +57,18 @@ Two boundaries, both enforced here:
      Anything else is refused before load_calms21 sees the annotations.
 
 Usage:
+    python -m live_tracker.investigation_data --all \
+        --dataset-root "/Volumes/T7 Hackathon/Datasets/CalMS21"      # or $LIVE_TRACKER_CALMS21_ROOT
     python -m live_tracker.investigation_data \
-        --source "/Volumes/T7 Hackathon/.../calms21_task1_train.json" \
-        --manifest splits/split_manifest.json \
-        --out data/raw/calms21_validation \
+        --source ".../calms21_task1_train.json" \
         --sessions task1/train/mouse005_task1_annotator1 ...
+
+--all extracts every session of --split (default validation) listed in the
+manifest: coverage is decided by the manifest, not by a list of sessions.
+The source is the official CalMS21 Task 1 train file; --dataset-root (or
+$LIVE_TRACKER_CALMS21_ROOT) may point at a directory containing it (directly
+or under extracted/task1_classic_classification/). An unavailable source is
+an explicit refusal; nothing is substituted.
 """
 
 from __future__ import annotations
@@ -87,6 +94,9 @@ from .calms21 import VOCAB, _sessions, load_calms21
 
 FORMAT = "live-tracker-calms21-extraction/2"
 DEFAULT_OUT = Path("data/raw/calms21_validation")
+ROOT_ENV = "LIVE_TRACKER_CALMS21_ROOT"
+TRAIN_FILE = "calms21_task1_train.json"
+_ROOT_LAYOUTS = (Path(TRAIN_FILE), Path("extracted") / "task1_classic_classification" / TRAIN_FILE)
 INDEX_NAME = "extraction_index.json"
 _SPLITS = ("train", "validation", "test")
 
@@ -583,15 +593,53 @@ def unlisted_files(out_dir, index):
     return sorted(p.name for p in Path(out_dir).glob("*.json") if p.name not in listed)
 
 
+def resolve_source(source=None, dataset_root=None, env=None):
+    """The CalMS21 train file: `source` if given, else found under
+    `dataset_root` or $LIVE_TRACKER_CALMS21_ROOT. ExtractionRefused (never a
+    substitute) when it is not available."""
+    if source:
+        path = Path(source)
+        if not path.is_file():
+            raise ExtractionRefused(f"source not found: {path}")
+        return path
+    root = dataset_root or (env if env is not None else os.environ).get(ROOT_ENV)
+    if not root:
+        raise ExtractionRefused(f"no source: pass --source or --dataset-root, or set ${ROOT_ENV}")
+    for rel in _ROOT_LAYOUTS:
+        if (Path(root) / rel).is_file():
+            return Path(root) / rel
+    raise ExtractionRefused(f"{TRAIN_FILE} not found under the dataset root {root} (is the drive mounted?)")
+
+
+def split_coverage(out_dir, manifest_path, allowed_split="validation"):
+    """Which sessions of the manifest's split the verified cache holds:
+    {eligible, cached, missing, complete}. Refuses (raises) like
+    verified_sessions when the cache does not verify."""
+    manifest, _ = load_manifest(manifest_path)
+    verified, _ = verified_sessions(out_dir, manifest_path, allowed_split)
+    eligible = sorted(manifest[allowed_split])
+    cached = sorted(sid for sid, _ in verified)
+    missing = sorted(set(eligible) - set(cached))
+    return {"split": allowed_split, "eligible": eligible, "cached": cached, "missing": missing,
+            "complete": not missing}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--source", required=True)
+    ap.add_argument("--source", default=None, help="the CalMS21 Task 1 train JSON file")
+    ap.add_argument("--dataset-root", default=None, help=f"directory holding {TRAIN_FILE} (or ${ROOT_ENV})")
     ap.add_argument("--manifest", default="splits/split_manifest.json")
-    ap.add_argument("--out", default=str(DEFAULT_OUT))
-    ap.add_argument("--sessions", nargs="+", required=True)
+    ap.add_argument("--split", choices=("validation", "train"), default="validation")
+    ap.add_argument("--out", default=None, help="cache directory (default data/raw/calms21_<split>)")
+    which = ap.add_mutually_exclusive_group(required=True)
+    which.add_argument("--sessions", nargs="+")
+    which.add_argument("--all", action="store_true", help="every session of --split in the manifest")
     a = ap.parse_args(argv)
+    out = a.out or str(DEFAULT_OUT if a.split == "validation" else Path(f"data/raw/calms21_{a.split}"))
     try:
-        index = extract_sessions(a.source, a.out, a.sessions, a.manifest)
+        source = a.source or resolve_source(None, a.dataset_root)   # --source: checked after the manifest
+        sessions = load_manifest(a.manifest)[0][a.split] if a.all else a.sessions
+        index = extract_sessions(source, out, sessions, a.manifest, allowed_split=a.split)
     except (ExtractionRefused, CacheError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2

@@ -319,11 +319,22 @@ def test_requested_session_missing_from_the_cache_is_an_error(env, tmp_path):
     cache = tmp_path / "c2"
     extract_sessions(src, cache, [VAL_A], manifest)   # VAL_B not extracted
     policy = EvidencePolicy(MANIFEST, allow_synthetic=True)
+    # default (complete coverage): a cache missing eligible sessions refuses every query
     tools = CalMS21InvestigationTools.for_validation_cache(cache, manifest, policy)
+    for req in (request(), request(sessions=[VAL_A])):
+        res = call_tool(tools, "query_events", req, policy)
+        assert res["status"] == "error" and "holds 1 of " in res["errors"][0]["message"]
+    # explicit partial coverage: searched what is there, and says what is not
+    tools = CalMS21InvestigationTools.for_validation_cache(cache, manifest, policy, coverage="partial")
     res = call_tool(tools, "query_events", request(sessions=[VAL_A, VAL_B]), policy)
     assert res["status"] == "error" and "not in the validated cache" in res["errors"][0]["message"]
-    res = call_tool(tools, "query_events", request(), policy)  # null: only what is verified
+    res = call_tool(tools, "query_events", request(), policy)
     assert res["measurements"]["sessions_searched"] == [VAL_A]
+    method = {m["name"]: m for m in res["methodology"]}
+    assert method["session_coverage"]["value"].startswith("partial") and VAL_B in method["session_coverage"]["note"]
+    assert method["eligible_sessions"]["value"] == len(MANIFEST["validation"]) and \
+        method["available_sessions"]["value"] == 1
+    assert any(l.startswith("PARTIAL COVERAGE: only 1 of") for l in res["limitations"])
 
 
 # ---- contract compliance, provenance, determinism ----
@@ -338,7 +349,9 @@ def test_result_provenance_and_methodology(env):
     assert prov["data"][0]["sha256"] == ev._canonical_sha(json.loads((env[2] / INDEX_NAME).read_text()))
     names = [m["name"] for m in res["methodology"]]
     assert names == ["event_source", "episode_definition", "merge_gap_frames", "min_duration_frames",
-                     "ordering_and_truncation", "fps"]
+                     "ordering_and_truncation", "fps", "eligible_sessions", "available_sessions",
+                     "session_coverage"]
+    assert {m["name"]: m["value"] for m in res["methodology"]}["session_coverage"] == "complete"
     assert all(m["status"] == "provisional" for m in res["methodology"])
     assert any("investigation confound" in x for x in res["limitations"])
     for e in res["measurements"]["episodes"]:
@@ -388,15 +401,23 @@ def test_real_attack_episodes_match_stage_1(real_tools):
     validate_result("query_events", req, res, policy)
     m = res["measurements"]
     mouse005 = "task1/train/mouse005_task1_annotator1"
-    # onsets and the duration range reported by Stage 1 (docs/investigation_experiment_01.md)
-    assert [(e["session"], e["start_frame"]) for e in m["episodes"]] == \
-        [(mouse005, f) for f in (79, 251, 736, 934, 1147, 1969, 2072)]
-    durations = [(e["end_frame"] - e["start_frame"]) / FPS for e in m["episodes"]]
+    manifest = json.loads(REAL_MANIFEST.read_text())
+    assert m["sessions_searched"] == sorted(manifest["validation"]) and len(m["sessions_searched"]) == 14
+    assert m["n_episodes_total"] == 56 and not m["truncated"]           # counted from the source, all sessions
+    with_attacks = sorted({e["session"] for e in m["episodes"]})
+    assert [s.split("/")[-1].split("_")[0] for s in with_attacks] == ["mouse005", "mouse028", "mouse045", "mouse064"]
+    # mouse005's onsets and duration range reported by Stage 1 (docs/investigation_experiment_01.md)
+    m005 = [e for e in m["episodes"] if e["session"] == mouse005]
+    assert [e["start_frame"] for e in m005] == [79, 251, 736, 934, 1147, 1969, 2072]
+    durations = [(e["end_frame"] - e["start_frame"]) / FPS for e in m005]
     assert round(min(durations), 2) == 0.33 and round(max(durations), 2) == 5.5
     assert {d["kind"] for d in res["provenance"]["data"]} == {"calms21_validation_cache"}
     index = json.loads((REAL_CACHE / INDEX_NAME).read_text())
     assert res["provenance"]["data"][1]["sha256"] == index["source"]["sha256"]
-    assert set(m["sessions_without_episodes"]) == set(m["sessions_searched"]) - {mouse005}
+    assert set(m["sessions_without_episodes"]) == set(m["sessions_searched"]) - set(with_attacks)
+    assert {x["name"]: x["value"] for x in res["methodology"]}["session_coverage"] == "complete"
+    assert any(l.startswith("In the manifest's validation split, 4 of 14 sessions contain any annotated attack "
+                            "(56 runs") for l in res["limitations"])
 
 
 @real
@@ -418,11 +439,12 @@ def test_real_counts_agree_with_the_independent_label_summary(real_tools):
 @real
 def test_real_minimum_duration_and_truncation(real_tools):
     tools, policy = real_tools
+    mouse005 = "task1/train/mouse005_task1_annotator1"
     res = call_tool(tools, "query_events", request(min_duration_frames=30), policy)
-    assert [(e["start_frame"], e["end_frame"]) for e in res["measurements"]["episodes"]] == \
-        [(251, 347), (736, 901), (934, 1033)]
+    assert [(e["start_frame"], e["end_frame"]) for e in res["measurements"]["episodes"]
+            if e["session"] == mouse005] == [(251, 347), (736, 901), (934, 1033)]
     res = call_tool(tools, "query_events", request(max_episodes=2), policy)
-    assert res["measurements"]["truncated"] and res["measurements"]["n_episodes_total"] == 7
+    assert res["measurements"]["truncated"] and res["measurements"]["n_episodes_total"] == 56
 
 
 @real

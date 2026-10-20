@@ -111,7 +111,7 @@ from . import investigation_contracts as ic
 from .calms21 import FPS, IMAGE_SIZE, MICE, TORSO_KEYPOINTS, load_calms21
 from .features import FeatureParams, body_center, dyadic_features, frame_tracking_ok
 from .investigation_events import (IMPLEMENTATION, IMPLEMENTATION_VERSION, SourceUnavailable, _method,
-                                   session_labels)
+                                   session_labels, coverage_metadata)
 from .quality import SUGGESTED_MIN_SCORE, flag_tracking
 
 __all__ = ["FEATURE_LOOKBACK", "SMOOTHER_MEMORY_FRAMES", "SessionData", "check_tracking_quality",
@@ -558,7 +558,9 @@ def get_window_features(tools, request):
                     "max_windows_per_session"),
         ]
     methodology.append(_code_method())
-    limitations = list(FEATURE_LIMITATIONS)
+    cov_methods, cov_limits = coverage_metadata(getattr(snap, "coverage", None))    # metadata only
+    methodology += cov_methods
+    limitations = cov_limits + list(FEATURE_LIMITATIONS)
     if snap.synthetic:
         limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
     any_included = any(w["status"] == "included" for w in windows)
@@ -687,7 +689,9 @@ def check_tracking_quality(tools, request):
                 "provisional; never 'accurate'"),
         _code_method(),
     ]
-    limitations = list(QUALITY_LIMITATIONS)
+    cov_methods, cov_limits = coverage_metadata(getattr(snap, "coverage", None))    # metadata only
+    methodology += cov_methods
+    limitations = cov_limits + list(QUALITY_LIMITATIONS)
     if snap.synthetic:
         limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
     status = "ok" if any(q["endpoint_valid_frames"] > 0 for q in items) else "no_data"

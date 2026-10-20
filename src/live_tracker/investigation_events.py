@@ -35,6 +35,16 @@ tool refuses a source bound to a different policy object. On every query:
 Checks 1 and 2 are repeated just before the result is returned (finalize), so
 a manifest or policy that changed while the query computed refuses it.
 
+Session coverage is explicit
+----------------------------
+The sessions a query may search are the manifest's validation split (the
+authorized annotation split), not whatever the cache happens to hold. With
+coverage="complete" (the default) every tool refuses unless the verified
+cache holds every eligible validation session. coverage="partial" must be
+chosen explicitly; its results then say, in methodology (eligible_sessions,
+available_sessions, session_coverage) and limitations, which eligible
+sessions were unavailable. A partial cache is never reported as complete.
+
 One immutable metadata snapshot per query
 -----------------------------------------
 All provenance (index digest, source path / sha256, per-session file sha256)
@@ -151,14 +161,48 @@ def _method(name, value, note=None):
 ANNOTATION_LIMITATIONS = [
     "Episodes come from human annotations (annotator 1) of CalMS21 Task 1 validation sessions; "
     "they are labels, not measurements, and annotation boundaries are themselves uncertain.",
-    "Only 4 of the 14 validation sessions contain any annotated attack (56 runs in total; "
-    "docs/investigation_experiment_01.md); with sessions as the unit of analysis n <= 4.",
     "Episodes within one session are not independent observations.",
     "Frames just before an annotated attack are mostly annotated 'investigation' "
     "(investigation confound, not resolved).",
     "CalMS21 Task 1 has no 'approach' label; approach can only be measured from motion features.",
     "Held-out test annotations are never read; training-split annotations are not used.",
 ]
+
+
+COVERAGE_MODES = ("complete", "partial")
+
+
+def behavior_prevalence(summary, behavior):
+    """The split-wide count of sessions with the behavior, from the verified
+    index's split label summary (computed from the source at extraction)."""
+    if not summary or any(behavior not in v["label_runs"] for v in summary.values()):
+        return None
+    with_behavior = sum(v["label_runs"][behavior] > 0 for v in summary.values())
+    runs = sum(v["label_runs"][behavior] for v in summary.values())
+    return (f"In the manifest's validation split, {with_behavior} of {len(summary)} sessions contain any "
+            f"annotated {behavior} ({runs} runs; split label summary computed from the source at extraction); "
+            f"with sessions as the unit of analysis, at most {with_behavior} sessions can contribute.")
+
+
+def coverage_metadata(coverage):
+    """(methodology items, limitations) recording a snapshot's session coverage;
+    every tool that reads the cache adds them, so partial coverage is disclosed
+    downstream of query_events too."""
+    if not coverage:
+        return [], []
+    methodology = [
+        _method("eligible_sessions", coverage["eligible"],
+                "validation sessions in the split manifest (the authorized annotation split)"),
+        _method("available_sessions", coverage["available"], "eligible sessions held by the verified cache"),
+        _method("session_coverage", "complete" if coverage["complete"] else
+                f"partial: {len(coverage['missing'])} eligible sessions unavailable",
+                ("unavailable (not searched): " + ", ".join(coverage["missing"]))[:ic.MAX_TEXT]
+                if coverage["missing"] else "every eligible validation session is available"),
+    ]
+    limitations = [] if coverage["complete"] else [
+        f"PARTIAL COVERAGE: only {coverage['available']} of {coverage['eligible']} eligible validation sessions "
+        "are in the verified cache; the unavailable sessions were not read and nothing is said about them."]
+    return methodology, limitations
 
 
 def _policy_mapping(manifest):
@@ -177,6 +221,7 @@ class VerifiedSnapshot:
     data: list                # provenance data items
     synthetic: bool
     finalize: object          # callable: refuses if the binding or the index changed since the snapshot
+    coverage: dict = field(default_factory=dict)   # eligible / available / missing validation sessions
 
 
 def session_labels(sid, data):
@@ -197,10 +242,13 @@ class AnnotationEventSource:
 
     source = "validation_annotation"
 
-    def __init__(self, cache_dir, manifest_path, policy):
+    def __init__(self, cache_dir, manifest_path, policy, coverage="complete"):
         ic._require_policy(policy)
         if policy.annotation_split != "validation":
             raise ic.ForbiddenEvidence("policy", "only validation annotations are read")
+        if coverage not in COVERAGE_MODES:
+            raise ValueError(f"coverage must be one of {COVERAGE_MODES}")
+        self.coverage = coverage
         self.cache_dir = Path(cache_dir)
         self.manifest_path = Path(manifest_path)
         self._manifest_bytes = self.manifest_path.read_bytes()        # the snapshot
@@ -211,6 +259,7 @@ class AnnotationEventSource:
             manifest, sha = load_manifest(frozen)
         assert sha == self._manifest_sha
         self._mapping = _policy_mapping(manifest)
+        self._eligible = sorted(manifest["validation"])     # the authorized sessions, from the manifest
         if policy.split_of != self._mapping:
             raise ic.ForbiddenEvidence("policy", "the policy does not match this source's manifest")
         self.policy = policy
@@ -244,6 +293,16 @@ class AnnotationEventSource:
                 raise SourceUnavailable(f"validated CalMS21 cache unavailable ({type(exc).__name__})") from None
         index = copy.deepcopy(index)                 # the one immutable snapshot for this query
         available = {sid: data for sid, data in verified}
+        missing_eligible = sorted(set(self._eligible) - set(available))
+        if missing_eligible and self.coverage == "complete":
+            raise SourceUnavailable(
+                f"the validated cache holds {len(self._eligible) - len(missing_eligible)} of "
+                f"{len(self._eligible)} eligible validation sessions (missing {missing_eligible[:3]}"
+                f"{' ...' if len(missing_eligible) > 3 else ''}); extract them with "
+                "`python -m live_tracker.investigation_data --all`, or choose coverage='partial' explicitly")
+        coverage = {"mode": self.coverage, "eligible": len(self._eligible),
+                    "available": len(self._eligible) - len(missing_eligible), "missing": missing_eligible,
+                    "complete": not missing_eligible}
         wanted = sorted(available) if sessions is None else sorted(sessions)
         missing = [sid for sid in wanted if sid not in available]
         if missing:
@@ -277,7 +336,7 @@ class AnnotationEventSource:
                                         "(extraction index differs from the verified snapshot)")
 
         return VerifiedSnapshot(index=index, sessions={sid: available[sid] for sid in wanted},
-                                data=data[:20], synthetic=synthetic, finalize=finalize)
+                                data=data[:20], synthetic=synthetic, finalize=finalize, coverage=coverage)
 
     def query(self, request):
         snap = self.snapshot(request["sessions"])
@@ -315,8 +374,13 @@ class AnnotationEventSource:
                     "null: no minimum duration. Otherwise " + span_note),
             _method("ordering_and_truncation", "sorted by (session, start_frame); first max_episodes kept"),
             _method("fps", FPS, "calms21.FPS"),
+            *coverage_metadata(snap.coverage)[0],
         ]
         limitations = list(ANNOTATION_LIMITATIONS)
+        prevalence = behavior_prevalence(index.get("split_label_summary"), request["behavior"])
+        if prevalence:
+            limitations.insert(1, prevalence)
+        limitations = coverage_metadata(snap.coverage)[1] + limitations
         if snap.synthetic:
             limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
         if request["merge_gap_frames"]:
@@ -357,10 +421,11 @@ class CalMS21InvestigationTools(ic.UnavailableTools):
             self.sources[src.source] = src
 
     @classmethod
-    def for_validation_cache(cls, cache_dir, manifest_path, policy):
+    def for_validation_cache(cls, cache_dir, manifest_path, policy, coverage="complete"):
         """The standard setup: annotations from the verified cache, bound to the
-        same manifest snapshot as `policy`."""
-        return cls(policy, [AnnotationEventSource(cache_dir, manifest_path, policy)])
+        same manifest snapshot as `policy`. coverage="complete" refuses a cache
+        missing any eligible validation session; "partial" must be explicit."""
+        return cls(policy, [AnnotationEventSource(cache_dir, manifest_path, policy, coverage=coverage)])
 
     def _provenance(self, data=()):
         return {"implementation": IMPLEMENTATION, "implementation_version": IMPLEMENTATION_VERSION,

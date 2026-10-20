@@ -69,7 +69,8 @@ from pathlib import Path
 from . import investigation_contracts as ic
 from . import investigation_windows as iw
 from .calms21 import FPS
-from .investigation_events import IMPLEMENTATION, IMPLEMENTATION_VERSION, SourceUnavailable, _method
+from .investigation_events import (IMPLEMENTATION, IMPLEMENTATION_VERSION, SourceUnavailable, _method,
+                                   coverage_metadata)
 
 __all__ = ["APPROVED_UNCERTAINTY", "BASELINE_CLEARANCE", "compare_windows"]
 
@@ -301,7 +302,9 @@ def compare_windows(tools, request):
                     "n_windows_baseline": n_base, "effect": effect,
                     "sufficiency": {"criteria": dict(crit), "met": not unmet, "reasons_not_met": unmet}}
     methodology = _methodology(request, data, windows, used, diffs, L, gap, lookback)
-    limitations = list(LIMITATIONS)
+    cov_methods, cov_limits = coverage_metadata(getattr(snap, "coverage", None))    # metadata only
+    methodology += cov_methods
+    limitations = cov_limits + list(LIMITATIONS)
     if snap.synthetic:
         limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
     result = ic.make_result(TOOL, request, status, measurements, methodology=methodology,

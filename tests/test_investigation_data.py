@@ -840,3 +840,145 @@ def test_two_sessions_sharing_one_file_are_refused(env):
     with pytest.raises((CacheError, ExtractionRefused)):
         verified_sessions(out, manifest)
     assert "reuse_check" not in extract_sessions(src, out, VAL, manifest)
+
+
+# ======================================================================
+# Full authorized coverage: data-driven discovery, configurable source root
+# ======================================================================
+
+from pathlib import Path  # noqa: E402
+
+from live_tracker.investigation_data import (ROOT_ENV, TRAIN_FILE, resolve_source, session_filename,  # noqa: E402
+                                             sha256_file, split_coverage)
+
+ROOT = Path(__file__).resolve().parents[1]
+
+REAL_SOURCE_ROOT = Path("/Volumes/T7 Hackathon/Datasets/CalMS21")      # optional; tests skip without it
+
+
+def wide_env(tmp_path, n_val=6, n_train=4):
+    """A manifest with more validation sessions than the old three-session cache."""
+    val = [f"task1/train/SYNTHETIC_wide_val_{i}" for i in range(n_val)]
+    train = [f"task1/train/SYNTHETIC_wide_train_{i}" for i in range(n_train)]
+    test = ["task1/test/SYNTHETIC_wide_test_0"]
+    manifest = tmp_path / "wide_manifest.json"
+    manifest.write_text(json.dumps({"train": train, "validation": val, "test": test}))
+    recs = {sid: record([3, 0, 0, 3, 1][: 3 + i % 3], 0.1 * i) for i, sid in enumerate(val + train)}
+    src = tmp_path / TRAIN_FILE
+    src.write_text(json.dumps({"annotator-id_0": recs}))
+    return val, train, test, manifest, src
+
+
+def test_all_extracts_every_manifest_session_of_the_split(tmp_path):
+    val, train, _, manifest, src = wide_env(tmp_path)
+    out = tmp_path / "full"
+    assert main(["--all", "--source", str(src), "--manifest", str(manifest), "--out", str(out)]) == 0
+    cov = split_coverage(out, manifest)
+    assert cov["complete"] and cov["cached"] == sorted(val) and len(cov["cached"]) == 6 > 3
+    index = json.loads((out / INDEX_NAME).read_text())
+    assert sorted(index["split_label_summary"]) == sorted(val) and not set(index["sessions"]) & set(train)
+
+
+def test_train_split_is_a_separate_cache_and_never_mixes_with_validation(tmp_path):
+    val, train, _, manifest, src = wide_env(tmp_path)
+    out = tmp_path / "train_cache"
+    assert main(["--all", "--split", "train", "--source", str(src), "--manifest", str(manifest),
+                 "--out", str(out)]) == 0
+    index = json.loads((out / INDEX_NAME).read_text())
+    assert index["allowed_split"] == "train" and sorted(index["sessions"]) == sorted(train)
+    with pytest.raises(ExtractionRefused):                       # a validation reader refuses the train cache
+        verified_sessions(out, manifest, "validation")
+    with pytest.raises(ExtractionRefused):                       # and train sessions cannot enter a validation cache
+        extract_sessions(src, tmp_path / "v", train[:1], manifest, allowed_split="validation")
+
+
+def test_incremental_extension_keeps_and_rederives_earlier_sessions(tmp_path):
+    val, _, _, manifest, src = wide_env(tmp_path)
+    out = tmp_path / "inc"
+    extract_sessions(src, out, val[:3], manifest)                # the old three-session cache
+    first = split_coverage(out, manifest)
+    assert not first["complete"] and first["missing"] == sorted(val[3:])
+    before = {sid: e["sha256"] for sid, e in json.loads((out / INDEX_NAME).read_text())["sessions"].items()}
+    extract_sessions(src, out, val, manifest)                    # extended to the whole split
+    after = json.loads((out / INDEX_NAME).read_text())["sessions"]
+    assert split_coverage(out, manifest)["complete"]
+    assert all(after[sid]["sha256"] == h for sid, h in before.items())   # same source: identical payloads
+
+
+def test_split_coverage_refuses_corrupt_or_stale_caches(tmp_path):
+    val, _, _, manifest, src = wide_env(tmp_path)
+    out = tmp_path / "c"
+    extract_sessions(src, out, val, manifest)
+    path = out / session_filename(val[0])
+    path.write_bytes(path.read_bytes() + b" ")                   # corrupt one payload
+    with pytest.raises(CacheError):
+        split_coverage(out, manifest)
+    extract_sessions(src, out, val, manifest)                    # rebuilt from the source
+    m = json.loads(manifest.read_text())
+    m["validation"] = m["validation"][:-1]
+    m["train"].append(val[-1])
+    manifest.write_text(json.dumps(m))                           # the manifest changed: the index is stale
+    with pytest.raises(CacheError):
+        split_coverage(out, manifest)
+
+
+def test_partial_index_is_never_published(tmp_path, monkeypatch):
+    val, _, _, manifest, src = wide_env(tmp_path)
+    out = tmp_path / "p"
+    extract_sessions(src, out, val[:2], manifest)
+    import live_tracker.investigation_data as idata
+    real = idata._write_atomic
+    calls = []
+
+    def dies_midway(path, payload):
+        calls.append(path.name)
+        if len(calls) == 4:
+            raise OSError("disk full")
+        real(path, payload)
+    monkeypatch.setattr(idata, "_write_atomic", dies_midway)
+    with pytest.raises(OSError):
+        extract_sessions(src, out, val, manifest)
+    monkeypatch.setattr(idata, "_write_atomic", real)
+    cov = split_coverage(out, manifest)                          # the old index still verifies; nothing half-new
+    assert cov["cached"] == sorted(val[:2]) and not cov["complete"]
+
+
+def test_dataset_root_resolution(tmp_path, monkeypatch):
+    nested = tmp_path / "CalMS21" / "extracted" / "task1_classic_classification"
+    nested.mkdir(parents=True)
+    (nested / TRAIN_FILE).write_text("{}")
+    assert resolve_source(None, tmp_path / "CalMS21", env={}) == nested / TRAIN_FILE
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    (flat / TRAIN_FILE).write_text("{}")
+    assert resolve_source(None, None, env={ROOT_ENV: str(flat)}) == flat / TRAIN_FILE
+    assert resolve_source(str(flat / TRAIN_FILE)) == flat / TRAIN_FILE
+    with pytest.raises(ExtractionRefused, match="is the drive mounted"):
+        resolve_source(None, tmp_path / "missing", env={})
+    with pytest.raises(ExtractionRefused, match="no source"):
+        resolve_source(None, None, env={})
+    with pytest.raises(ExtractionRefused, match="source not found"):
+        resolve_source(str(tmp_path / "nope.json"))
+
+
+def test_cli_reports_an_unavailable_source(tmp_path, capsys):
+    _, _, _, manifest, _ = wide_env(tmp_path)
+    code = main(["--all", "--dataset-root", str(tmp_path / "unmounted"), "--manifest", str(manifest),
+                 "--out", str(tmp_path / "x")])
+    assert code == 2 and "not found under the dataset root" in capsys.readouterr().err
+    assert not (tmp_path / "x" / INDEX_NAME).exists()            # nothing substituted or published
+
+
+@pytest.mark.skipif(not (REAL_SOURCE_ROOT / "extracted" / "task1_classic_classification" / TRAIN_FILE).exists()
+                    or not (ROOT / "data" / "raw" / "calms21_validation" / INDEX_NAME).exists(),
+                    reason="CalMS21 source drive or verified cache not present")
+def test_real_cache_covers_the_full_validation_split_and_binds_the_source():
+    manifest = ROOT / "splits" / "split_manifest.json"
+    cache = ROOT / "data" / "raw" / "calms21_validation"
+    cov = split_coverage(cache, manifest)
+    m = json.loads(manifest.read_text())
+    assert cov["complete"] and cov["cached"] == sorted(m["validation"]) and len(cov["cached"]) == 14
+    index = json.loads((cache / INDEX_NAME).read_text())
+    source = resolve_source(None, REAL_SOURCE_ROOT, env={})
+    assert index["source"]["sha256"] == sha256_file(source)       # reproducible source-to-index provenance
+    assert index["source"]["size"] == source.stat().st_size and not set(index["sessions"]) & set(m["test"])

@@ -10,3 +10,5 @@ models/*
 *.zip
 outputs/
 *.egg-info/
+.env.*
+!.env.example

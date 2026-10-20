@@ -60,12 +60,15 @@ such (tracking_note); positions and motion there are unknown, never
 from __future__ import annotations
 
 import bisect
+import contextlib
 import copy
+import fcntl
 import hashlib
 import json
 import math
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,7 +85,7 @@ from .rules import RuleSet
 from .skeleton import mouse_skeleton
 
 __all__ = ["PLAYBACK_SPEEDS", "REPLAY_BANNER", "FrameState", "ReplayError", "ReplaySession", "TrackingWarning",
-           "build_replay", "build_replays", "causal_pose_flags", "replay_run_id", "tracking_warnings"]
+           "build_replay", "build_replays", "causal_pose_flags", "replay_run_id", "run_paths", "tracking_warnings"]
 
 REPLAY_BANNER = "Replay of a recorded session, not a live camera"
 SYNTHETIC_NOTE = "SYNTHETIC test data: not CalMS21, not predictions of any model"
@@ -98,6 +101,7 @@ FROZEN_MIN_FRAMES = 15             # quality.flag_tracking's default (placeholde
 FROZEN_TOL_PX = 1e-6               # quality.flag_tracking's default
 IDENTITY_VERSION = "replay-run/2"
 ANSWER_RECORD = "replay_answer_position"
+LOCK_TIMEOUT_S = 5.0               # bounded wait for a run's lock (answers, refresh, building)
 _END_ONLY = ("session_end", "stream_end")      # closures known only after the session's last row
 _TOL = 1e-9
 
@@ -423,6 +427,26 @@ class ReplaySession:
         return {"researcher_answer": answered["researcher_answer"] if answered else None,
                 "answered_frame": None if index is None or answered is None else self.frames[index]}
 
+    def refresh(self):
+        """Re-read the journal and answer positions from disk (another browser
+        tab or process may have answered), under the run lock. In-memory
+        sessions have nothing to re-read."""
+        if self.journal.path is None:
+            return
+        with run_lock(self.journal.path):
+            self._refresh_locked()
+
+    def _refresh_locked(self):
+        try:
+            self.journal.recover()
+        except el.JournalIntegrityError as exc:
+            raise ReplayError(f"the journal {self.journal.path.name} is inconsistent: {exc}") from None
+        except el.EventPersistenceError as exc:
+            raise ReplayError(f"the journal {self.journal.path.name} cannot be re-read: {exc}") from None
+        for eid, index in _load_answer_positions(self._answers_path, self.run_id, self.frames, self._timeline,
+                                                 self.journal).items():
+            self._answer_index.setdefault(eid, index)
+
     def answer(self, event_id, answer, *, at_frame):
         """The researcher's final answer to an "ask" event of this run that is
         visible at replay frame `at_frame`. Written once to the journal (the
@@ -436,22 +460,81 @@ class ReplaySession:
             raise ReplayError(f"{event_id!r} is a {event['action']!r} event; only 'ask' events take an answer")
         if answer not in el.ANSWERS:
             raise ReplayError(f"answer must be one of {el.ANSWERS}")
-        try:
-            written = self._monitor.answer(event_id, answer)
-        except el.JournalConflictError:
-            raise ReplayError(f"{event_id!r} already has a different answer; answers are final") from None
-        if written:                       # a new answer: its replay position is known exactly
-            self._answer_index[event_id] = state.index
-            if self._answers_path is not None:
-                _append_line(self._answers_path, {"record": ANSWER_RECORD, "run_id": self.run_id,
-                                                  "event_id": event_id, "researcher_answer": answer,
-                                                  "answered_frame": state.frame})
-        return written
+        # one atomic step under the run lock: re-read, check, append the answer, record its position
+        with run_lock(self.journal.path):
+            if self.journal.path is not None:
+                self._refresh_locked()
+            current = self.journal.get("event_answered", event_id)
+            if current is not None:       # decided before anything is written
+                if current["researcher_answer"] != answer:
+                    raise ReplayError(f"{event_id!r} already has a different answer; answers are final")
+                return False              # the same answer again: a no-op
+            try:
+                written = self._monitor.answer(event_id, answer)
+            except el.JournalConflictError:
+                raise ReplayError(f"{event_id!r} already has a different answer; answers are final") from None
+            except el.EventPersistenceError as exc:
+                raise ReplayError(f"the answer could not be saved ({exc}); nothing was recorded") from None
+            if written:                   # a new answer: its replay position is known exactly
+                self._answer_index[event_id] = state.index
+                if self._answers_path is not None:
+                    try:
+                        _append_line(self._answers_path, {"record": ANSWER_RECORD, "run_id": self.run_id,
+                                                          "event_id": event_id, "researcher_answer": answer,
+                                                          "answered_frame": state.frame})
+                    except OSError as exc:
+                        raise ReplayError(f"the answer was saved, but its replay position could not be recorded "
+                                          f"({exc.strerror or exc}); after a restart it shows as timing-unknown") \
+                            from None
+            return written
 
     def log_entries(self):
         """End-of-session §4 entries of this run (events, then warnings), for the summary."""
         end = self.end_state()
         return end.events + end.warnings
+
+
+# ---- the per-run lock ----
+
+def lock_path(journal_path):
+    return Path(f"{journal_path}.lock")
+
+
+@contextlib.contextmanager
+def run_lock(journal_path, timeout_s=None):
+    """An exclusive advisory lock (fcntl.flock) on <journal>.lock, shared by
+    every replay instance and process using that journal: building (the
+    monitor's appends), refreshing and answering all hold it, so no reader
+    repairs a line another writer is still writing and no two answers
+    interleave. Waits at most timeout_s (LOCK_TIMEOUT_S), then ReplayError.
+    Released on every exit path (the descriptor is closed). None: no lock (an
+    in-memory journal has no other writer)."""
+    if journal_path is None:
+        yield
+        return
+    timeout_s = LOCK_TIMEOUT_S if timeout_s is None else timeout_s
+    path = lock_path(journal_path)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise ReplayError(f"the run lock {path.name} cannot be opened ({exc.strerror})") from None
+    try:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ReplayError(f"the replay journal is busy (another answer or build holds {path.name} for "
+                                      f"more than {timeout_s:g} s); nothing was written, try again") from None
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 # ---- answer positions (next to the journal; the journal schema is unchanged) ----
@@ -529,6 +612,13 @@ def _run_id_for(scores, session, rules, fps):
     return records, replay_run_id(session, rules, _rows_digest(records, columns), fps)
 
 
+def run_paths(scores, session, rules, directory, fps=DEFAULT_FPS):
+    """(run_id, journal path, answers path) of one session run kept in `directory`."""
+    _, run_id = _run_id_for(scores, session, _approved(rules), fps)
+    directory = Path(directory)
+    return run_id, directory / f"{run_id}.journal.jsonl", directory / f"{run_id}.answers.jsonl"
+
+
 def build_replay(scores, session, rules, *, warnings=(), pose=None, journal_path=None, answers_path=None,
                  fps=DEFAULT_FPS, min_keypoint_score=SUGGESTED_MIN_SCORE, frozen_min_frames=FROZEN_MIN_FRAMES,
                  frame_size=None, max_speed_px_s=None):
@@ -543,10 +633,11 @@ def build_replay(scores, session, rules, *, warnings=(), pose=None, journal_path
     if any(w.session != session for w in warnings):
         raise ReplayError("tracking warnings of another session were given")
     try:
-        monitor = Monitor(list(rules), fps=fps, journal_path=journal_path, run_id=run_id)
-        for row in records:
-            monitor.step(row)
-        events = monitor.finish()
+        with run_lock(journal_path):      # the monitor appends to (or confirms) the shared journal
+            monitor = Monitor(list(rules), fps=fps, journal_path=journal_path, run_id=run_id)
+            for row in records:
+                monitor.step(row)
+            events = monitor.finish()
     except (el.JournalIntegrityError, el.EventPersistenceError, ValueError) as exc:
         raise ReplayError(f"{session}: the monitor could not replay this session ({type(exc).__name__}: {exc})") \
             from None
@@ -576,7 +667,8 @@ def build_replay(scores, session, rules, *, warnings=(), pose=None, journal_path
         end = None if w.ongoing_at_session_end else bisect.bisect_left(times, w.end_s - _TOL)
         warned.append((w, visible if visible < len(times) else None,
                        end if end is not None and end < len(times) else None))
-    answers = _load_answer_positions(answers_path, run_id, frames, timeline, monitor.journal)
+    with run_lock(journal_path):          # positions are written under the same lock as answers
+        answers = _load_answer_positions(answers_path, run_id, frames, timeline, monitor.journal)
     pose_index = _pose_index(pose, session, min_score=min_keypoint_score, frozen_min_frames=frozen_min_frames,
                              frame_size=frame_size, max_speed_px_s=max_speed_px_s)
     return ReplaySession(session, run_id, rules, synthetic, frames, times, tracking, scores_by, monitor.journal,
@@ -593,9 +685,7 @@ def build_replays(scores, rules, *, warnings=(), pose=None, journal_dir=None, fp
     for session in sorted(scores["session"].unique()):
         journal = answers = None
         if journal_dir is not None:
-            _, run_id = _run_id_for(scores, session, approved, fps)
-            journal = Path(journal_dir) / f"{run_id}.journal.jsonl"
-            answers = Path(journal_dir) / f"{run_id}.answers.jsonl"
+            _, journal, answers = run_paths(scores, session, approved, journal_dir, fps)
         out[session] = build_replay(scores, session, rules, warnings=[w for w in warnings if w.session == session],
                                     pose=pose, journal_path=journal, answers_path=answers, fps=fps)
     return out

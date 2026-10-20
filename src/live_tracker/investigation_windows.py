@@ -4,8 +4,24 @@
 Read-only. Both tools answer through the Stage 2 contract
 (investigation_contracts) and read CalMS21 validation sessions only through
 the Stage 3 AnnotationEventSource snapshot (manifest binding, Stage 1
-verification, provenance, final index re-check). Episodes must come from
-"validation_annotation"; other sources answer "source_unavailable".
+verification, provenance, final index re-check).
+
+Evidence sources (Stage 9 S9-4, evidence_context): episodes may come from
+"validation_annotation" (unchanged) or from the prediction sources of
+investigation_sources ("classifier_prediction", "monitor_event"). For a
+prediction source:
+- pose still comes from the verified validation cache, but each record is
+  reduced to its keypoints and scores before Igor's per-session parser sees
+  it (load_pose_session): annotations are never read;
+- the behavior frames the exclusion rules use are the declared source's own
+  (classifier qualifying frames, or bouts of fired monitor events), never
+  annotated frames; an episode id must be a start the source can produce;
+- label_context is null; the cache's frame count must equal the score drop's
+  for every session (frame alignment), else source_unavailable;
+- a pre-event window is pre-threshold-crossing / pre-detection, not
+  necessarily pre-behavior (onset_meaning in methodology, and limitations).
+A source that is not plugged in (or the pose cache) answers
+"source_unavailable"; nothing is substituted.
 
 Reuse
 -----
@@ -108,13 +124,14 @@ from pathlib import Path
 import numpy as np
 
 from . import investigation_contracts as ic
-from .calms21 import FPS, IMAGE_SIZE, MICE, TORSO_KEYPOINTS, load_calms21
+from .calms21 import FPS, IMAGE_SIZE, MICE, TORSO_KEYPOINTS, _session_to_long, load_calms21
 from .features import FeatureParams, body_center, dyadic_features, frame_tracking_ok
 from .investigation_events import (IMPLEMENTATION, IMPLEMENTATION_VERSION, SourceUnavailable, _method,
                                    session_labels, coverage_metadata)
 from .quality import SUGGESTED_MIN_SCORE, flag_tracking
 
-__all__ = ["FEATURE_LOOKBACK", "SMOOTHER_MEMORY_FRAMES", "SessionData", "check_tracking_quality",
+__all__ = ["EvidenceContext", "FEATURE_LOOKBACK", "SMOOTHER_MEMORY_FRAMES", "SessionData", "check_tracking_quality",
+           "evidence_context", "load_pose_session",
            "get_window_features", "history_start", "load_session", "measure_window", "prefix_arrays",
            "smoother_memory_frames"]
 
@@ -222,7 +239,19 @@ def load_session(sid, data):
     frames 0..n-1 at FPS."""
     labels = session_labels(sid, data)
     poses, _ = load_calms21(data)
-    n = len(labels)
+    return _session_from_poses(sid, poses, len(labels), labels)
+
+
+def load_pose_session(sid, data):
+    """One verified session WITHOUT annotations (prediction sources): the record
+    is reduced to keypoints and scores before Igor's per-session parser
+    (calms21._session_to_long) reads it, so no label is ever parsed."""
+    rec = next(iter(data.values()))[sid]
+    poses = _session_to_long(sid, {"keypoints": rec["keypoints"], "scores": rec["scores"]})
+    return _session_from_poses(sid, poses, len(rec["keypoints"]), None)
+
+
+def _session_from_poses(sid, poses, n, labels):
     torso = poses[poses["keypoint"].isin(TORSO_KEYPOINTS)]
     torso = torso.sort_values(["mouse", "keypoint", "frame"]).reset_index(drop=True)
     counts = torso.groupby(["mouse", "keypoint"])["frame"].agg(["count", "min", "max", "nunique"])
@@ -356,10 +385,80 @@ def _even_selection(items, k):
     return [items[int(math.floor(i * step + 0.5))] for i in range(k)]
 
 
+# ---- evidence context: which source's frames, starts and data a request uses (S9-4) ----
+
+@dataclass
+class EvidenceContext:
+    source: str
+    data: dict                      # session -> SessionData
+    behavior_frames: object         # (session, behavior) -> per-frame bool array
+    is_start: object                # (session, behavior, frame) -> bool
+    with_labels: bool               # label_context is computed (annotation source only)
+    methods: list                   # source methodology items (event_source first); None: annotation default
+    limitations: list               # source-specific limitations
+    data_items: list                # provenance data items
+    synthetic: bool
+    coverage: dict
+    finalize: object
+    episode_methods: object = lambda episode_ids: []   # methodology for the requested episodes (merging)
+
+
+def evidence_context(tools, source, sessions):
+    """The verified data and behavior frames for windows of one source; raises
+    SourceUnavailable (never substitutes another source)."""
+    src = tools.sources.get(source)
+    if src is None:
+        raise SourceUnavailable(f"event source {source!r} is not available in this implementation; no other "
+                                "source is substituted")
+    if source == "validation_annotation":
+        snap = src.snapshot(sessions)
+        data = {sid: load_session(sid, snap.sessions[sid]) for sid in sessions}
+        return EvidenceContext(
+            source, data, lambda sid, b: data[sid].labels == b,
+            lambda sid, b, f: _is_episode_start(data[sid], b, f), True,
+            None,                                     # _common_methodology's annotation default, unchanged
+            [ANNOTATION_NOTE], snap.data, snap.synthetic, getattr(snap, "coverage", None), snap.finalize)
+    pose = tools.sources.get("validation_annotation")
+    if pose is None or not hasattr(src, "behavior_frames"):
+        raise SourceUnavailable(f"windows of {source!r} episodes need the verified validation pose cache "
+                                "(plugged in as the validation_annotation source; its annotations are not read)")
+    src._check()
+    snap = pose.snapshot(sessions)
+    data = {sid: load_pose_session(sid, snap.sessions[sid]) for sid in sessions}
+    for sid in sessions:
+        if src.n_frames(sid) != data[sid].n_frames:
+            raise SourceUnavailable(f"{sid}: the score drop has {src.n_frames(sid)} frames, the pose cache "
+                                    f"{data[sid].n_frames} (frame alignment)")
+    items = (list(src.data_items()) + list(snap.data))[:20]
+
+    def finalize():
+        snap.finalize()
+        src._check()
+    return EvidenceContext(source, data, src.behavior_frames, src.is_episode_start, False,
+                           src.window_methodology(), src.window_limitations(), items,
+                           snap.synthetic or src.synthetic, getattr(snap, "coverage", None), finalize,
+                           getattr(src, "episode_methods", lambda episode_ids: []))
+
+
+NOT_ASSESSED_NOTE = ("Annotated label composition was NOT assessed: prediction episodes are investigated without "
+                     "reading annotations, so whether pre-event windows or baselines are dominated by "
+                     "'investigation', 'other' or any other label, and the confound that would follow, is unknown.")
+
+
+def _limitations(ctx_, annotation_list, prediction_list):
+    """Limitations selected explicitly by evidence source: the annotation list
+    unchanged, or the source's own disclosures plus the prediction list (which
+    never asserts label composition or annotation use) and NOT_ASSESSED_NOTE."""
+    if ctx_.with_labels:
+        return list(annotation_list)
+    return list(ctx_.limitations) + list(prediction_list) + [NOT_ASSESSED_NOTE]
+
+
 # ---- shared result parts ----
 
 CODE_FILES = ("investigation_windows.py", "investigation_events.py", "investigation_contracts.py",
-              "investigation_data.py", "features.py", "quality.py", "filters.py", "calms21.py")
+              "investigation_data.py", "features.py", "quality.py", "filters.py", "calms21.py",
+              "investigation_sources.py", "score_drops.py", "event_log.py")
 
 
 def _code_identity():
@@ -386,16 +485,19 @@ def _code_method():
                    "provenance.code_sha256 = sha256 of the JSON {file: sha256} of these files")
 
 
-def _common_methodology():
+def _common_methodology(source_methods=None):
+    read_after = ("annotations after the window are read by the exclusion rules" if source_methods is None else
+                  "the declared source's behavior frames after the window are read by the exclusion rules "
+                  "(annotations are never read)")
     return [
-        _method("event_source", "validation_annotation",
-                "episodes and behavior frames are human annotations of validation sessions"),
+        *(source_methods or [_method("event_source", "validation_annotation",
+                                     "episodes and behavior frames are human annotations of validation sessions")]),
         _method("causal_computation", "per-window truncation at the window end",
                 "every value equals Ava's pipeline run on frames [0, end) of the session: frames at or "
                 "after the window end have no influence on any value (a pre-event window: none at or "
                 "after onset - gap). They are read: the pipeline runs once on the whole session and its "
                 "values are reused only where they provably equal the truncated run (else it is rerun "
-                "on [0, end)); annotations after the window are read by the exclusion rules"),
+                f"on [0, end)); {read_after}"),
         _method("tracking_flags", f"flag_tracking: frame {IMAGE_SIZE[0]}x{IMAGE_SIZE[1]}, min_score "
                 f"{SUGGESTED_MIN_SCORE}, frozen {FROZEN_MIN_FRAMES} frames, jump detection off",
                 "jump limit not chosen (Ava's decision); single-frame keypoint collapses pass every flag"),
@@ -442,6 +544,19 @@ FEATURE_LIMITATIONS = [
     "provisional choices, not validated settings.",
     ANNOTATION_NOTE,
 ]
+# prediction sources: the same list without the annotated-label confound line and the annotation note
+FEATURE_LIMITATIONS_PREDICTION = [
+    FEATURE_LIMITATIONS[0], FEATURE_LIMITATIONS[1],
+    "Baseline tiles may lie at other times of the session than pre-event windows (time confound, "
+    "not resolved).",
+    "Windows of one session are not independent observations; sessions are the unit of analysis.",
+    "Pixel distances are not calibrated between sessions (camera geometry may differ).",
+    "Window inclusion requires every requested feature to meet the usable-frame minimum: request "
+    "only the features that will be compared.",
+    "The usable-frame minimum, history margin, smoother memory level and baseline thinning are "
+    "provisional choices, not validated settings.",
+]
+assert set(FEATURE_LIMITATIONS_PREDICTION) <= set(FEATURE_LIMITATIONS)
 
 
 def get_window_features(tools, request):
@@ -449,33 +564,30 @@ def get_window_features(tools, request):
     ic.validate_request(tool, request, tools.policy)      # nothing is read before this
     eps = [ic.parse_episode_id(e) for e in request["episode_ids"]]
     source, behavior = eps[0]["source"], eps[0]["behavior"]
-    src = tools.sources.get(source)
-    if source != "validation_annotation" or src is None:
-        return _error(tool, request, "source_unavailable",
-                      f"episodes of source {source!r} cannot be verified by this implementation; "
-                      "only validation_annotation episodes are supported")
     sessions = sorted({e["session"] for e in eps})
     try:
-        snap = src.snapshot(sessions)
-        data = {sid: load_session(sid, snap.sessions[sid]) for sid in sessions}
+        ctx_ = evidence_context(tools, source, sessions)
     except SourceUnavailable as exc:
         return _error(tool, request, "source_unavailable", str(exc))
+    data = ctx_.data
     for eid, e in zip(request["episode_ids"], eps):
-        if not _is_episode_start(data[e["session"]], behavior, e["start_frame"]):
-            return _error(tool, request, "unknown_id", f"{eid} is not the first frame of an annotated "
+        if not ctx_.is_start(e["session"], behavior, e["start_frame"]):
+            what = "an annotated" if ctx_.with_labels else f"a {source}"
+            return _error(tool, request, "unknown_id", f"{eid} is not the first frame of {what} "
                           f"{behavior!r} run in the verified session")
 
     feats = request["features"]
     lookback = feature_lookback(feats)
     L, gap = request["pre_event"]["length_frames"], request["pre_event"]["gap_frames"]
-    is_beh = {sid: data[sid].labels == behavior for sid in sessions}
+    is_beh = {sid: ctx_.behavior_frames(sid, behavior) for sid in sessions}
     windows, pre_spans = [], {sid: [] for sid in sessions}
 
     def item(wid, kind, sid, eid, start, end, reasons, summaries):
         return {"window_id": wid, "kind": kind, "session": sid, "episode_id": eid,
                 "start_frame": start, "end_frame": end, "start_s": start / FPS, "end_s": end / FPS,
                 "status": "excluded" if reasons else "included", "exclusion_reasons": _ordered(reasons),
-                "features": summaries, "label_context": _label_context(data[sid], start, end),
+                "features": summaries,
+                "label_context": _label_context(data[sid], start, end) if ctx_.with_labels else None,
                 "preprocessing": {"truncated_at_onset": kind == "pre_event", "interpolation": False,
                                   "smoothing": "one_euro"}}
 
@@ -524,10 +636,12 @@ def get_window_features(tools, request):
         return _error(tool, request, "invalid_request", f"{len(windows)} windows exceed the contract "
                       f"maximum of {ic.MAX_WINDOWS}; use longer baseline tiles or fewer sessions")
 
-    methodology = _common_methodology() + [
+    onset_note = ("onset = the episode's first annotated frame" if ctx_.with_labels else
+                  "onset = the episode's first frame in the declared source (a threshold crossing or detection "
+                  "onset, see onset_meaning), not necessarily the behavior's onset")
+    methodology = _common_methodology(ctx_.methods) + [
         _method("pre_event_window", f"[onset - {gap} - {L}, onset - {gap})",
-                "onset = the episode's first annotated frame; clipped to frame 0 and excluded "
-                "(starts_before_session) if it would start earlier"),
+                f"{onset_note}; clipped to frame 0 and excluded (starts_before_session) if it would start earlier"),
         _method("feature_lookback_frames", lookback, "largest lookback of the requested features "
                 f"({', '.join(f'{f} {FEATURE_LOOKBACK[f]}' for f in feats)})"),
         _method("history_start", "start - lookback, then back over smoother_memory_frames + 1 valid "
@@ -535,8 +649,10 @@ def get_window_features(tools, request):
                 "used only by the exclusion rules; earlier frames are still read and together weigh "
                 "< 1% in each smoothed position of the window (missing samples extend it)"),
         _method("event_overlap_rule", "behavior frame in [history start, onset)",
-                "pre-event windows whose window, feature history or gap contains any frame annotated "
-                "with the behavior (any episode of the session) are excluded as overlaps_event"),
+                "pre-event windows whose window, feature history or gap contains any "
+                + ("frame annotated with the behavior" if ctx_.with_labels else
+                   "behavior frame of the declared source (never an annotated frame)")
+                + " (any episode of the session) are excluded as overlaps_event"),
         _method("usable_frame", "finite value and tracking_ok at t-1 and t",
                 "both derivative endpoints; the same rule as Stage 1 history H = 1"),
         _method("min_usable_fraction", MIN_USABLE_FRACTION,
@@ -557,18 +673,20 @@ def get_window_features(tools, request):
             _method("baseline_tiles_omitted", thinned, "eligible tiles not returned because of "
                     "max_windows_per_session"),
         ]
+    methodology += ctx_.episode_methods(request["episode_ids"])
     methodology.append(_code_method())
-    cov_methods, cov_limits = coverage_metadata(getattr(snap, "coverage", None))    # metadata only
+    cov_methods, cov_limits = coverage_metadata(ctx_.coverage)    # metadata only
     methodology += cov_methods
-    limitations = cov_limits + list(FEATURE_LIMITATIONS)
-    if snap.synthetic:
+    limitations = cov_limits + _limitations(ctx_, FEATURE_LIMITATIONS, FEATURE_LIMITATIONS_PREDICTION)
+    if ctx_.synthetic:
         limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
     any_included = any(w["status"] == "included" for w in windows)
     result = ic.make_result(tool, request, "ok" if any_included else "no_data", {"windows": windows},
-                            methodology=methodology, limitations=limitations, provenance=_provenance(snap.data))
+                            methodology=methodology, limitations=limitations,
+                            provenance=_provenance(ctx_.data_items))
     ic.validate_result(tool, request, result, tools.policy)     # self-check
     try:
-        snap.finalize()
+        ctx_.finalize()
     except SourceUnavailable as exc:
         return _error(tool, request, "source_unavailable", str(exc))
     return result
@@ -588,14 +706,18 @@ QUALITY_LIMITATIONS = [
     "The verdict's usable-fraction minimum is a provisional placeholder.",
     ANNOTATION_NOTE,
 ]
+QUALITY_LIMITATIONS_PREDICTION = QUALITY_LIMITATIONS[:-1]          # without the annotation note
 
 
-def _window_span(w, sess):
+def _window_span(w, sess, is_start=None):
     """[start, end) of a requested window, or UnknownWindow / OutOfRange."""
     L = w["length_frames"]
     if w["kind"] == "pre_event":
-        if not _is_episode_start(sess, w["behavior"], w["onset_frame"]):
-            raise UnknownWindow(f"{w['episode_id']} is not the first frame of an annotated "
+        started = (is_start(w["session"], w["behavior"], w["onset_frame"]) if is_start is not None
+                   else _is_episode_start(sess, w["behavior"], w["onset_frame"]))
+        if not started:
+            raise UnknownWindow(f"{w['episode_id']} is not the first frame of "
+                                f"{'an annotated' if is_start is None else 'a ' + w['source']} "
                                 f"{w['behavior']!r} run in the verified session")
         end = w["onset_frame"] - w["gap_frames"]
         start = end - L
@@ -658,27 +780,28 @@ def check_tracking_quality(tools, request):
     tool = "check_tracking_quality"
     ic.validate_request(tool, request, tools.policy)
     parsed = [ic.parse_window_id(w) for w in request["window_ids"]]
-    src = tools.sources.get("validation_annotation")
-    if src is None or any(w["source"] != "validation_annotation" for w in parsed):
-        return _error(tool, request, "source_unavailable", "only windows of validation_annotation "
-                      "episodes / sessions can be assessed by this implementation")
+    sources = {w["source"] for w in parsed}
+    if len(sources) != 1:
+        return _error(tool, request, "invalid_request", f"windows of one evidence source only; got {sorted(sources)}")
+    source = sources.pop()
     sessions = sorted({w["session"] for w in parsed})
     try:
-        snap = src.snapshot(sessions)
-        data = {sid: load_session(sid, snap.sessions[sid]) for sid in sessions}
+        ctx_ = evidence_context(tools, source, sessions)
     except SourceUnavailable as exc:
         return _error(tool, request, "source_unavailable", str(exc))
+    data = ctx_.data
+    is_start = None if ctx_.with_labels else ctx_.is_start
     items = []
     for wid, w in zip(request["window_ids"], parsed):
         try:
-            start, end = _window_span(w, data[w["session"]])
+            start, end = _window_span(w, data[w["session"]], is_start)
         except UnknownWindow as exc:
             return _error(tool, request, "unknown_id", f"{wid}: {exc}")
         except OutOfRange as exc:
             return _error(tool, request, "invalid_request", f"{wid}: {exc}")
         items.append({"window_id": wid, **assess_window(data[w["session"]], start, end,
                                                         request["history_frames"])})
-    methodology = _common_methodology() + [
+    methodology = _common_methodology(ctx_.methods) + [
         _method("endpoint_valid", "tracking_ok at t-1 and t", "both endpoints of a frame-to-frame rate"),
         _method("usable_by_history", "endpoint-valid and tracking_ok on every frame t-h .. t",
                 "frames before the window are read (past only); before frame 0 nothing is usable"),
@@ -689,17 +812,17 @@ def check_tracking_quality(tools, request):
                 "provisional; never 'accurate'"),
         _code_method(),
     ]
-    cov_methods, cov_limits = coverage_metadata(getattr(snap, "coverage", None))    # metadata only
+    cov_methods, cov_limits = coverage_metadata(ctx_.coverage)    # metadata only
     methodology += cov_methods
-    limitations = cov_limits + list(QUALITY_LIMITATIONS)
-    if snap.synthetic:
+    limitations = cov_limits + _limitations(ctx_, QUALITY_LIMITATIONS, QUALITY_LIMITATIONS_PREDICTION)
+    if ctx_.synthetic:
         limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
     status = "ok" if any(q["endpoint_valid_frames"] > 0 for q in items) else "no_data"
     result = ic.make_result(tool, request, status, {"windows": items}, methodology=methodology,
-                            limitations=limitations, provenance=_provenance(snap.data))
+                            limitations=limitations, provenance=_provenance(ctx_.data_items))
     ic.validate_result(tool, request, result, tools.policy)
     try:
-        snap.finalize()
+        ctx_.finalize()
     except SourceUnavailable as exc:
         return _error(tool, request, "source_unavailable", str(exc))
     return result

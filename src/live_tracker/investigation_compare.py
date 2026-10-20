@@ -162,6 +162,10 @@ LIMITATIONS = [
     "provisional choices, not validated settings.",
     iw.ANNOTATION_NOTE,
 ]
+# prediction sources: no annotated-label composition claim, no annotation note (iw.NOT_ASSESSED_NOTE is added)
+LIMITATIONS_PREDICTION = [x for x in LIMITATIONS if not x.startswith("Investigation confound") and
+                          x != iw.ANNOTATION_NOTE]
+assert len(LIMITATIONS_PREDICTION) == len(LIMITATIONS) - 2
 
 
 # ---- compare_windows ----
@@ -178,10 +182,6 @@ def compare_windows(tools, request):
     pre = [ic.parse_window_id(w) for w in pre_ids]
     base = [ic.parse_window_id(w) for w in base_ids]
     source, behavior = pre[0]["source"], pre[0]["behavior"]
-    src = tools.sources.get(source)
-    if source != "validation_annotation" or src is None:
-        return _error(request, "source_unavailable", f"windows of source {source!r} cannot be verified by "
-                      "this implementation; only validation_annotation windows are supported")
     shapes = {(w["length_frames"], w["gap_frames"]) for w in pre}
     if len(shapes) != 1:
         return _error(request, "invalid_request", "pre-event windows must share one length and gap; "
@@ -193,14 +193,15 @@ def compare_windows(tools, request):
 
     sessions = sorted({w["session"] for w in pre + base})
     try:
-        snap = src.snapshot(sessions)
-        data = {sid: iw.load_session(sid, snap.sessions[sid]) for sid in sessions}
+        ctx_ = iw.evidence_context(tools, source, sessions)    # mixed sources are refused by the request check
     except SourceUnavailable as exc:
         return _error(request, "source_unavailable", str(exc))
+    data = ctx_.data
     for wid, w in zip(pre_ids, pre):
-        if not iw._is_episode_start(data[w["session"]], behavior, w["onset_frame"]):
-            return _error(request, "unknown_id", f"{wid}: {w['episode_id']} is not the first frame of an "
-                          f"annotated {behavior!r} run in the verified session")
+        if not ctx_.is_start(w["session"], behavior, w["onset_frame"]):
+            what = "an annotated" if ctx_.with_labels else f"a {source}"
+            return _error(request, "unknown_id", f"{wid}: {w['episode_id']} is not the first frame of "
+                          f"{what} {behavior!r} run in the verified session")
     for wid, w in zip(base_ids, base):
         if w["start_frame"] % L or w["start_frame"] + L > data[w["session"]].n_frames:
             return _error(request, "unknown_id", f"{wid}: not a whole tile of length {L} inside the session")
@@ -209,7 +210,7 @@ def compare_windows(tools, request):
     crit = request["sufficiency"]
     fraction = crit["min_usable_fraction"]
     lookback = iw.feature_lookback([feature])
-    is_beh = {sid: data[sid].labels == behavior for sid in sessions}
+    is_beh = {sid: ctx_.behavior_frames(sid, behavior) for sid in sessions}
     windows = {}                                  # wid -> measured window
     pre_spans = {sid: [] for sid in sessions}
 
@@ -301,29 +302,31 @@ def compare_windows(tools, request):
                     "excluded_windows": excluded, "n_sessions_paired": len(diffs), "n_windows_pre": n_pre,
                     "n_windows_baseline": n_base, "effect": effect,
                     "sufficiency": {"criteria": dict(crit), "met": not unmet, "reasons_not_met": unmet}}
-    methodology = _methodology(request, data, windows, used, diffs, L, gap, lookback)
-    cov_methods, cov_limits = coverage_metadata(getattr(snap, "coverage", None))    # metadata only
+    methodology = _methodology(request, data, windows, used, diffs, L, gap, lookback, ctx_)
+    cov_methods, cov_limits = coverage_metadata(ctx_.coverage)    # metadata only
     methodology += cov_methods
-    limitations = cov_limits + list(LIMITATIONS)
-    if snap.synthetic:
+    limitations = cov_limits + iw._limitations(ctx_, LIMITATIONS, LIMITATIONS_PREDICTION)
+    if ctx_.synthetic:
         limitations.insert(0, "SYNTHETIC test fixture: not CalMS21 data, not evidence.")
     result = ic.make_result(TOOL, request, status, measurements, methodology=methodology,
-                            limitations=limitations, provenance=_provenance(snap.data))
+                            limitations=limitations, provenance=_provenance(ctx_.data_items))
     ic.validate_result(TOOL, request, result, tools.policy)     # self-check
     try:
-        snap.finalize()
+        ctx_.finalize()
     except SourceUnavailable as exc:
         return _error(request, "source_unavailable", str(exc))
     return result
 
 
-def _methodology(request, data, windows, used, diffs, L, gap, lookback):
+def _methodology(request, data, windows, used, diffs, L, gap, lookback, ctx_):
     crit, u, feature = request["sufficiency"], request["uncertainty"], request["feature"]
 
     def of(kind):
         return [x for x in used.values() if x["kind"] == kind]
 
     def labels(kind):
+        if not ctx_.with_labels:                 # prediction sources: annotations are never read
+            return None
         tot = {k: 0 for k in ic.LABELS}
         for x in of(kind):
             for k, v in iw._label_context(data[x["session"]], x["start"], x["end"]).items():
@@ -348,7 +351,9 @@ def _methodology(request, data, windows, used, diffs, L, gap, lookback):
     sign = ("negative = in the session's pre-event windows the body-centre distance decreases faster "
             "(or grows slower) than in its baselines" if feature == "dist_rate"
             else "positive = higher in pre-event windows than in baselines")
-    return iw._common_methodology() + [
+    label_note = "" if ctx_.with_labels else ("; NOT COMPUTED for prediction episodes (annotations are not "
+                                               "read): the investigation confound is not assessed")
+    return iw._common_methodology(ctx_.methods) + [
         _method("window_value", "median of the feature over usable frames (Stage 4 measure_window)",
                 "usable = finite value and tracking_ok at t-1 and t; nothing imputed"),
         _method("window_shape", f"pre-event [onset - {gap} - {L}, onset - {gap}); baseline tiles of {L} "
@@ -380,8 +385,8 @@ def _methodology(request, data, windows, used, diffs, L, gap, lookback):
         _criteria_method("min_windows_per_group", crit["min_windows_per_group"], crit,
                          "used windows required in each group"),
         _method("label_frames_pre", labels("pre_event"), "annotated frames in used pre-event windows "
-                "(investigation confound)"),
-        _method("label_frames_baseline", labels("baseline"), "annotated frames in used baseline windows"),
+                "(investigation confound)" + label_note),
+        _method("label_frames_baseline", labels("baseline"), "annotated frames in used baseline windows" + label_note),
         _method("window_start_s_pre", _spread([x["start"] / FPS for x in of("pre_event")]),
                 "min / median / max start time of used pre-event windows (session-timing confound)"),
         _method("window_start_s_baseline", _spread([x["start"] / FPS for x in of("baseline")]),

@@ -880,8 +880,41 @@ def build_context(*, format_version, snaps, authorization, execution, cross_snap
                             tracking=freeze(_tracking_concerns(plain, primary_id)), primary_id=primary_id)
 
 
+def context_from_evidence(evidence, *, policy, primary_evidence_id, trace, mode, stopping_reason=None,
+                          finished=None, format_version=V2_FORMAT):
+    """(ValidatedContext, []) or (None, problems): every M0 layer applied to a
+    run's evidence and trace (snapshot shape, L0 content consistency, L1
+    schema, L2 authorization when a policy is given, execution in `mode`,
+    descriptive-only policy, policy metadata, cross-snapshot contradictions).
+    Used by the claim registry (findings/2); the legacy renderer keeps its own
+    sequencing for byte-identical output."""
+    try:
+        snaps, problems, authorization = validate_snapshots(evidence, policy)
+        if snaps is None or problems:
+            return None, problems or ["evidence is not valid"]
+        bad = content_consistency(evidence)
+        if bad:
+            problems.append(f"evidence hashes do not match: {bad[:3]}")
+        execution = assess_execution(trace, snaps, mode=mode, stopping_reason=stopping_reason, finished=finished)
+        problems += list(execution.problems)
+        problems += evidence_policy_problems(snaps) + policy_metadata_problems(snaps, policy)
+        cross = _reconcile(snaps)
+        problems += cross["contradictions"]
+        if primary_evidence_id is not None and primary_evidence_id not in snaps:
+            problems.append("the primary evidence is not one of the snapshots")
+        if problems:
+            return None, problems
+        primary = None if primary_evidence_id is None else \
+            {"evidence_id": primary_evidence_id, "tool": snaps[primary_evidence_id]["tool"]}
+        return build_context(format_version=format_version, snaps=snaps, authorization=authorization,
+                             execution=execution, cross_snapshot=cross, policy=policy,
+                             primary_evidence=primary), []
+    except Exception as exc:                     # malformed evidence never escapes as another exception
+        return None, [f"the evidence could not be validated ({type(exc).__name__})"]
+
+
 __all__ = ["AuthorizationAssessment", "ExecutionAssessment", "FINGERPRINT_VERSION", "FingerprintError",
            "FormatError", "KNOWN_FORMATS", "KNOWN_GRIDS", "KNOWN_REGISTRIES", "LEGACY_FORMAT", "V2_FORMAT",
            "V2_ONLY_FIELDS", "ValidatedContext", "assess_execution", "build_context", "canonical_bytes",
-           "content_consistency", "content_fingerprint", "detect_format", "fingerprint_payload", "freeze",
+           "content_consistency", "content_fingerprint", "context_from_evidence", "detect_format", "fingerprint_payload", "freeze",
            "prefix_extends", "resolve_field", "thaw", "validate_snapshots"]

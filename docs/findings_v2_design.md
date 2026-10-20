@@ -208,7 +208,7 @@ Exact statuses (anything else refuses):
 | `sensitivity_excluding_flagged` | original, variant compare: `ok` / `insufficient_evidence` / `no_data`; quality: `ok` |
 | `coverage` | per aspect (5.5) |
 | `potential_confounder` | compare: `ok` / `insufficient_evidence` |
-| `measurement_context` | compare: `ok` / `insufficient_evidence` / `no_data` |
+| `measurement_context` | compare: `ok` / `insufficient_evidence` / `no_data`; exception for `aspect = mover_unidentified` only: exactly one `get_window_features` result, status `ok` / `no_data` (below) |
 | `tool_disclosure` | any non-error snapshot carrying the marker |
 | `tracking_concern` | per kind (section 6) |
 | `operational_fact` | history (no evidence ids) or quality `error` |
@@ -339,9 +339,9 @@ measured values of {eid}" and a claim of that condition is refused.
 | claim | params | grounded in | outcome |
 |---|---|---|---|
 | `potential_confounder` | `investigation_label` | compare `label_frames_pre` / `label_frames_baseline` parsed to four counts | measured when investigation share pre > baseline; contradicted when <=; else not_assessed |
-| `measurement_context` | `session_timing` | `window_start_s_*` recorded (verbatim) | a measured fact; never a confounder (drift is not measured) |
+| `measurement_context` | `session_timing` | `window_start_s_pre` and `window_start_s_baseline` each parse as the producer's "min / median / max" seconds: exactly three finite, non-negative numbers, min <= median <= max; anything else (missing, reordered, negative, NaN, infinite, prose) is not_assessed | a measured fact grounded only in the parsed numbers (unit s, scope: the comparison's used windows), never the producer text; never a confounder (drift is not measured) |
 | `measurement_context` | `pixel_units` | the compare's own `units` contains `px` | a measured fact about scale; not a confounder |
-| `measurement_context` | `mover_unidentified` | `dist_rate_meaning` recorded | definitional fact |
+| `measurement_context` | `mover_unidentified` | aspect-specific exception: cites exactly one `get_window_features` result (status `ok` / `no_data`); `dist_rate` among its requested features; its methodology records `dist_rate_meaning` with exactly the marker "negative = body-centre distance decreasing"; its limitations carry the pair-level qualification that the measurement does not identify which mouse approached; a missing or altered marker or qualification refuses the claim | definitional fact rendered from fixed registry text (never the methodology prose); never justifies `inconclusive` on its own. Not implemented in `claims/2.0` M1 (fail-closed: the aspect is refused); required before M2 relies on it |
 | `tool_disclosure` | `approach_unlabelled` | query, features or compare limitation with the registry marker; dataset-scoped (query evidence allowed) | disclosure |
 | `tool_disclosure` | `motion_accuracy_unverified` | compare / quality limitation marker | disclosure |
 | `tracking_concern` | `smoothing_contamination`, `usable_fraction`, `tracking_exclusions`, `quality_verdict`, `quality_contamination_detected` | existing typed Stage 7 tracking items | measured; several items: with `evidence_id` those of that snapshot, else all, ordered primary chain, evidence order, source field, sorted window ids |

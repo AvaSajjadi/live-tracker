@@ -83,6 +83,10 @@ FINDING_LABEL = {"effect_described": "Effect described (descriptive)", "insuffic
 LEGACY_PROSE_LABEL = "legacy model-authored prose (unverified)"
 DESCRIPTIVE_POLICY = ir.DESCRIPTIVE_POLICY
 UNIT_OF_ANALYSIS = ir.UNIT_OF_ANALYSIS
+NOT_AUTHORIZED_BANNER = ("NOT AUTHORIZED FOR PUBLICATION: these findings rest on prediction-derived evidence "
+                         "(claims/2.1); every result was re-accepted under the evidence policy and every claim "
+                         "re-validated, but the source-specific policy and wording are not approved yet. Diagnostic "
+                         "use only.")
 DIAGNOSTIC_BANNER = ("DIAGNOSTIC ONLY: no evidence policy was given, so authorization was not rechecked (L2 "
                      "not_rechecked). This report is not a verified finding and is not for publication.")
 
@@ -123,7 +127,8 @@ _NO_GROUP_REASON = re.compile(rf"no compatible query_events group of this run co
 _IDENTITY_REASON = "the comparison's data identity is not established along its provenance chain: "
 _PARTIAL_CACHE = re.compile(rf"(?:(.*); )?partial cache coverage recorded by ({_EID.pattern}(?:, {_EID.pattern})*)")
 _BASIS_SPLIT = re.compile(r"split manifest via the evidence policy \(([A-Za-z0-9_-]{1,40}) split\)")
-_BASES = ("recorded by the tools (no policy given)", "not established for this source")
+_BASES = ("recorded by the tools (no policy given)", "not established for this source",
+          "recorded by the prediction source (bound to the policy's validation split)")
 _EXCLUDED_REASONS = ("no included pre-event window", "no eligible baseline window", "not paired")
 
 
@@ -257,9 +262,73 @@ def _tracking_item(t):
 # claim templates: (claim) -> sentence, from type, params, evidence ids and grounding only
 # ======================================================================
 
+# ---- claims/2.1: source-aware wording (every 2.1 grounding carries "source", derived from the evidence) ----
+
+def _recorded(value, render, missing):
+    """A source field as rendered, or explicit text when the evidence does not record it (never invented)."""
+    return missing if value is None else render(value)
+
+
+def _source_phrase(src):
+    behavior = _recorded(src["behavior"], lambda v: _tok(v, "behavior"), "predicted-behavior")
+    if src["source"] == "classifier_prediction":
+        threshold = _recorded(src["threshold"], lambda v: f"score >= {_number(v)}", "score threshold not recorded")
+        minimum = _recorded(src["min_duration_frames"], lambda v: f"at least {_int(v)} frames",
+                            "minimum duration not recorded")
+        label = _recorded(src["model_label"], lambda v: f"model label {_tok(v, 'model label')}",
+                          "model label not recorded")
+        return f"{behavior} episodes predicted by the classifier ({threshold}, {minimum}; {label}, unverified)"
+    if src["source"] == "monitor_event":
+        rule = _recorded(src["rule_id"], lambda v: f"monitor rule {_tok(v, 'rule id')}", "an unrecorded monitor rule")
+        run = _recorded(src["run_id"], lambda v: f"run {_tok(v, 'run id')}", "run not recorded")
+        return f"{behavior} events detected by {rule} ({run})"
+    _fail(f"unknown evidence source {str(src.get('source'))[:40]!r}")
+
+
+def _onset_words(src):
+    """(window label, what the windows precede)."""
+    if src["source"] == "classifier_prediction":
+        return "pre-threshold-crossing", "classifier threshold crossings"
+    return "pre-detection", "monitor detection onsets (which precede the alerts)"
+
+
+def _over(c):
+    """' over <source phrase>' for a claims/2.1 status claim; '' under claims/2.0 (unchanged wording)."""
+    src = c["grounding"].get("source")
+    return "" if src is None else f" over {_source_phrase(src)}"
+
+
+SOURCE_DISCLOSURES = {
+    "prediction": "The episodes are {what}, not annotated behavior; findings about them do not transfer to annotated "
+                  "behavior, and nothing here measures the classifier's accuracy.",
+    "onset_classifier": "Episode onsets are classifier threshold crossings, not behavioral onsets: the pre-event "
+                        "windows are pre-threshold-crossing, not necessarily pre-behavior.",
+    "onset_monitor": "Episode onsets are monitor detection onsets (the first frame at or above the rule's ask "
+                     "threshold), which precede alert firing: the pre-event windows are pre-detection, not "
+                     "necessarily pre-behavior.",
+    "model": "The classifier's identity is unverified: its label comes from the score file name; no model artifact, "
+             "configuration or producing commit was supplied.",
+    "thresholds": "The score threshold, minimum duration and monitor rule thresholds are provisional, not approved.",
+    "tuning": "The classifier's settings were chosen on these validation sessions, so its scores here are optimistic.",
+    "labels": "Annotated label composition and the investigation confound were not assessed: annotations were not "
+              "read for prediction-derived evidence.",
+    "merged": "Some episodes were merged across gaps; merged spans contain frames below threshold or without tracking.",
+    "no_inference": "Descriptive only: no causal reading, no statistical significance, no model accuracy.",
+}
+
+
+def _source_section(src):
+    """The mandatory source disclosures of a claims/2.1 report (fixed registry text)."""
+    what = "classifier predictions" if src["source"] == "classifier_prediction" else "monitor detections"
+    keys = ["prediction", "onset_classifier" if src["source"] == "classifier_prediction" else "onset_monitor",
+            "model", "thresholds", "tuning", "labels"] + (["merged"] if src["merged"] is True else []) + ["no_inference"]
+    out = [SOURCE_DISCLOSURES[k].format(what=what) for k in keys]
+    return {"source": src["source"], "phrase": _source_phrase(src), "disclosures": out}
+
+
 def _t_sufficiency(c):
     g, crit = c["grounding"], c["grounding"]["criteria"]
-    return (f"The {_tok(g['feature'])} comparison ({_eid(c['evidence_ids'][0])}) did not meet the "
+    return (f"The {_tok(g['feature'])} comparison ({_eid(c['evidence_ids'][0])}){_over(c)} did not meet the "
             f"{_one_of(crit['status'], ('provisional', 'approved'), 'criteria status')} sufficiency criteria "
             f"(unmet: {_ids(g['reasons_not_met'], 'reason')}; minimum {_int(crit['min_sessions'])} sessions, "
             f"{_int(crit['min_windows_per_group'])} windows per group). It paired {_int(g['n_sessions_paired'])} "
@@ -269,14 +338,15 @@ def _t_sufficiency(c):
 
 def _t_no_data(c):
     g = c["grounding"]
-    return (f"The {_tok(g['feature'])} comparison ({_eid(c['evidence_ids'][0])}) returned no data: "
+    return (f"The {_tok(g['feature'])} comparison ({_eid(c['evidence_ids'][0])}){_over(c)} returned no data: "
             f"{_int(g['n_windows_pre'])} pre-event and {_int(g['n_windows_baseline'])} baseline windows were "
             "usable. No aggregate effect is reported.")
 
 
 def _t_unavailable(c):
     g = c["grounding"]
-    return (f"The {_tok(g['feature'])} comparison ({_eid(c['evidence_ids'][0])}) returned an error (error codes: "
+    return (f"The {_tok(g['feature'])} comparison ({_eid(c['evidence_ids'][0])}){_over(c)} returned an error "
+            "(error codes: "
             f"{_ids(g['error_codes'], 'error code')}). No aggregate effect is reported.")
 
 
@@ -289,11 +359,22 @@ def _t_descriptive(c):
     sessions = g["contributing_sessions"]
     if not isinstance(sessions, (list, tuple)) or len(sessions) != g["n_sessions_paired"]:
         _fail("the contributing sessions do not match the paired-session count")
-    text = (f"Across the {_int(len(sessions))} contributing paired sessions ({_ids(sessions, 'session')}), the "
-            "median of per-session differences (pre-event minus baseline) in "
-            f"{_tok(g['feature'])} was {_number(g['value'])} {_unit_text(g['unit'])} "
-            f"({_one_of(g['direction'], ('positive', 'negative', 'zero'), 'direction')}). Descriptive only: no "
-            "interval or test; not a causal reading; it describes these sessions, not the whole authorized split.")
+    src = g.get("source")
+    if src is None:                                    # claims/2.0: unchanged
+        text = (f"Across the {_int(len(sessions))} contributing paired sessions ({_ids(sessions, 'session')}), the "
+                "median of per-session differences (pre-event minus baseline) in "
+                f"{_tok(g['feature'])} was {_number(g['value'])} {_unit_text(g['unit'])} "
+                f"({_one_of(g['direction'], ('positive', 'negative', 'zero'), 'direction')}). Descriptive only: no "
+                "interval or test; not a causal reading; it describes these sessions, not the whole authorized split.")
+    else:
+        label, precede = _onset_words(src)
+        text = (f"Across the {_int(len(sessions))} contributing paired sessions ({_ids(sessions, 'session')}), for "
+                f"{_source_phrase(src)}, the median of per-session differences ({label} minus baseline) in "
+                f"{_tok(g['feature'])} was {_number(g['value'])} {_unit_text(g['unit'])} "
+                f"({_one_of(g['direction'], ('positive', 'negative', 'zero'), 'direction')}). The windows precede "
+                f"{precede}, not necessarily the behavior. Descriptive only: no interval or test; not a causal "
+                "reading; not a measure of model accuracy; it describes these sessions, not the whole authorized "
+                "split.")
     cross = _one_of(g["cross_snapshot_status"], ("verified", "partially_verified", "not_verified", "not_applicable"),
                     "cross-snapshot status")
     if cross != "verified":
@@ -543,8 +624,11 @@ def _executive_summary(doc):
                            "descriptive.",
             "record_only": "Record only: every result was re-accepted under the evidence policy (authorization "
                            "rechecked); the run is incomplete, so there is no finding to publish.",
+            "not_authorized": NOT_AUTHORIZED_BANNER,
             "diagnostic": DIAGNOSTIC_BANNER}[st["publication"]]]
     finding = st["finding"]
+    if "source" in doc:                                 # claims/2.1: what the episodes are, before any finding
+        out.append(f"Evidence source: {doc['source']['phrase']}; not annotated behavior.")
     if finding == "incomplete":
         out.append(f"Incomplete: the investigation stopped before an accepted finish "
                    f"({_tok(st['stopping_reason'], 'stopping reason')}). No finding was made; "
@@ -635,10 +719,12 @@ def _revalidate(data, policy):
             raise ReportIntegrityError(["an incomplete run never acquires a primary, claims, observations or next "
                                         "investigations"])
         result = cl.incomplete_findings(evidence=data["evidence"], trace=data["trace"], policy=policy,
-                                        stopping_reason=data["stopping_reason"])
+                                        stopping_reason=data["stopping_reason"],
+                                        registry_version=data["registry_version"])
     else:
         result = cl.validate_findings(proposal, evidence=data["evidence"], trace=data["trace"], policy=policy,
-                                      mode="complete", stopping_reason=data["stopping_reason"], finished=True)
+                                      mode="complete", stopping_reason=data["stopping_reason"], finished=True,
+                                      registry_version=data["registry_version"])
     if not result.accepted:
         raise ReportIntegrityError([f"claims: {p}" for p in result.problems] or ["claims: refused"])
     if data["finished"]:                             # M3: the accepted finish carried exactly these findings
@@ -699,8 +785,7 @@ def _document(data, result, context, policy):
         "format": {"findings_format": result.findings_format, "registry_version": result.registry_version,
                    "grid_version": result.grid_version, "report_schema": REPORT_SCHEMA_V2,
                    "fingerprint_version": ctx.FINGERPRINT_VERSION},
-        "status": {"publication": ("diagnostic" if not result.publishable else
-                                   "record_only" if finding == "incomplete" else "publishable"),
+        "status": {"publication": _publication(result),
                    "finding": finding, "finding_label": FINDING_LABEL[finding], "finished": data["finished"],
                    "stopping_reason": data["stopping_reason"], "primary_evidence_id": result.primary_evidence_id,
                    "accepted_direction": result.accepted_direction},
@@ -732,10 +817,26 @@ def _document(data, result, context, policy):
         # the canonical input: a saved document is re-rendered only by rebuilding it from this (see verify_saved_v2)
         "canonical": copy.deepcopy(data),
     }
+    if result.source_context is not None:            # claims/2.1 only (claims/2.0 documents are unchanged)
+        doc["source"] = _source_section(ctx.thaw(result.source_context))
     doc["recorded"]["coverage_sentences"] = _recorded_coverage(doc["recorded"]["coverage"])
     doc["recorded"]["tracking_sentences"] = [_tracking_item(t) + "." for t in doc["recorded"]["tracking"]]
     doc["executive_summary"] = _executive_summary(doc)
     return doc
+
+
+def _publication(result):
+    """publishable: rechecked under a policy, finished, and the registry is
+    authorized for publication; not_authorized: rechecked and finished, but the
+    registry (claims/2.1, prediction evidence) is not authorized yet;
+    record_only: rechecked, incomplete; diagnostic: no policy."""
+    if result.finding == "incomplete":
+        return "record_only" if result.authorization == "rechecked" else "diagnostic"
+    if result.publishable:
+        return "publishable"
+    if result.authorization == "rechecked" and not cl.PUBLICATION_AUTHORIZED[result.registry_version]:
+        return "not_authorized"
+    return "diagnostic"
 
 
 def _data_provenance(snaps):
@@ -772,9 +873,10 @@ def _saved_shape(doc):
         raise ReportIntegrityError([f"not a findings/2 report document (schema {shown!r}); legacy documents are "
                                     "rendered only by the legacy renderer"])
     keys = set(doc)
-    if keys != V2_DOC_FIELDS:
-        raise ReportIntegrityError([f"findings/2 document fields: unknown {sorted(keys - V2_DOC_FIELDS)[:5]}, missing "
-                                    f"{sorted(V2_DOC_FIELDS - keys)}"])
+    expected = V2_DOC_FIELDS | ({"source"} if "source" in keys else set())   # the rebuild decides if it belongs
+    if keys != expected:
+        raise ReportIntegrityError([f"findings/2 document fields: unknown {sorted(keys - expected)[:5]}, missing "
+                                    f"{sorted(expected - keys)}"])
     if not isinstance(doc["canonical"], dict):
         raise ReportIntegrityError(["findings/2 document: the canonical payload is missing or malformed"])
 
@@ -799,7 +901,8 @@ def verify_saved_v2(doc, *, policy=None):
         _saved_shape(doc)
         rebuilt = build_report_v2(doc["canonical"], policy=policy)
         if ir.to_json_text(rebuilt) != ir.to_json_text(doc):
-            differ = sorted(k for k in V2_DOC_FIELDS if ir.to_json_text(rebuilt[k]) != ir.to_json_text(doc[k]))
+            differ = sorted(k for k in set(rebuilt) | set(doc)
+                            if k not in rebuilt or k not in doc or ir.to_json_text(rebuilt[k]) != ir.to_json_text(doc[k]))
             hint = ("; authorization and publication status are reconstructed under the policy given now"
                     if {"status", "verification"} & set(differ) else "")
             raise ReportIntegrityError([f"saved document differs from its reconstruction from the canonical "
@@ -842,6 +945,8 @@ def _markdown(doc):
           f"`{_tok(ver['fingerprint']['recomputed'])}`", ""]
     if st["publication"] == "diagnostic":
         md += [f"> **{DIAGNOSTIC_BANNER}**", ""]
+    if st["publication"] == "not_authorized":
+        md += [f"> **{NOT_AUTHORIZED_BANNER}**", ""]
     if doc["data_provenance"]["synthetic"]:
         md += ["> **SYNTHETIC DATA.** At least one result comes from a synthetic fixture; it is not experimental "
                "evidence.", ""]
@@ -879,6 +984,9 @@ def _markdown(doc):
     if doc["next_investigations"]:
         md += ["## Suggested by the model (not evidence)", ""] + _bullets(
             n["sentence"] for n in doc["next_investigations"]) + [""]
+    if "source" in doc:
+        md += ["## Evidence source and its limitations (from the verified evidence; fixed registry text)", "",
+               f"Episodes: {doc['source']['phrase']}.", ""] + _bullets(doc["source"]["disclosures"]) + [""]
     md += ["## Recorded coverage and tracking (all, cited or not)", ""]
     md += _bullets(doc["recorded"]["coverage_sentences"])
     md += _bullets(doc["recorded"]["tracking_sentences"]) + [""]

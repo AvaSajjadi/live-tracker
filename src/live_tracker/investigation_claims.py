@@ -52,6 +52,17 @@ from . import investigation_contracts as ic
 
 REGISTRY_VERSION = "claims/2.0"
 GRID_VERSION = "none"
+# Stage 9 S9-5: claims/2.1 = the claims/2.0 types for PREDICTION evidence (classifier_prediction or
+# monitor_event, one source per run), without potential_confounder (annotation label counts are never
+# computed for predictions), with a source context derived from the evidence attached to every grounding.
+# claims/2.0 stays the annotation registry and refuses prediction evidence. claims/2.1 findings are not
+# authorized for publication until the source-specific policy and wording are approved.
+REGISTRY_V21 = "claims/2.1"
+REGISTRIES = (REGISTRY_VERSION, REGISTRY_V21)
+REGISTRY_SOURCES = {REGISTRY_VERSION: ("validation_annotation",), REGISTRY_V21: ("classifier_prediction",
+                                                                                  "monitor_event")}
+PUBLICATION_AUTHORIZED = {REGISTRY_VERSION: True, REGISTRY_V21: False}
+UNAVAILABLE_IN = {REGISTRY_V21: ("potential_confounder",)}
 FINDINGS = ("effect_described", "insufficient_evidence", "inconclusive")
 MAX_CLAIMS = 20
 MAX_NEXT = 3
@@ -150,8 +161,9 @@ class FindingsV2:
     claims: tuple                      # frozen {type, evidence_ids, params, grounding}
     next_investigations: tuple         # frozen {action, params, because}
     authorization: str | None          # rechecked / not_rechecked / refused
-    publishable: bool                  # accepted and authorization rechecked (Q4)
+    publishable: bool                  # accepted, authorization rechecked (Q4) and the registry authorized
     fingerprint: str | None            # content fingerprint (M0 fp/1) of an accepted proposal
+    source_context: Any = None         # claims/2.1: frozen evidence-derived source context; None for 2.0
 
     def to_json(self):
         return {"findings_format": self.findings_format, "registry_version": self.registry_version,
@@ -161,11 +173,11 @@ class FindingsV2:
                 "observations": ctx.thaw(self.observations), "claims": ctx.thaw(self.claims),
                 "next_investigations": ctx.thaw(self.next_investigations),
                 "authorization": self.authorization, "publishable": self.publishable,
-                "fingerprint": self.fingerprint}
+                "fingerprint": self.fingerprint, "source_context": ctx.thaw(self.source_context)}
 
 
-def _refused(problems, authorization=None):
-    return FindingsV2(findings_format=ctx.V2_FORMAT, registry_version=REGISTRY_VERSION, grid_version=GRID_VERSION,
+def _refused(problems, authorization=None, registry_version=REGISTRY_VERSION):
+    return FindingsV2(findings_format=ctx.V2_FORMAT, registry_version=registry_version, grid_version=GRID_VERSION,
                       accepted=False, problems=tuple(problems), finding=None, primary_evidence_id=None,
                       accepted_direction=None, observations=(), claims=(), next_investigations=(),
                       authorization=authorization, publishable=False, fingerprint=None)
@@ -179,7 +191,7 @@ def _is_str(x):
     return isinstance(x, str) and bool(x)
 
 
-def _schema_problems(p):
+def _schema_problems(p, registry_version=REGISTRY_VERSION):
     if not isinstance(p, (dict, types.MappingProxyType)):
         return ["the proposal is not an object"]
     out = []
@@ -209,8 +221,9 @@ def _schema_problems(p):
             out.append(f"observations[{i}]: evidence_id and field are strings")
     for i, c in enumerate(p["claims"]):
         where = f"claims[{i}]"
-        if c["type"] not in CLAIM_TYPES or not isinstance(c["type"], str):
-            out.append(f"{where}: unknown claim type (claims/2.0 has {list(CLAIM_TYPES)})")
+        allowed_types = [t for t in CLAIM_TYPES if t not in UNAVAILABLE_IN.get(registry_version, ())]
+        if not isinstance(c["type"], str) or c["type"] not in allowed_types:
+            out.append(f"{where}: unknown claim type ({registry_version} has {allowed_types})")
             continue
         if not isinstance(c["evidence_ids"], list) or not all(_is_str(e) for e in c["evidence_ids"]) or \
                 len(set(c["evidence_ids"])) != len(c["evidence_ids"]):
@@ -671,20 +684,103 @@ class _Knowledge:
 # validation
 # ======================================================================
 
-def validate_findings(proposal, *, evidence, trace, policy, mode="prefix", stopping_reason=None, finished=None):
+evidence_source = ctx.event_source             # the snapshot's event source (shared with the context)
+
+
+def registry_for_evidence(evidence):
+    """The registry a run's findings use: claims/2.1 when any snapshot comes
+    from a prediction source, claims/2.0 otherwise (Stage 6 chooses with this;
+    the registry still refuses a run that mixes sources)."""
+    try:
+        sources = {evidence_source(e) for e in evidence}
+    except Exception:                            # malformed evidence: the registry will refuse it
+        return REGISTRY_VERSION
+    return REGISTRY_V21 if sources & set(REGISTRY_SOURCES[REGISTRY_V21]) else REGISTRY_VERSION
+
+
+def _source_binding(snaps, registry_version):
+    """(problems, source context or None). Every snapshot of the run must come
+    from one source the registry covers; claims/2.1 derives its source context
+    from the evidence: query_events episode provenance, which must agree on
+    every episode (classifier: model label, threshold, minimum, score file;
+    monitor: journal snapshot, run, rule)."""
+    allowed = REGISTRY_SOURCES[registry_version]
+    sources = {evidence_source(s) for s in snaps.values()}
+    if len(sources) > 1:
+        return [f"mixed-source evidence {sorted(sources)}: a findings run uses one evidence source"], None
+    if sources and not sources <= set(allowed):
+        other = REGISTRY_V21 if registry_version == REGISTRY_VERSION else REGISTRY_VERSION
+        return [f"{sorted(sources)[0]} evidence is reported by {other}, not {registry_version}"], None
+    if registry_version == REGISTRY_VERSION:
+        return [], None
+    if not sources:
+        return [f"{registry_version} needs prediction evidence (classifier_prediction or monitor_event)"], None
+    source = sources.pop()
+    # one source identity for the whole run, read from every successful snapshot's own methodology and data
+    # provenance (never from evidence ids or episodes alone)
+    identities = {ctx.prediction_identity(x) for x in snaps.values() if x["result"]["status"] != "error"}
+    if len(identities) > 1:
+        return [f"{registry_version}: snapshots of the run carry different {source} identities (configuration, "
+                "journal snapshot, run, rule or score member)"], None
+    identity = identities.pop() if identities else None
+    if identity is not None and (None in identity[1] or identity[2] in (None, "conflict")):
+        return [f"{registry_version}: a snapshot does not record its full {source} identity"], None
+    behaviors = set()
+    for x in snaps.values():
+        req = x["request"]
+        if x["tool"] == "query_events":
+            behaviors.add(req["behavior"])
+        elif x["tool"] == "get_window_features":
+            behaviors |= {ic.parse_episode_id(e)["behavior"] for e in req["episode_ids"]}
+        else:
+            ids = req["window_ids"] if x["tool"] == "check_tracking_quality" else \
+                req["pre_window_ids"] + req["baseline_window_ids"]
+            behaviors |= {ic.parse_window_id(w)["behavior"] for w in ids}
+    if len(behaviors) > 1:
+        return [f"{registry_version}: one predicted behavior per run (got {sorted(behaviors)})"], None
+    episodes = [e for x in snaps.values() if x["tool"] == "query_events" and x["result"]["measurements"]
+                for e in x["result"]["measurements"]["episodes"]]
+    values, member = (identity[1], identity[2]) if identity else ((None, None, None), None)
+    if source == "classifier_prediction":
+        threshold, minimum, model_id = values
+        if model_id is not None and not (isinstance(model_id, str) and model_id.startswith("unverified-label:")):
+            return [f"{registry_version}: the classifier's identity is claimed without verified provenance"], None
+        expected = {"model_id": model_id, "threshold": threshold, "min_duration_frames": minimum,
+                    "score_file_sha256": member}
+        context = {"model_label": model_id[len("unverified-label:"):] if model_id else None,
+                   "model_identity": "unverified", "threshold": threshold, "min_duration_frames": minimum,
+                   "score_file_sha256": member}
+    else:
+        journal, run_id, rule_id = values
+        expected = {"journal_sha256": journal, "run_id": run_id, "rule_id": rule_id}
+        context = {"journal_sha256": journal, "run_id": run_id, "rule_id": rule_id, "score_file_sha256": member}
+    if any({k: e["provenance"].get(k) for k in expected} != expected for e in episodes):   # event_id varies
+        return [f"{registry_version}: an episode's provenance does not match the run's {source} identity"], None
+    context.update(source=source, behavior=behaviors.pop() if behaviors else None, n_episodes=len(episodes),
+                   merged=any(x["request"]["merge_gap_frames"] for x in snaps.values() if x["tool"] == "query_events"))
+    return [], context
+
+
+def validate_findings(proposal, *, evidence, trace, policy, mode="prefix", stopping_reason=None, finished=None,
+                      registry_version=REGISTRY_VERSION):
     """A frozen FindingsV2 for a proposal, accepted or refused with every
     problem found. `mode` is the M0 execution mode: "prefix" at the finish
-    freeze point (Stage 6, M3), "complete" when re-validating a finished run."""
+    freeze point (Stage 6, M3), "complete" when re-validating a finished run.
+    `registry_version`: claims/2.0 (annotation evidence) or claims/2.1
+    (prediction evidence, not publication-authorized)."""
+    if registry_version not in REGISTRIES:
+        return _refused([f"unknown registry {str(registry_version)[:40]!r}"])
     try:
-        return _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished)
+        return _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished, registry_version)
     except Exception as exc:                     # anything malformed is a refusal, never another exception
-        return _refused([f"the proposal could not be validated ({type(exc).__name__})"])
+        return _refused([f"the proposal could not be validated ({type(exc).__name__})"],
+                        registry_version=registry_version)
 
 
-def _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished):
-    problems = _schema_problems(proposal)
+def _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished, registry_version=REGISTRY_VERSION):
+    problems = _schema_problems(proposal, registry_version)
     if problems:
-        return _refused(problems)
+        return _refused(problems, registry_version=registry_version)
     if mode == "complete" and (finished is not True or stopping_reason != "finished"):
         # a run that stopped without an accepted finish is represented only by incomplete_findings()
         return _refused(["a completed validation needs a finished run (finished=True, stopping reason "
@@ -699,6 +795,10 @@ def _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished
     if mode == "complete" and not context.execution.accepted_finish:
         return _refused(["a completed validation needs exactly one accepted finish in the trace"])
     snaps = context.snapshot_dicts()
+    source_problems, source_context = _source_binding(snaps, registry_version)
+    if source_problems:
+        return _refused(source_problems, authorization=context.authorization.status,
+                        registry_version=registry_version)
     k = _Knowledge(snaps=snaps, trace=trace, primary_id=primary_id, coverage=ctx.thaw(context.coverage),
                    tracking=ctx.thaw(context.tracking), cross=ctx.thaw(context.cross_snapshot))
     finding = p["finding"]
@@ -748,7 +848,9 @@ def _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished
     problems += _next_problems(p, k, snaps)
     authorization = context.authorization.status
     if problems:
-        return _refused(problems, authorization=authorization)
+        return _refused(problems, authorization=authorization, registry_version=registry_version)
+    if source_context is not None:              # every claims/2.1 grounding carries the evidence's source
+        accepted = [{**a, "grounding": {**a["grounding"], "source": dict(source_context)}} for a in accepted]
     accepted_direction = None
     if finding == "effect_described":
         accepted_direction = _sign(snaps[primary_id]["result"]["measurements"]["effect"]["value"])
@@ -759,14 +861,15 @@ def _validate(proposal, evidence, trace, policy, mode, stopping_reason, finished
                 for c in p["claims"]],
         next_investigations=[{"action": n["action"], "params": dict(n["params"]), "because": list(n["because"])}
                              for n in p["next_investigations"]],
-        registry_version=REGISTRY_VERSION, grid_version=GRID_VERSION)
-    return FindingsV2(findings_format=ctx.V2_FORMAT, registry_version=REGISTRY_VERSION, grid_version=GRID_VERSION,
+        registry_version=registry_version, grid_version=GRID_VERSION)
+    return FindingsV2(findings_format=ctx.V2_FORMAT, registry_version=registry_version, grid_version=GRID_VERSION,
                       accepted=True, problems=(), finding=finding, primary_evidence_id=primary_id,
                       accepted_direction=accepted_direction, observations=ctx.freeze(observations),
                       claims=ctx.freeze(accepted),
                       next_investigations=ctx.freeze([dict(n) for n in p["next_investigations"]]),
-                      authorization=authorization, publishable=authorization == "rechecked",
-                      fingerprint=ctx.content_fingerprint(payload))
+                      authorization=authorization,
+                      publishable=authorization == "rechecked" and PUBLICATION_AUTHORIZED[registry_version],
+                      fingerprint=ctx.content_fingerprint(payload), source_context=ctx.freeze(source_context))
 
 
 def _coherence(p, k, snaps, accepted):
@@ -845,22 +948,41 @@ def _next_problems(p, k, snaps):
     return out
 
 
-def incomplete_findings(*, evidence, trace, policy, stopping_reason):
+def incomplete_findings(*, evidence, trace, policy, stopping_reason, registry_version=REGISTRY_VERSION):
     """The findings/2 representation of a run that stopped without an accepted
     finish: finding "incomplete", null primary, no claims, observations or
     next investigations. Nothing is invented; the completed trace is checked."""
+    if registry_version not in REGISTRIES:
+        return _refused([f"unknown registry {str(registry_version)[:40]!r}"])
     context, problems = ctx.context_from_evidence(evidence, policy=policy, primary_evidence_id=None, trace=trace,
                                                   mode="complete", stopping_reason=stopping_reason, finished=False)
     if context is None:
-        return _refused(problems)
+        return _refused(problems, registry_version=registry_version)
+    snaps = context.snapshot_dicts()
+    # an incomplete run makes no claim, so a run that mixed sources before it stopped is still recorded; the
+    # registry must cover its evidence (2.0: no prediction evidence; 2.1: some), and a single prediction source
+    # gives the source context
+    sources = {evidence_source(x) for x in snaps.values()}
+    prediction = sources & set(REGISTRY_SOURCES[REGISTRY_V21])
+    if (registry_version == REGISTRY_VERSION) == bool(prediction):
+        other = REGISTRY_V21 if prediction else REGISTRY_VERSION
+        what = sorted(prediction or sources or {"no"})[0]
+        return _refused([f"{what} evidence is reported by {other}, not {registry_version}"],
+                        registry_version=registry_version)
+    source_context = None
+    if registry_version == REGISTRY_V21 and len(sources) == 1:
+        source_problems, source_context = _source_binding(snaps, registry_version)
+        if source_problems:
+            return _refused(source_problems, registry_version=registry_version)
     payload = ctx.fingerprint_payload(evidence=evidence, finding="incomplete", primary_evidence_id=None,
-                                      registry_version=REGISTRY_VERSION, grid_version=GRID_VERSION)
+                                      registry_version=registry_version, grid_version=GRID_VERSION)
     status = context.authorization.status
-    return FindingsV2(findings_format=ctx.V2_FORMAT, registry_version=REGISTRY_VERSION, grid_version=GRID_VERSION,
+    # an incomplete run has no finding to publish: "publishable" here only means rechecked (rendered record_only)
+    return FindingsV2(findings_format=ctx.V2_FORMAT, registry_version=registry_version, grid_version=GRID_VERSION,
                       accepted=True, problems=(), finding="incomplete", primary_evidence_id=None,
                       accepted_direction=None, observations=(), claims=(), next_investigations=(),
                       authorization=status, publishable=status == "rechecked",
-                      fingerprint=ctx.content_fingerprint(payload))
+                      fingerprint=ctx.content_fingerprint(payload), source_context=ctx.freeze(source_context))
 
 
 def finish_arguments_problems(proposal, trace):
@@ -881,5 +1003,6 @@ def finish_arguments_problems(proposal, trace):
         return [f"the finish could not be compared ({type(exc).__name__})"]
 
 
-__all__ = ["CLAIM_TYPES", "FINDINGS", "FindingsV2", "GRID_VERSION", "NEXT_ACTIONS", "PARAMS", "REGISTRY_VERSION",
+__all__ = ["CLAIM_TYPES", "FINDINGS", "FindingsV2", "GRID_VERSION", "NEXT_ACTIONS", "PARAMS", "PUBLICATION_AUTHORIZED",
+           "REGISTRIES", "REGISTRY_V21", "REGISTRY_VERSION", "evidence_source", "registry_for_evidence",
            "finish_arguments_problems", "incomplete_findings", "validate_findings"]

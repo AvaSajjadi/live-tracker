@@ -525,6 +525,33 @@ widens a claim's semantics.
   structured finish -> report -> saved JSON -> Markdown from the saved JSON,
   with tampering, authorization and prefix / fingerprint checks per run.
 
+### 10.4 Stage 9 S9-5: claims/2.1 for prediction evidence (implemented; not authorized)
+
+- `claims/2.0` stays the annotation registry and now refuses prediction
+  evidence; `claims/2.1` covers `classifier_prediction` / `monitor_event`
+  evidence, one source per run (mixed-source runs are refused; an incomplete
+  mixed run is still recorded, with no claim). Stage 6 picks the registry from
+  the run's evidence (`registry_for_evidence`); the fingerprint includes it.
+- 2.1 has the 2.0 claim types except `potential_confounder` (annotation label
+  counts are never computed for predictions). Every grounding carries a source
+  context derived from the query episodes' provenance (source, behavior,
+  unverified model label, threshold and minimum, score file; or monitor run,
+  rule and journal snapshot), which must agree across the run.
+- Renderer: source-aware sentences ("... for attack episodes predicted by the
+  classifier (score >= 0.5, at least 15 frames; model label model_b,
+  unverified) ... (pre-threshold-crossing minus baseline) ... The windows
+  precede classifier threshold crossings, not necessarily the behavior"), an
+  "Evidence source" summary line and a mandatory disclosure section in fixed
+  registry text. 2.0 documents are unchanged (no `source` key).
+- Publication: `PUBLICATION_AUTHORIZED["claims/2.1"] = False`, so a rechecked,
+  finished 2.1 report is `not_authorized` (banner), never `publishable`;
+  incomplete runs stay `record_only`; without a policy, `diagnostic`. The
+  status is rebuilt on every render, so a saved document cannot promote it.
+- Data identity for prediction chains: a prediction query records only the
+  score drop (no cache index); two snapshots share identity when both record
+  the same verified score member (`score-drop-member:` path) and agree on every
+  shared path. Annotation pairs keep the one-index rule.
+
 ## 11. Decisions on the open questions
 
 Codex's answers, adopted:

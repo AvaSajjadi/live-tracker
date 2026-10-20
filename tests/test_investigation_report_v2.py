@@ -815,7 +815,7 @@ def test_legacy_and_v2_never_cross(effect_run, effect_doc):
 
 @pytest.mark.parametrize("change, text", [
     (lambda p: p.update(findings_format="findings/3"), "unknown findings_format"),
-    (lambda p: p.update(registry_version="claims/2.1"), "unknown registry_version"),
+    (lambda p: p.update(registry_version="claims/9.9"), "unknown registry_version"),
     (lambda p: p.update(grid_version="grid/1"), "unknown grid_version"),
     (lambda p: p.update(findings_format=["findings/2"]), "unknown findings_format"),
     (lambda p: p.pop("findings_format"), "mixed payload"),

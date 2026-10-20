@@ -73,6 +73,7 @@ from .investigation_events import (EventQuery, SourceUnavailable, _method, behav
 __all__ = ["ClassifierEventSource", "MonitorEventSource", "PREDICTION_EPISODES_VERSION"]
 
 PREDICTION_EPISODES_VERSION = "prediction-episodes/1"
+SCORE_MEMBER_PREFIX = "score-drop-member:"     # data-item path of a verified score member (identity, S9-5)
 MONITOR_EPISODES_VERSION = "monitor-episodes/1"
 _TIME_TOL = 1e-9
 
@@ -132,9 +133,10 @@ def _requested(request, sessions, policy):
 def _data_items(prov, synthetic):
     kind = "synthetic_fixture" if synthetic else "classifier_scores"
     label = "SYNTHETIC test fixture, not CalMS21 data: " if synthetic else ""
-    return [{"kind": kind, "path": None, "sha256": prov.archive_sha256,
+    # logical locators (not file-system paths): the archive is read in memory and never extracted
+    return [{"kind": kind, "path": f"score-drop:{prov.archive_name}", "sha256": prov.archive_sha256,
              "description": f"{label}score-drop archive {prov.archive_name} (read once, in memory)"[:ic.MAX_TEXT]},
-            {"kind": kind, "path": None, "sha256": prov.member_sha256,
+            {"kind": kind, "path": f"{SCORE_MEMBER_PREFIX}{prov.archive_name}/{prov.member}", "sha256": prov.member_sha256,
              "description": f"{label}score member {prov.member} (verified against SHA256SUMS.txt; in-band, "
                             f"unsigned); rows sha256 {prov.rows_sha256}"[:ic.MAX_TEXT]}]
 
@@ -405,6 +407,8 @@ class MonitorEventSource:
             _method("monitor_rule", f"{r['rule_id']}: {r['behavior']}, ask {r['ask_threshold']}, alert "
                     f"{r['alert_threshold']}, min {r['min_duration_s']} s, mode {r['alert_mode']}"),
             _method("journal_snapshot_sha256", self.snapshot.sha256, "journal-snapshot/1"),
+            _method("monitor_run_id", self.snapshot.run_id),
+            _method("monitor_rule_id", r["rule_id"]),
         ]
 
     def window_limitations(self):
@@ -421,8 +425,8 @@ class MonitorEventSource:
 
     def data_items(self):
         return _data_items(self.drop.provenance, self.synthetic) + [{
-            "kind": "synthetic_fixture" if self.synthetic else "monitor_journal", "path": None,
-            "sha256": self.snapshot.sha256,
+            "kind": "synthetic_fixture" if self.synthetic else "monitor_journal",
+            "path": f"journal-snapshot:{self.snapshot.run_id}", "sha256": self.snapshot.sha256,
             "description": f"frozen monitor run {self.snapshot.run_id} (journal-snapshot/1, verified_score_drop, "
                            "complete)"}]
 
@@ -469,6 +473,7 @@ class MonitorEventSource:
                     f"{r['alert_threshold']}, min {r['min_duration_s']} s, mode {r['alert_mode']}"),
             _method("journal_snapshot_sha256", self.snapshot.sha256, "journal-snapshot/1 (event_log.freeze_run)"),
             _method("monitor_run_id", self.snapshot.run_id),
+            _method("monitor_rule_id", r["rule_id"]),
             _method("merge_gap_frames", request["merge_gap_frames"], "monitor events are never merged"),
             _method("min_duration_frames", request["min_duration_frames"], "measured on the episode span"),
             _method("ordering_and_truncation", "sorted by (session, start_frame); first max_episodes kept"),

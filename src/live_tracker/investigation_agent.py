@@ -422,7 +422,8 @@ conclude. Stop when further calls would not change the answer.
 
 Rules:
 - Facts come only from tool results. Never invent measurements, IDs or evidence_ids.
-- finish_investigation takes structured findings only (findings/2, registry {cl.REGISTRY_VERSION}): \
+- finish_investigation takes structured findings only (findings/2, registry {cl.REGISTRY_VERSION}; \
+{cl.REGISTRY_V21} when the evidence is classifier predictions or monitor events): \
 finding, primary_evidence_id, observations, claims, next_investigations. There is no free text, no \
 direction and no number in it: the investigation reads values from the cited results and writes the \
 report itself. Each claim cites evidence_ids of this run and is checked against them; an unsupported \
@@ -905,14 +906,17 @@ class _Run:
         proposal = copy.deepcopy(a)               # schema-checked: exactly the five structured keys
         evidence = self.evidence_list()
         prefix = copy.deepcopy(self.trace) + [copy.deepcopy(finish)]
-        result = cl.validate_findings(proposal, evidence=evidence, trace=prefix, policy=self.policy, mode="prefix")
+        registry = cl.registry_for_evidence(evidence)     # claims/2.1 for prediction evidence (Stage 9 S9-5)
+        result = cl.validate_findings(proposal, evidence=evidence, trace=prefix, policy=self.policy, mode="prefix",
+                                      registry_version=registry)
         if not result.accepted:
             raise _Rejected("final_answer_rejected", "; ".join(result.problems)[:3000])
         bound = cl.finish_arguments_problems(proposal, prefix)
         if bound:
             raise _Rejected("final_answer_rejected", "; ".join(bound))
         self.frozen = {"proposal": proposal, "evidence": ctx.canonical_bytes(evidence),
-                       "prefix": ctx.canonical_bytes(prefix), "fingerprint": result.fingerprint}
+                       "prefix": ctx.canonical_bytes(prefix), "fingerprint": result.fingerprint,
+                       "registry_version": registry}
         return {"proposal": copy.deepcopy(proposal), "fingerprint": result.fingerprint}
 
     def observe(self, eid, path):
@@ -1002,15 +1006,18 @@ class _Run:
             if problems:
                 raise FinishVerificationError("; ".join(problems))
             proposal, fingerprint = copy.deepcopy(self.frozen["proposal"]), self.frozen["fingerprint"]
+            registry = self.frozen["registry_version"]
         else:
-            result = cl.incomplete_findings(evidence=evidence, trace=trace, policy=self.policy, stopping_reason=reason)
+            registry = cl.registry_for_evidence(evidence)
+            result = cl.incomplete_findings(evidence=evidence, trace=trace, policy=self.policy, stopping_reason=reason,
+                                            registry_version=registry)
             if not result.accepted:
                 raise FinishVerificationError("; ".join(result.problems))
             proposal = {"finding": "incomplete", "primary_evidence_id": None, "observations": [], "claims": [],
                         "next_investigations": []}
             fingerprint = result.fingerprint
         return InvestigationReportV2(
-            findings_format=ctx.V2_FORMAT, registry_version=cl.REGISTRY_VERSION, grid_version=cl.GRID_VERSION,
+            findings_format=ctx.V2_FORMAT, registry_version=registry, grid_version=cl.GRID_VERSION,
             question=self.question, finished=final is not None, stopping_reason=reason, **proposal,
             evidence=evidence, trace=trace, usage=usage, fingerprint=fingerprint)
 
@@ -1038,7 +1045,8 @@ def finished_v2_problems(frozen, evidence, trace, policy, stopping_reason):
         problems.append(f"the run could not be serialized ({type(exc).__name__})")
     problems += cl.finish_arguments_problems(frozen["proposal"], trace)
     result = cl.validate_findings(frozen["proposal"], evidence=evidence, trace=trace, policy=policy, mode="complete",
-                                  stopping_reason=stopping_reason, finished=True)
+                                  stopping_reason=stopping_reason, finished=True,
+                                  registry_version=frozen.get("registry_version", cl.REGISTRY_VERSION))
     if not result.accepted:
         problems += [f"completed-trace validation: {p}" for p in result.problems]
     elif result.fingerprint != frozen["fingerprint"]:

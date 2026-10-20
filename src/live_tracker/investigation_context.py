@@ -173,6 +173,83 @@ def _provenance_entries(e):
     return entries, None
 
 
+PREDICTION_SOURCES = ("classifier_prediction", "monitor_event")
+# methodology items every prediction-source result records (investigation_sources), with the score member
+IDENTITY_FIELDS = {"classifier_prediction": ("score_threshold", "source_min_duration_frames", "model_identity"),
+                   "monitor_event": ("journal_snapshot_sha256", "monitor_run_id", "monitor_rule_id")}
+
+
+def event_source(snap):
+    """The event source of one snapshot, from its request (query source,
+    episode ids or window ids)."""
+    req, tool = snap["request"], snap["tool"]
+    if tool == "query_events":
+        return req["source"]
+    if tool == "get_window_features":
+        return ic.parse_episode_id(req["episode_ids"][0])["source"]
+    if tool == "check_tracking_quality":
+        return ic.parse_window_id(req["window_ids"][0])["source"]
+    return ic.parse_window_id(req["pre_window_ids"][0])["source"]
+
+
+def prediction_identity(snap):
+    """None for an annotation snapshot. Otherwise (source, (identity fields from
+    its own methodology), score member SHA-256 from its own data provenance):
+    classifier = threshold, minimum duration, model identity; monitor = journal
+    snapshot SHA-256, run id, rule id. A field the snapshot does not record is
+    None; two different score members give the member "conflict"."""
+    try:
+        src = event_source(snap)
+    except (KeyError, TypeError, IndexError, ic.ContractError):
+        return None              # no determinable source: the extraction-index rule alone applies (never more)
+    if src not in PREDICTION_SOURCES:
+        return None
+    if src == "monitor_event" and not _monitor_provenance_valid(snap):
+        # Keep the source identifiable, but refuse even a first/only snapshot.
+        # Both identity comparison and the claims registry reject this marker.
+        return (src, (None, None, None), "conflict")
+    methods = {m["name"]: m["value"] for m in snap["result"].get("methodology", [])}
+    members = sorted({d["sha256"] for d in snap["result"]["provenance"]["data"]
+                      if isinstance(d.get("path"), str) and d["path"].startswith(SCORE_MEMBER_PREFIX)})
+    member = members[0] if len(members) == 1 else ("conflict" if members else None)
+    return (src, tuple(methods.get(k) for k in IDENTITY_FIELDS[src]), member)
+
+
+def _monitor_provenance_valid(snap):
+    """Bind the monitor's methodology to its own journal and score provenance.
+
+    Inspect raw entries before any deduplication: even identical duplicate
+    journal entries are ambiguous and are refused.
+    """
+    _, problem = _provenance_entries(snap)
+    if problem:
+        return False
+    result = snap["result"]
+    values = []
+    for name in IDENTITY_FIELDS["monitor_event"]:
+        items = [m.get("value") for m in result.get("methodology", []) if m.get("name") == name]
+        if len(items) != 1:
+            return False
+        values.append(items[0])
+    journal_sha, run_id, rule_id = values
+    if not isinstance(journal_sha, str) or not _HEX64.fullmatch(journal_sha):
+        return False
+    if not all(isinstance(v, str) and v.strip() and len(v) <= 80 for v in (run_id, rule_id)):
+        return False
+    data = result["provenance"]["data"]
+    journals = [d for d in data if d["path"].startswith("journal-snapshot:")
+                or d["kind"] == "monitor_journal"]
+    if len(journals) != 1:
+        return False
+    journal = journals[0]
+    if (journal["path"] != f"journal-snapshot:{run_id}" or journal["sha256"] != journal_sha
+            or journal["kind"] not in ("monitor_journal", "synthetic_fixture")):
+        return False
+    members = [d for d in data if d["path"].startswith(SCORE_MEMBER_PREFIX)]
+    return (len(members) == 1 and members[0]["kind"] in ("classifier_scores", "synthetic_fixture")
+            and bool(members[0]["path"][len(SCORE_MEMBER_PREFIX):].strip()))
+
+
 def _data_identity_problem(a, b):
     """None when two snapshots provably read the same verified data, else why
     not. Shared by the cross-snapshot check and the coverage provenance chain.
@@ -187,14 +264,27 @@ def _data_identity_problem(a, b):
         entries, problem = _provenance_entries(e)
         if problem:
             return problem
-        index = [p for p in entries if p.endswith(INDEX_NAME)]
-        if len(index) != 1:
-            return "data provenance does not record exactly one verified extraction index"
-        recorded.append((entries, entries[index[0]]))
-    (paths_a, index_a), (paths_b, index_b) = recorded
-    if index_a != index_b or any(paths_a[p] != paths_b[p] for p in set(paths_a) & set(paths_b)):
+        recorded.append(entries)
+    (paths_a, paths_b) = recorded
+    if any(paths_a[p] != paths_b[p] for p in set(paths_a) & set(paths_b)):
         return "data provenance differs"
-    return None
+    # Stage 9 S9-5: snapshots of a prediction source share identity only when they record the same complete
+    # source identity (score member, configuration, and for monitors the exact journal snapshot, run and rule)
+    ida, idb = prediction_identity(a), prediction_identity(b)
+    if ida is not None or idb is not None:
+        if ida != idb:
+            return "prediction source identity differs (source, configuration, journal, run, rule or score member)"
+        if None in ida[1] or ida[2] in (None, "conflict"):
+            return "prediction source identity is not fully recorded"
+    index_a, index_b = ([p for p in paths if p.endswith(INDEX_NAME)] for paths in recorded)
+    if len(index_a) == 1 and len(index_b) == 1:
+        return None if paths_a[index_a[0]] == paths_b[index_b[0]] else "data provenance differs"
+    # Stage 9 S9-5: a prediction query reads only the verified score drop (no cache index); it shares data
+    # identity with another snapshot exactly when both record the same verified score member
+    members = {p for p in set(paths_a) & set(paths_b) if p.startswith(SCORE_MEMBER_PREFIX)}
+    if members and len(index_a) <= 1 and len(index_b) <= 1:
+        return None
+    return "data provenance does not record exactly one verified extraction index"
 
 
 def _comparability(a, b):
@@ -375,7 +465,10 @@ def _group_coverage(definition, members, policy):
         eligible = sorted(sid for sid, sp in policy.split_of.items() if sp == policy.annotation_split)
         eligible_n, basis = len(eligible), f"split manifest via the evidence policy ({policy.annotation_split} split)"
     elif recorded and all(n is not None for n, _, _ in recorded) and len({n for n, _, _ in recorded}) == 1:
-        eligible_n, basis = recorded[0][0], "recorded by the tools (no policy given)"
+        eligible_n = recorded[0][0]
+        # with a policy only prediction sources get here (Stage 9: they are bound to its validation split)
+        basis = "recorded by the tools (no policy given)" if policy is None else \
+            "recorded by the prediction source (bound to the policy's validation split)"
     else:
         eligible_n, basis = None, "not established for this source"
     available = min((a for _, a, _ in recorded if a is not None), default=None)
@@ -782,7 +875,8 @@ def content_fingerprint(payload):
 LEGACY_FORMAT = "legacy/1"
 V2_FORMAT = "findings/2"
 KNOWN_FORMATS = frozenset({V2_FORMAT})
-KNOWN_REGISTRIES = frozenset({"claims/2.0"})
+SCORE_MEMBER_PREFIX = "score-drop-member:"      # investigation_sources: data-item path of a verified score member
+KNOWN_REGISTRIES = frozenset({"claims/2.0", "claims/2.1"})   # claims/2.1: prediction evidence (Stage 9 S9-5)
 KNOWN_GRIDS = frozenset({"none"})
 V2_ONLY_FIELDS = ("findings_format", "claims", "next_investigations", "fingerprint", "registry_version",
                   "grid_version")

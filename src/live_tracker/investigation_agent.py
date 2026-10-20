@@ -107,6 +107,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from . import investigation_context as ctx
 from . import investigation_contracts as ic
 
 __all__ = ["AGENT_LIMITATIONS", "Budget", "ClaudeInvestigationModel", "FINDINGS", "InvestigationModel",
@@ -121,7 +122,7 @@ STOP_REASONS = ("finished", "max_model_turns", "max_tool_calls", "token_budget",
 MAX_TEXT_TRACE = 2000
 MAX_STATEMENT = 600
 MAX_ITEMS = 20
-MAX_FIELD = 200
+MAX_FIELD = ctx.MAX_FIELD               # the observation field grammar is shared with Stage 7
 MAX_LIST_VALUE = 20
 
 
@@ -362,7 +363,7 @@ _MAGNITUDE = re.compile(
 _EFFECT_WORDS = re.compile(
     r"\b(increas|decreas|higher|lower|faster|slower|greater|smaller|larger|reduc|rise|rises|rose|risen|"
     r"drop|fell|fall|declin|elevat|diminish|shrink|shrank|grew|grow|closer|farther|further apart)\w*", re.I)
-_FIELD = re.compile(r"(status|errors|measurements)(\.[A-Za-z_][A-Za-z0-9_]*|\[\d{1,4}\])*")
+_FIELD = ctx.FIELD_RE
 
 
 # ---- the loop ----
@@ -394,17 +395,9 @@ class InvestigationReport:
 
     def verify_evidence(self):
         """evidence_ids whose request / result snapshot no longer hashes to its
-        evidence_id (empty: every snapshot is as validated)."""
-        bad = []
-        for e in self.evidence:
-            try:
-                ok = (e["result"]["evidence_id"] == e["evidence_id"]
-                      == ic.evidence_id(e["tool"], e["request"], e["result"]))
-            except Exception:
-                ok = False
-            if not ok:
-                bad.append(e.get("evidence_id"))
-        return bad
+        evidence_id (empty: every snapshot is as validated). The shared L0
+        content-consistency check (investigation_context)."""
+        return ctx.content_consistency(self.evidence)
 
 
 class _Run:
@@ -783,14 +776,10 @@ class _Run:
         if len(path) > MAX_FIELD or not _FIELD.fullmatch(path):
             return None, (f"field {path[:80]!r} is not a path such as status, measurements.effect.value or "
                           "measurements.per_session[0].difference")
-        value = ev["result"]
-        for key, index in re.findall(r"\.?([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]", path):
-            if key and isinstance(value, dict) and key in value:
-                value = value[key]
-            elif index and isinstance(value, list) and int(index) < len(value):
-                value = value[int(index)]
-            else:
-                return None, f"{eid[:80]} has no field {path!r}"
+        try:
+            value = ctx.resolve_field(ev["result"], path)      # the same resolver Stage 7 re-derives with
+        except KeyError:
+            return None, f"{eid[:80]} has no field {path!r}"
         scalar = (str, int, float, bool, type(None))
         if not (isinstance(value, scalar) or isinstance(value, list) and len(value) <= MAX_LIST_VALUE
                 and all(isinstance(v, scalar) for v in value)):

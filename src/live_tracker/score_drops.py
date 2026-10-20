@@ -51,6 +51,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import json
 import math
 import os
 import re
@@ -58,7 +59,7 @@ import stat
 import zipfile
 import zlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -67,7 +68,7 @@ import pandas as pd
 from .calms21 import FPS
 from .investigation_data import load_manifest
 
-__all__ = ["ArchiveIntegrityError", "MAX_ARCHIVE_BYTES", "MAX_MEMBER_BYTES", "SCORE_COLUMNS", "ScoreDrop",
+__all__ = ["canonical_row", "rows_sha256", "trusted_rows_sha256", "ArchiveIntegrityError", "MAX_ARCHIVE_BYTES", "MAX_MEMBER_BYTES", "SCORE_COLUMNS", "ScoreDrop",
            "ScoreDropError", "ScoreProvenance", "ScoreSchemaError", "SplitRefused", "inspect_archive",
            "load_validation_scores"]
 
@@ -120,6 +121,7 @@ class ScoreProvenance:
     manifest_sha256: str
     n_sessions: int
     n_frames: int
+    rows_sha256: str                   # SHA-256 of the verified rows (canonical_row), for monitor binding
     model_label: str
     model_label_status: str            # never verified: inferred from the file name
     model_artifact_sha256: None        # unavailable: not supplied with the archive
@@ -132,11 +134,17 @@ class ScoreProvenance:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}
 
 
+# issued only by load_validation_scores: a ScoreDrop built any other way (or a bare ScoreProvenance, or a
+# dict) is never treated as a verified load (trusted_rows_sha256 returns None for it)
+_ISSUER = object()
+
+
 @dataclass(frozen=True)
 class ScoreDrop:
     """A verified validation score table and its provenance."""
     provenance: ScoreProvenance
     _table: pd.DataFrame
+    _issuer: object = field(default=None, repr=False, compare=False)
 
     def scores(self):
         """A fresh copy of the verified §2 table (session, frame, time_s, scores, tracking_ok)."""
@@ -145,6 +153,47 @@ class ScoreDrop:
     def rows(self):
         """Verified rows as dicts, in file order (for the streaming monitor)."""
         return self._table.to_dict("records")
+
+
+def canonical_row(row):
+    """One §2 row as the canonical line its digest is computed over:
+    [session, frame, time_s, attack, mount, investigation, tracking_ok] as
+    compact JSON plus a newline. Values, not representations: numpy numbers
+    and Python numbers of the same value give the same line. ValueError for a
+    row that is not a complete §2 row."""
+    try:
+        session, frame, t = row["session"], row["frame"], row["time_s"]
+        ok = row["tracking_ok"]
+        scores = [row[c] for c in SCORE_CLASSES]
+    except (KeyError, TypeError):
+        raise ValueError(f"not a complete score row (needs {list(SCORE_COLUMNS)})") from None
+    if not isinstance(session, str) or isinstance(frame, (bool, np.bool_)) or \
+            not isinstance(frame, (int, np.integer)) or not isinstance(ok, (bool, np.bool_)):
+        raise ValueError("score row has a bad session, frame or tracking_ok type")
+    values = [float(t)] + [float(v) for v in scores]
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("score row has a non-finite value")
+    return (json.dumps([session, int(frame), *values, bool(ok)], separators=(",", ":"), allow_nan=False)
+            + "\n").encode("utf-8")
+
+
+def rows_sha256(rows):
+    """SHA-256 over the canonical lines of rows, in order."""
+    h = hashlib.sha256()
+    for row in rows:
+        h.update(canonical_row(row))
+    return h.hexdigest()
+
+
+def trusted_rows_sha256(drop):
+    """The verified rows digest of a ScoreDrop issued by load_validation_scores
+    whose table still hashes to it; None for anything else (a hand-built
+    ScoreDrop, a ScoreProvenance, a dict, or a drop whose table was changed).
+    This is the only way a monitor run can become a verified score-drop run."""
+    if not isinstance(drop, ScoreDrop) or drop._issuer is not _ISSUER:
+        return None
+    digest = rows_sha256(drop._table.to_dict("records"))
+    return digest if digest == drop.provenance.rows_sha256 else None
 
 
 # ======================================================================
@@ -412,9 +461,9 @@ def load_validation_scores(zip_path, member, *, manifest_path=DEFAULT_MANIFEST, 
         member=member, member_sha256=member_sha,
         member_sha256_check=f"matched {CHECKSUMS} (in-band, unsigned: archive consistency, not authorship)",
         split=split, manifest_sha256=manifest_sha, n_sessions=int(table["session"].nunique()),
-        n_frames=int(len(table)), model_label=model_label,
+        n_frames=int(len(table)), rows_sha256=rows_sha256(table.to_dict("records")), model_label=model_label,
         model_label_status="unverified: inferred from the member file name only",
         model_artifact_sha256=None, model_id=None, feature_configuration=None, producing_commit=None,
         model_provenance_status=("unavailable: the archive holds no model artifact, model metadata, feature "
                                  "or quality-flag configuration, or producing commit"))
-    return ScoreDrop(provenance=provenance, _table=table)
+    return ScoreDrop(provenance=provenance, _table=table, _issuer=_ISSUER)

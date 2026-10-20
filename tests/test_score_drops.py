@@ -315,6 +315,8 @@ def test_smoke_script_in_memory(tmp_path, synthetic_manifest_default, capsys):
     assert "not a researcher decision" in out["rule_approval"] and out["written"] is None
     assert out["source"]["member_sha256"] == hashlib.sha256(csv_bytes()).hexdigest()
     assert out["source"]["model_id"] is None
+    snap = out["journal_snapshot"]                       # S9-2: an issued ScoreDrop over its own rows is verified
+    assert (snap["provenance_status"], snap["completion"], snap["n_events"]) == ("verified_score_drop", "complete", 1)
     assert not list(tmp_path.glob("**/*.jsonl"))                               # nothing written
 
 
@@ -483,13 +485,13 @@ def test_a_symlink_planted_during_the_run_is_not_followed(tmp_path, synthetic_ma
     out = tmp_path / "out"
     victim = tmp_path / "victim.txt"
     victim.write_text("unrelated")
-    real = smoke.run_monitor
+    real = smoke.monitor_run
 
     def planting(*a, **k):
-        events = real(*a, **k)
+        result = real(*a, **k)
         (out / "summary.json").symlink_to(victim)                            # after the directory was claimed
-        return events
-    monkeypatch.setattr(smoke, "run_monitor", planting)
+        return result
+    monkeypatch.setattr(smoke, "monitor_run", planting)
     assert smoke.main(smoke_args(path, None, "--smoke-rule", "--out", str(out))) == 2
     assert victim.read_text() == "unrelated" and "never overwritten" in capsys.readouterr().err
 

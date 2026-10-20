@@ -34,8 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from live_tracker import score_drops  # noqa: E402
-from live_tracker.event_log import event_to_json  # noqa: E402
-from live_tracker.monitor import run_monitor  # noqa: E402
+from live_tracker.event_log import event_to_json, freeze_run  # noqa: E402
+from live_tracker.monitor import Monitor  # noqa: E402
 from live_tracker.rules import RuleSet  # noqa: E402
 
 OUTPUT_NAMES = ("events.journal.jsonl", "events.jsonl", "summary.json")
@@ -134,6 +134,17 @@ def create_exclusive(path, data):
         os.fsync(f.fileno())
 
 
+def monitor_run(table, rules, journal, run_id, drop):
+    """The unchanged monitor over the verified rows, its journal bound to the
+    verified ScoreDrop (S9-2: run header, rows digest, completion record);
+    (§4 events, frozen run snapshot)."""
+    monitor = Monitor(rules, journal_path=journal, run_id=run_id, provenance=drop)
+    for row in table.to_dict("records"):
+        monitor.step(row)
+    events = monitor.finish()
+    return events, freeze_run(monitor.journal, run_id)
+
+
 def run(args):
     out = ignored_output_dir(args.out) if args.out else None
     rules, approval = build_rules(args)
@@ -144,7 +155,7 @@ def run(args):
     if out is not None:                          # only after the scores verified: a refusal writes nothing
         prepare_output(out)
         journal = out / OUTPUT_NAMES[0]
-    events = run_monitor(table, rules.active(), journal_path=journal, run_id=args.run_id)
+    events, snapshot = monitor_run(table, rules.active(), journal, args.run_id, drop)
     rule = rules.active()[0].to_dict()
     summary = {
         "mode": "offline smoke test (validation scores, existing monitor; no network, no paid call)",
@@ -154,6 +165,11 @@ def run(args):
         "sessions_with_events": len({e["session"] for e in events}),
         "rule": rule, "rule_approval": approval, "run_id": args.run_id,
         "source": drop.provenance.to_json(),
+        "journal_snapshot": {"run_id": snapshot.run_id, "sha256": snapshot.sha256,
+                             "provenance_status": snapshot.provenance_status, "n_events": snapshot.n_events,
+                             "completion": snapshot.completion,
+                             "format": "journal-snapshot/1 (run header + fired / closed records + completion; "
+                                       "answers excluded)"},
         "written": None,
     }
     if out is not None:

@@ -46,19 +46,69 @@ Write failures:
   the journal is opened for writing.
 
 Single writer: one process writes a journal file at a time (no file locking).
+
+Run provenance (Stage 9, S9-2)
+------------------------------
+A run may start with one header record, written by the monitor before any of
+the run's events when it is given verified score provenance:
+
+     {"record": "run_started", "run_id": ..., "header_version": "run-header/1",
+      "frame_period_s": ..., "rules": [<approved rules, sorted by rule_id>],
+      "rules_digest": <sha256 of the canonical rules list>,
+      "source": <score_drops.ScoreProvenance.to_json()>}
+
+It is validated like every other record: exact fields, a rules digest that
+recomputes, approved rules only, source digests as SHA-256 hex, the
+validation split, the model label marked unverified and every model-artifact
+field null (nothing about the model is claimed). It must precede the run's
+events (a header for a run that already has events is a conflict), and every
+event_fired of that run must use one of its rules, unchanged, and its frame
+period. Journals written before S9-2 have no headers: they stay readable and
+their runs are reported as "no_source_provenance" (run_provenance()).
+The §4 export is unchanged (headers are not events).
+
+Source binding: a header written by the public run_header() (or by a monitor
+given a dict, a ScoreProvenance or a hand-built ScoreDrop) has
+source_binding "declared". Only a Monitor handed a ScoreDrop issued by
+score_drops.load_validation_scores writes "verified_load", and even then the
+run counts as "verified_score_drop" only once its completion record shows that
+the rows the monitor processed hash to the verified rows digest.
+
+Completion: Monitor.finish() of a run with a header appends
+     {"record": "run_finished", "run_id", "n_rows", "n_events",
+      "events_sha256", "input_rows_sha256"}
+after the run's last closed event. It is refused unless every event is
+closed and n_events / events_sha256 equal the run's event_fired /
+event_closed records; no event of the run may follow it.
+
+Frozen evidence (freeze_run): the canonical JSON of one run's header (or
+null), its event_fired / event_closed records in journal order and its
+run_finished record (or null), with its SHA-256. Researcher answers and other
+runs are not part of it. A run with a header but no run_finished is never
+frozen; a run without a header (journals written before S9-2) is frozen with
+completion "legacy_unrecorded", never "complete". load_snapshot rebuilds the
+journal state from the snapshot, so deleting event pairs (or otherwise
+editing records) without a matching completion record is refused even when
+the snapshot digest is recomputed.
 """
 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 EVENT_KEYS = ("event_id", "session", "rule_id", "behavior", "start_s", "end_s",
               "confidence", "action", "researcher_answer", "evidence")
-RECORD_TYPES = ("event_fired", "event_closed", "event_answered")
+RECORD_TYPES = ("event_fired", "event_closed", "event_answered", "run_started", "run_finished")
+EVENT_RECORDS = ("event_fired", "event_closed", "event_answered")
+HEADER_VERSION = "run-header/1"
+SNAPSHOT_VERSION = "journal-snapshot/1"
 ACTIONS = ("alert", "ask", "log")
 ANSWERS = ("confirmed", "rejected")
 END_REASONS = ("below_threshold", "tracking_lost", "missing_score", "frame_gap",
@@ -83,6 +133,22 @@ _CLOSED_FIELDS = {
 _ANSWERED_FIELDS = {"record": str, "event_id": str, "researcher_answer": str}
 _FIELDS = {"event_fired": _FIRED_FIELDS, "event_closed": _CLOSED_FIELDS,
            "event_answered": _ANSWERED_FIELDS}
+_HEADER_FIELDS = {"record": str, "run_id": str, "header_version": str, "frame_period_s": "num", "rules": list,
+                  "rules_digest": str, "source_binding": str, "source": dict}
+# "verified_load": the monitor was handed a ScoreDrop issued by score_drops.load_validation_scores
+# (score_drops.trusted_rows_sha256); "declared": anything else (a dict, a ScoreProvenance, a hand-built drop)
+SOURCE_BINDINGS = ("verified_load", "declared")
+_FINISHED_FIELDS = {"record": str, "run_id": str, "n_rows": int, "n_events": int, "events_sha256": str,
+                    "input_rows_sha256": str}
+_HEADER_RULE_FIELDS = {"rule_id": str, "behavior": str, "status": str, **_RULE_FIELDS}
+# score_drops.ScoreProvenance fields (S9-1a); kinds: "hex" SHA-256, "null" never claimed, int, str
+_SOURCE_FIELDS = {"archive_name": str, "archive_sha256": "hex", "archive_sha256_check": str, "member": str,
+                  "member_sha256": "hex", "member_sha256_check": str, "split": str, "manifest_sha256": "hex",
+                  "n_sessions": int, "n_frames": int, "rows_sha256": "hex", "model_label": str,
+                  "model_label_status": str,
+                  "model_artifact_sha256": "null", "model_id": "null", "feature_configuration": "null",
+                  "producing_commit": "null", "model_provenance_status": str}
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 class JournalIntegrityError(ValueError):
@@ -117,6 +183,102 @@ def _dumps(obj):
     return json.dumps(_clean(obj), allow_nan=False)
 
 
+def canonical_bytes(obj):
+    """Canonical serialization for digests: sorted keys, compact, UTF-8, no NaN."""
+    return json.dumps(_clean(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False).encode("utf-8")
+
+
+def rules_digest(rules):
+    """SHA-256 of the canonical list of header rules (sorted by rule_id)."""
+    return hashlib.sha256(canonical_bytes(sorted(rules, key=lambda r: r["rule_id"]))).hexdigest()
+
+
+def run_header(run_id, rules, frame_period_s, source):
+    """The run_started record for a monitor run whose source is only DECLARED
+    (rules: approved rules.Rule objects; source: a ScoreProvenance or its
+    to_json() dict). This public helper never produces a verified binding:
+    only Monitor, handed a ScoreDrop that score_drops issued, writes
+    source_binding "verified_load". The source is copied, never completed."""
+    return _run_header(run_id, rules, frame_period_s, source, "declared")
+
+
+def _run_header(run_id, rules, frame_period_s, source, binding):
+    items = sorted(({"rule_id": r.rule_id, "behavior": r.behavior, "status": r.status,
+                     "min_duration_s": r.min_duration_s, "ask_threshold": r.ask_threshold,
+                     "alert_threshold": r.alert_threshold, "alert_mode": r.alert_mode} for r in rules),
+                   key=lambda r: r["rule_id"])
+    src = source.to_json() if hasattr(source, "to_json") else source
+    header = normalize_record({"record": "run_started", "run_id": run_id, "header_version": HEADER_VERSION,
+                               "frame_period_s": frame_period_s, "rules": items, "rules_digest": rules_digest(items),
+                               "source_binding": binding, "source": copy.deepcopy(src)})
+    _validate_header(header)
+    return header
+
+
+def _validate_header(rec):
+    what = f"run_started {rec.get('run_id')!r}"
+    _check_fields(rec, _HEADER_FIELDS, what)
+    if not rec["run_id"]:
+        raise JournalIntegrityError(f"{what}: empty run_id")
+    if rec["header_version"] != HEADER_VERSION:
+        raise JournalIntegrityError(f"{what}: unknown header_version {rec['header_version']!r}")
+    if rec["frame_period_s"] <= 0:
+        raise JournalIntegrityError(f"{what}: frame_period_s <= 0")
+    if rec["source_binding"] not in SOURCE_BINDINGS:
+        raise JournalIntegrityError(f"{what}: unknown source_binding {rec['source_binding']!r}")
+    if not rec["rules"]:
+        raise JournalIntegrityError(f"{what}: no rules")
+    for r in rec["rules"]:
+        if not isinstance(r, dict):
+            raise JournalIntegrityError(f"{what}: a rule is not an object")
+        _check_fields(r, _HEADER_RULE_FIELDS, f"{what} rule")
+        if r["status"] != "approved":
+            raise JournalIntegrityError(f"{what}: rule {r['rule_id']!r} is not approved")
+    ids = [r["rule_id"] for r in rec["rules"]]
+    if len(set(ids)) != len(ids) or ids != sorted(ids):
+        raise JournalIntegrityError(f"{what}: rules must be unique and sorted by rule_id")
+    if rec["rules_digest"] != rules_digest(rec["rules"]):
+        raise JournalIntegrityError(f"{what}: rules_digest does not match the rules")
+    src = rec["source"]
+    if set(src) != set(_SOURCE_FIELDS):
+        raise JournalIntegrityError(f"{what}: source fields {sorted(src)} != {sorted(_SOURCE_FIELDS)}")
+    for key, kind in _SOURCE_FIELDS.items():
+        v = src[key]
+        ok = (v is None if kind == "null" else isinstance(v, str) and bool(_HEX64.fullmatch(v)) if kind == "hex"
+              else isinstance(v, int) and not isinstance(v, bool) and v >= 0 if kind is int
+              else isinstance(v, str) and bool(v))
+        if not ok:
+            raise JournalIntegrityError(f"{what}: source field {key!r} has a bad value {str(v)[:60]!r}"
+                                        + (" (model identity is never claimed without verified provenance)"
+                                           if kind == "null" else ""))
+    if src["split"] != "validation":
+        raise JournalIntegrityError(f"{what}: source split {src['split']!r} is not validation")
+    if not src["model_label_status"].startswith("unverified"):
+        raise JournalIntegrityError(f"{what}: the model label must be marked unverified")
+
+
+def _record_key(rec):
+    if rec["record"] in ("run_started", "run_finished"):
+        return (rec["record"], rec["run_id"])
+    return (rec["record"], rec["event_id"])
+
+
+def events_digest(records):
+    """SHA-256 of the canonical list of a run's event_fired / event_closed records, in order."""
+    return hashlib.sha256(canonical_bytes(list(records))).hexdigest()
+
+
+def _validate_finished(rec):
+    what = f"run_finished {rec.get('run_id')!r}"
+    _check_fields(rec, _FINISHED_FIELDS, what)
+    if rec["n_rows"] < 0 or rec["n_events"] < 0:
+        raise JournalIntegrityError(f"{what}: negative count")
+    for key in ("events_sha256", "input_rows_sha256"):
+        if not _HEX64.fullmatch(rec[key]):
+            raise JournalIntegrityError(f"{what}: {key} is not a SHA-256 hex digest")
+
+
 def normalize_record(record):
     """The record exactly as it will look after a write + read (plain JSON)."""
     return json.loads(_dumps(record))
@@ -142,6 +304,12 @@ def _check_fields(rec, spec, what):
 def _validate_shape(rec):
     if not isinstance(rec, dict) or rec.get("record") not in RECORD_TYPES:
         raise JournalIntegrityError("not a journal record")
+    if rec["record"] == "run_started":
+        _validate_header(rec)
+        return
+    if rec["record"] == "run_finished":
+        _validate_finished(rec)
+        return
     what = f"{rec['record']} {rec.get('event_id')!r}"
     _check_fields(rec, _FIELDS[rec["record"]], what)
     if not rec["event_id"]:
@@ -176,6 +344,18 @@ def _validate_shape(rec):
 
 def _validate_against(rec, by_key):
     """Checks that need the event's fired record."""
+    if rec["record"] == "event_fired":
+        header = by_key.get(("run_started", rec["run_id"]))
+        if header is not None:                   # a run with a header: its events use its rules unchanged
+            rule = next((r for r in header["rules"] if r["rule_id"] == rec["rule_id"]), None)
+            if rule is None:
+                raise JournalIntegrityError(f"event_fired {rec['event_id']!r}: rule {rec['rule_id']!r} is not in "
+                                            f"the header of run {rec['run_id']!r}")
+            if rule["behavior"] != rec["behavior"] or {k: rule[k] for k in _RULE_FIELDS} != rec["rule"] or \
+                    rec["frame_period_s"] != header["frame_period_s"]:
+                raise JournalIntegrityError(f"event_fired {rec['event_id']!r}: rule or frame period differs from "
+                                            f"the header of run {rec['run_id']!r}")
+        return
     eid = rec["event_id"]
     fired = by_key.get(("event_fired", eid))
     if fired is None:
@@ -218,21 +398,52 @@ class JournalState:
         """Validate rec against this state. True if new, False if an identical
         record is already there. Raises on invalid or conflicting records."""
         _validate_shape(rec)
-        key = (rec["record"], rec["event_id"])
+        key = _record_key(rec)
         existing = self._by_key.get(key)
         if existing is not None:
             if existing == rec:
                 return False
             raise JournalConflictError(f"journal already has a different {key[0]} for {key[1]}")
-        if rec["record"] != "event_fired":
-            _validate_against(rec, self._by_key)
+        if rec["record"] == "run_started":
+            if any(r["record"] == "event_fired" and r["run_id"] == rec["run_id"] for r in self._records):
+                raise JournalConflictError(f"run {rec['run_id']!r} already has events; its header must come first")
+            return True
+        if rec["record"] == "run_finished":
+            self._check_completion(rec)
+            return True
+        if rec["record"] in ("event_fired", "event_closed"):
+            run = rec["run_id"] if rec["record"] == "event_fired" else \
+                (self._by_key.get(("event_fired", rec["event_id"])) or {}).get("run_id")
+            if run is not None and ("run_finished", run) in self._by_key:
+                raise JournalIntegrityError(f"{rec['record']} {rec['event_id']!r} after run {run!r} finished")
+        _validate_against(rec, self._by_key)
         return True
+
+    def _run_event_records(self, run_id):
+        ids = {r["event_id"] for r in self._records if r["record"] == "event_fired" and r["run_id"] == run_id}
+        return [r for r in self._records if r["record"] in ("event_fired", "event_closed") and r["event_id"] in ids]
+
+    def _check_completion(self, rec):
+        """A completion record binds the run's finished lifecycle: it needs the
+        run's header, every event closed, and the exact count and digest of the
+        run's event_fired / event_closed records."""
+        run = rec["run_id"]
+        if ("run_started", run) not in self._by_key:
+            raise JournalIntegrityError(f"run_finished {run!r} has no run_started header")
+        records = self._run_event_records(run)
+        fired = [r for r in records if r["record"] == "event_fired"]
+        closed = {r["event_id"] for r in records if r["record"] == "event_closed"}
+        if any(r["event_id"] not in closed for r in fired):
+            raise JournalIntegrityError(f"run_finished {run!r} while events are still open")
+        if rec["n_events"] != len(fired) or rec["events_sha256"] != events_digest(records):
+            raise JournalIntegrityError(f"run_finished {run!r}: n_events / events_sha256 do not match the run's "
+                                        "lifecycle records")
 
     def add(self, rec):
         rec = normalize_record(rec)
         if not self.check(rec):
             return False
-        self._by_key[(rec["record"], rec["event_id"])] = rec
+        self._by_key[_record_key(rec)] = rec
         self._records.append(rec)
         return True
 
@@ -258,6 +469,40 @@ class JournalState:
         """§4 projection of every fired event (optionally one run), in firing order."""
         return [self.event(r["event_id"]) for r in self._records
                 if r["record"] == "event_fired" and (run_id is None or r["run_id"] == run_id)]
+
+    def run_ids(self):
+        """Run ids with a header or an event, in first-appearance order."""
+        out = []
+        for r in self._records:
+            if r["record"] in ("run_started", "event_fired", "run_finished") and r["run_id"] not in out:
+                out.append(r["run_id"])
+        return out
+
+    def run_provenance(self, run_id):
+        """{"status", "completion", "header", "finished"} of a run.
+
+        status: "verified_score_drop" only when the header's source_binding is
+        "verified_load" AND the run finished AND the rows the monitor actually
+        processed (run_finished.input_rows_sha256 / n_rows) are exactly the
+        verified rows (source.rows_sha256 / n_frames); "declared_unverified" for
+        any other header; "no_source_provenance" without a header.
+        completion: "complete" (a valid run_finished), "unfinished" (a header,
+        no run_finished) or "legacy_unrecorded" (no header: completion was never
+        recorded, so it is never presented as verified)."""
+        if run_id not in self.run_ids():
+            raise KeyError(f"no run {run_id!r} in the journal")
+        header = self._by_key.get(("run_started", run_id))
+        finished = self._by_key.get(("run_finished", run_id))
+        if header is None:
+            status, completion = "no_source_provenance", "legacy_unrecorded"
+        else:
+            completion = "complete" if finished else "unfinished"
+            bound = (finished is not None and header["source_binding"] == "verified_load"
+                     and finished["input_rows_sha256"] == header["source"]["rows_sha256"]
+                     and finished["n_rows"] == header["source"]["n_frames"])
+            status = "verified_score_drop" if bound else "declared_unverified"
+        return {"status": status, "completion": completion, "header": copy.deepcopy(header),
+                "finished": copy.deepcopy(finished)}
 
 
 # ---- files ----
@@ -323,6 +568,12 @@ class EventJournal:
     def events(self, run_id=None):
         """§4 projection of the current journal state (recovery / inspection)."""
         return self._state.events(run_id)
+
+    def run_ids(self):
+        return self._state.run_ids()
+
+    def run_provenance(self, run_id):
+        return self._state.run_provenance(run_id)
 
     def append(self, record):
         """Store one record durably. Returns True if written, False if an
@@ -467,6 +718,102 @@ def project_event(fired, closed=None, answered=None):
 def project_events(records, run_id=None):
     """§4 events from raw records, through the same validation as everything else."""
     return JournalState.from_records(records).events(run_id)
+
+
+# ---- frozen run evidence (S9-2) ----
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    """One run's frozen journal evidence: canonical bytes and their SHA-256."""
+    run_id: str
+    provenance_status: str               # "verified_score_drop" | "declared_unverified" | "no_source_provenance"
+    completion: str                      # "complete" | "legacy_unrecorded" (unfinished runs are never frozen)
+    n_events: int
+    sha256: str
+    canonical: bytes
+
+    def payload(self):
+        """A fresh copy of the frozen content."""
+        return json.loads(self.canonical)
+
+
+def _state_of(source):
+    if isinstance(source, JournalState):
+        return source
+    if isinstance(source, EventJournal):
+        return source._state
+    return load_journal(source)
+
+
+def freeze_run(source, run_id):
+    """The frozen evidence of one run (RunSnapshot) from a journal (path,
+    EventJournal or JournalState). Refused if the run is unknown or any of its
+    events is still open. Nothing missing is filled in: a run without a header
+    is frozen with header null and status "no_source_provenance"."""
+    state = _state_of(source)
+    prov = state.run_provenance(run_id)
+    if prov["completion"] == "unfinished":
+        raise JournalIntegrityError(f"run {run_id!r} has no run_finished record: an unfinished run is never frozen")
+    records = state._run_event_records(run_id)
+    fired = [r for r in records if r["record"] == "event_fired"]
+    open_ids = sorted({r["event_id"] for r in fired} - {r["event_id"] for r in records if r["record"] == "event_closed"})
+    if open_ids:
+        raise JournalIntegrityError(f"run {run_id!r} has open events {open_ids[:5]}; only finished runs are frozen")
+    finished = prov["finished"]
+    if finished is not None and (finished["n_events"] != len(fired) or finished["events_sha256"] != events_digest(records)):
+        raise JournalIntegrityError(f"run {run_id!r}: its lifecycle records do not match its run_finished record")
+    payload = {"snapshot_version": SNAPSHOT_VERSION, "run_id": run_id, "provenance_status": prov["status"],
+               "completion": prov["completion"], "header": prov["header"], "records": copy.deepcopy(records),
+               "finished": finished,
+               "excluded": "researcher answers and other runs are not part of the frozen evidence"}
+    canonical = canonical_bytes(payload)
+    return RunSnapshot(run_id=run_id, provenance_status=prov["status"], completion=prov["completion"],
+                       n_events=len(fired), sha256=hashlib.sha256(canonical).hexdigest(), canonical=canonical)
+
+
+def load_snapshot(canonical, sha256):
+    """A RunSnapshot from stored bytes: the digest must match and the content
+    must be a valid, complete, duplicate-free frozen run (re-validated through
+    JournalState)."""
+    if not isinstance(canonical, bytes) or hashlib.sha256(canonical).hexdigest() != sha256:
+        raise JournalIntegrityError("frozen snapshot bytes do not match their SHA-256")
+    try:
+        payload = json.loads(canonical)
+    except ValueError:
+        raise JournalIntegrityError("frozen snapshot is not JSON") from None
+    if not isinstance(payload, dict) or set(payload) != {"snapshot_version", "run_id", "provenance_status",
+                                                         "completion", "header", "records", "finished",
+                                                         "excluded"} or \
+            payload["snapshot_version"] != SNAPSHOT_VERSION or canonical_bytes(payload) != canonical:
+        raise JournalIntegrityError("frozen snapshot is not in canonical journal-snapshot/1 form")
+    records = payload["records"]
+    if not isinstance(records, list) or any(not isinstance(r, dict) or r.get("record") not in
+                                            ("event_fired", "event_closed") for r in records):
+        raise JournalIntegrityError("frozen snapshot records must be event_fired / event_closed records")
+    keys = [_record_key(r) for r in records]
+    if len(set(keys)) != len(keys):
+        raise JournalIntegrityError("frozen snapshot has duplicate records")
+    if any(r["record"] == "event_fired" and r.get("run_id") != payload["run_id"] for r in records):
+        raise JournalIntegrityError("frozen snapshot holds an event of another run")
+    if payload["header"] is None and payload["finished"] is not None:
+        raise JournalIntegrityError("frozen snapshot has a completion record without a header")
+    # header, records, completion: the completion record re-checks the count and digest of the records
+    state = JournalState.from_records(([payload["header"]] if payload["header"] is not None else []) + records
+                                      + ([payload["finished"]] if payload["finished"] is not None else []))
+    again = freeze_run(state, payload["run_id"]) if records or payload["header"] else None
+    if again is None or again.sha256 != sha256:
+        raise JournalIntegrityError("frozen snapshot is not consistent with its own records")
+    return again
+
+
+def verify_snapshot(snapshot, source):
+    """Raise JournalIntegrityError unless the journal still holds exactly the
+    frozen evidence of the snapshot's run (later answers and other runs are
+    allowed; any change to the run's header or lifecycle records is not)."""
+    current = freeze_run(source, snapshot.run_id)
+    if current.sha256 != snapshot.sha256:
+        raise JournalIntegrityError(f"the frozen evidence of run {snapshot.run_id!r} changed in the journal")
+    return current
 
 
 # ---- §4 event-log files ----

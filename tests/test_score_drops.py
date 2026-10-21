@@ -386,6 +386,10 @@ def test_real_validation_model_b_drop():
 
 # ---- 1. archive replacement race (A -> B -> A) ----
 
+# The race is simulated with os.replace on the archive path while the archive is still open. Windows does not
+# reliably allow replacing a file that is open, so the swap itself fails there (it is not the code under test).
+# The read-once and digest checks that need no swap (the next two tests) still run on every platform.
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: replaces a file that is still open")
 def test_archive_is_read_once_and_a_swap_cannot_change_what_is_consumed(tmp_path, manifest, monkeypatch):
     a_path = archive(tmp_path, name="a.zip")
     other = table()

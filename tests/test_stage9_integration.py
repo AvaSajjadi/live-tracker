@@ -52,8 +52,15 @@ def argv(inputs, out, *extra):
             str(inputs["manifest"]), "--allow-synthetic", "--min-duration-s", "0.5", *extra]
 
 
+def text(path):
+    """An output file as text. The script writes every output as UTF-8 bytes, so it is read back as UTF-8 on every
+    platform: Path.read_text() without an encoding uses the locale's (cp1252 on Windows) and garbles non-ASCII text
+    such as the report's "·" separators."""
+    return path.read_text(encoding="utf-8")
+
+
 def summary(out):
-    return json.loads((out / "integration_summary.json").read_text())
+    return json.loads(text(out / "integration_summary.json"))
 
 
 @needs_sdk
@@ -75,11 +82,14 @@ def test_full_offline_integration(inputs, capsys):
         assert inv["publication"] in ("not_authorized", "record_only") and inv["provider_reported_cost_usd"] == 0.0
         assert {"query_events", "get_window_features", "check_tracking_quality", "compare_windows"} <= \
             set(inv["tools_used"])
-        saved = (out / f"{source}_report.json").read_text()
+        saved = text(out / f"{source}_report.json")
         rebuilt = v2.verify_saved_v2(json.loads(saved), policy=inputs["policy"])     # independent re-verification
         assert rebuilt["source"]["source"] == source and rebuilt["source"]["disclosures"]
-        assert v2.render_markdown_v2(json.loads(saved), policy=inputs["policy"]) == \
-            (out / f"{source}_report.md").read_text()
+        rendered = v2.render_markdown_v2(json.loads(saved), policy=inputs["policy"])
+        assert rendered == text(out / f"{source}_report.md")
+        # byte-level, independent of the platform's default encoding: the saved file is exactly the UTF-8 of the
+        # rendering, and the rendering really contains non-ASCII text (so a locale decode would differ)
+        assert (out / f"{source}_report.md").read_bytes() == rendered.encode("utf-8") and not rendered.isascii()
     snap = (out / "journal_snapshot.json").read_bytes()
     assert hashlib.sha256(snap).hexdigest() == s["monitor"]["snapshot_sha256"]
 
@@ -128,8 +138,8 @@ def test_an_incomplete_journal_is_refused(inputs, capsys):
     capsys.readouterr()
     journal = out / "events.journal.jsonl"
     cut = inputs["tmp"] / "cut.jsonl"
-    cut.write_text("".join(x + "\n" for x in journal.read_text().splitlines()
-                           if '"run_finished"' not in x))
+    cut.write_bytes("".join(x + "\n" for x in text(journal).splitlines()          # exact bytes: no CRLF on Windows
+                            if '"run_finished"' not in x).encode("utf-8"))
     with pytest.raises(integ.IntegrationError, match="does not give a verified frozen run"):
         integ.frozen_snapshot(cut)
 
@@ -139,8 +149,8 @@ def test_cross_source_evidence_is_refused(inputs, capsys):
     out = inputs["tmp"] / "run"
     assert integ.main(argv(inputs, out)) == 0
     capsys.readouterr()
-    clf = json.loads((out / "classifier_prediction_investigation.json").read_text())
-    mon = json.loads((out / "monitor_event_investigation.json").read_text())
+    clf = json.loads(text(out / "classifier_prediction_investigation.json"))
+    mon = json.loads(text(out / "monitor_event_investigation.json"))
     mixed = types.SimpleNamespace(evidence=clf["evidence"] + mon["evidence"][:1], registry_version="claims/2.1")
     with pytest.raises(integ.IntegrationError, match="holds evidence of"):
         integ.check_single_source(mixed, "classifier_prediction")
@@ -154,8 +164,8 @@ def test_report_status_cannot_be_promoted(inputs, capsys):
     out = inputs["tmp"] / "run"
     assert integ.main(argv(inputs, out)) == 0
     capsys.readouterr()
-    saved = json.loads((out / "monitor_event_report.json").read_text())
-    md = (out / "monitor_event_report.md").read_text()
+    saved = json.loads(text(out / "monitor_event_report.json"))
+    md = text(out / "monitor_event_report.md")
     promoted = copy.deepcopy(saved)
     promoted["status"]["publication"] = "publishable"
     with pytest.raises(ir.ReportIntegrityError):

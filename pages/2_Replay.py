@@ -164,6 +164,27 @@ def show_end():
     stop_playback()
 
 
+def start_playing():
+    """Play (idempotent: applying it twice only re-anchors at the same position)."""
+    if st.session_state[K["playing"]]:
+        return
+    st.session_state[K["end"]] = False
+    if replay.index_of(st.session_state[K["frame"]]) >= replay.n_frames - 1:
+        st.session_state[K["frame"]] = replay.frames[0]            # play again from the start
+    st.session_state[K["anchor"]] = rv.start_playback(replay, replay.index_of(st.session_state[K["frame"]]),
+                                                      rv.now(), speed)
+    st.session_state[K["playing"]] = True
+
+
+# Play and Pause are two idempotent controls outside the auto-refreshing fragment, handled by callbacks. A
+# single toggle button lost 3-4 of every 20 Pause clicks in a real browser (D4-2): a click that coincides with
+# a playback tick can be applied twice, and a toggle applied twice keeps playing. A click here is a full rerun,
+# which also sets the fragment's new refresh rate.
+pc = st.columns([1, 1, 4])
+pc[0].button("Play", key=f"replay_play_{run}", type="primary", on_click=start_playing, disabled=playing)
+pc[1].button("Pause", key=f"replay_pause_{run}", on_click=stop_playback, disabled=not playing)
+
+
 @st.fragment(run_every=TICK_S if playing else None)
 def view():
     anchor = st.session_state.get(K["anchor"])
@@ -174,18 +195,6 @@ def view():
         if not still:
             stop_playback()
             st.rerun()                                 # the last row: stop the refresh timer
-    now_playing = st.session_state[K["playing"]]
-    if st.button("Pause" if now_playing else "Play", key=f"replay_play_{run}", type="primary"):
-        if now_playing:
-            stop_playback()
-        else:
-            st.session_state[K["end"]] = False
-            if replay.index_of(st.session_state[K["frame"]]) >= replay.n_frames - 1:
-                st.session_state[K["frame"]] = replay.frames[0]    # play again from the start
-            st.session_state[K["anchor"]] = rv.start_playback(
-                replay, replay.index_of(st.session_state[K["frame"]]), rv.now(), speed)
-            st.session_state[K["playing"]] = True
-        st.rerun()                                     # a full rerun sets the new refresh rate
     one_s = max(1, round(1.0 / (replay.times[1] - replay.times[0]))) if replay.n_frames > 1 else 1
     c = st.columns(6)
     c[0].button("⏮ Start", key=f"replay_start_{run}", on_click=seek, args=(replay.frames[0],))

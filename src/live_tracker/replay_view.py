@@ -69,9 +69,11 @@ def synthetic_pose(session, n, *, missing=(), low_conf=(), frozen=(), seed=0, fp
     for mi, mouse in enumerate(MICE):
         centre = np.c_[350 + 250 * mi + 120 * np.sin(t / 3 + mi), 285 + 90 * np.cos(t / 4 + 2 * mi)]
         heading = t / 3 + mi
-        for ki, kp in enumerate(KEYPOINTS):
-            off = (3 - ki) * 9.0
-            side = {"left_ear": 7, "right_ear": -7, "left_hip": 9, "right_hip": -9}.get(kp, 0)
+        for kp in KEYPOINTS:
+            # a mouse-sized body (about 140 px nose to tail at 1024 px), so the skeleton is readable
+            off = {"nose": 75, "left_ear": 50, "right_ear": 50, "neck": 35, "left_hip": -25, "right_hip": -25,
+                   "tail_base": -65}[kp]
+            side = {"left_ear": 14, "right_ear": -14, "left_hip": 20, "right_hip": -20}.get(kp, 0)
             x = centre[:, 0] + off * np.cos(heading) - side * np.sin(heading) + rng.normal(0, 0.4, n)
             y = centre[:, 1] + off * np.sin(heading) + side * np.cos(heading) + rng.normal(0, 0.4, n)
             score = np.full(n, 0.9)
@@ -333,7 +335,7 @@ def render_skeletons(state, width=512):
     scale = width / w0
     img = Image.new("RGB", (width, int(h0 * scale)), (250, 250, 250))
     d = ImageDraw.Draw(img)
-    r = max(2, int(5 * scale * 2))
+    r = max(2, int(3 * scale * 2))
     for sk in state.skeletons:
         colour = MOUSE_COLOURS.get(sk.mouse, (0, 0, 0))
         pts = {k.name: (k.x * scale, k.y * scale) for k in sk.keypoints if k.x is not None}

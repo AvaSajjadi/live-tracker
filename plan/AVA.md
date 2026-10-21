@@ -106,10 +106,10 @@ These are motion **measurements**, not behavior labels. Write that in the docstr
 
 ### 8. Tune quality + filter parameters on real data (train/val sessions only)
 Use Igor's `splits/split_manifest.json`. **Never look at test sessions for tuning.**
-- [ ] Look at the real jitter: distribution of frame-to-frame step size, so `frozen_tol_px` and `frozen_min_frames` make sense
-- [ ] Jump threshold from the real speed distribution (e.g. far above the 99.9th percentile; write down how you chose it)
-- [ ] One-Euro `min_cutoff` / `beta`: compare raw vs smoothed noise and the added lag
-- [ ] Save chosen values in one place (e.g. `src/live_tracker/params.py` or a JSON), with a short note on how each was chosen
+- [x] Look at the real jitter: distribution of frame-to-frame step size, so `frozen_tol_px` and `frozen_min_frames` make sense
+- [x] Jump threshold from the real speed distribution (e.g. far above the 99.9th percentile; write down how you chose it)
+- [x] One-Euro `min_cutoff` / `beta`: compare raw vs smoothed noise and the added lag
+- [x] Save chosen values in one place (e.g. `src/live_tracker/params.py` or a JSON), with a short note on how each was chosen
 
 ### 9. Sensitivity tests (`scripts/sensitivity.py`)
 For a few validation sessions, measure how much the features change when you:

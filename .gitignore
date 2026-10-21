@@ -11,3 +11,5 @@ models/*
 outputs/
 *.egg-info/
 data/processed/
+.env.*
+!.env.example

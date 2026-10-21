@@ -82,6 +82,7 @@ JournalConflictError.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 import uuid
@@ -90,8 +91,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from live_tracker.event_log import (SAMPLING_TOL, EventJournal, EventPersistenceError,
-                                    JournalState, answer_record, normalize_record,
-                                    project_event)
+                                    JournalState, _run_header, answer_record, events_digest,
+                                    normalize_record, project_event)
 from live_tracker.rules import CLASSIFIER_BEHAVIORS, Rule, RuleSet, validate_rule
 
 DEFAULT_FPS = 30.0  # proposal-reported CalMS21 rate; to be confirmed by H1a
@@ -214,9 +215,25 @@ class Monitor:
     run_id makes event IDs unique across runs ("E-<run_id>-<n>"); by default it
     is random. Replaying the same input with the same run_id into the same
     journal is idempotent (nothing is written twice).
+
+    provenance (optional, Stage 9 S9-2): the source of the score rows. When
+    given, a run_started header binding the run to that source and to the
+    approved rules (with their digest) is written before anything else, every
+    row is then hashed as processed (score_drops.canonical_row), and finish()
+    appends a run_finished record (row count and digest, event count and
+    digest). Source binding:
+    - a ScoreDrop issued by score_drops.load_validation_scores (checked with
+      score_drops.trusted_rows_sha256): "verified_load"; the run becomes
+      "verified_score_drop" only if the processed rows hash to its verified
+      rows digest;
+    - anything else (a ScoreProvenance, a dict, a hand-built ScoreDrop):
+      "declared", reported as "declared_unverified".
+    Replaying with the same provenance is idempotent; different provenance
+    under the same run_id is a JournalConflictError. It never changes bouts or
+    events.
     """
 
-    def __init__(self, rules, fps=DEFAULT_FPS, journal_path=None, run_id=None):
+    def __init__(self, rules, fps=DEFAULT_FPS, journal_path=None, run_id=None, provenance=None):
         if isinstance(rules, RuleSet):
             rules = rules.active()
         checked = [normalize_rule(r) for r in rules]
@@ -233,6 +250,17 @@ class Monitor:
         self.period = 1.0 / self.fps
         self.run_id = run_id
         self.journal = EventJournal(journal_path)
+        self.header = None
+        self._rows_hash, self._n_rows = None, 0
+        if provenance is not None:          # written (idempotently) before any event of this run
+            from live_tracker import score_drops
+            trusted = score_drops.trusted_rows_sha256(provenance)
+            source = provenance.provenance if isinstance(provenance, score_drops.ScoreDrop) else provenance
+            self.header = _run_header(self.run_id, self._rules, self.period, source,
+                                      "verified_load" if trusted is not None else "declared")
+            self.journal.append(self.header)
+            self._canonical_row = score_drops.canonical_row
+            self._rows_hash = hashlib.sha256()
         # streaming state; only _commit() changes it
         self._open = {}          # rule_id -> _Bout
         self._session = None
@@ -259,6 +287,13 @@ class Monitor:
         if self._done:
             raise RuntimeError("monitor already finished")
         r = self._validate(row)
+        line = None
+        if self._rows_hash is not None:     # a run with a header hashes every processed row
+            try:
+                line = self._canonical_row(row.to_dict() if hasattr(row, "to_dict") and not isinstance(row, dict)
+                                           else row)
+            except ValueError as exc:
+                raise MonitorInputError(f"a run with source provenance needs complete score rows: {exc}") from None
         if self._pending is not None and self._pending != r:
             raise RuntimeError("the previous frame's events could not be saved; "
                                "retry that frame (or fix storage) before sending new ones")
@@ -266,6 +301,9 @@ class Monitor:
         records = [normalize_record(rec) for rec in records]
         self._persist(records, pending=r)
         self._commit(state, records)
+        if line is not None:                # counted once, after the frame was accepted
+            self._rows_hash.update(line)
+            self._n_rows += 1
         # causal snapshots: only the fired record computed now, never journal state
         return [project_event(rec) for rec in records if rec["record"] == "event_fired"]
 
@@ -279,6 +317,13 @@ class Monitor:
             records = [normalize_record(rec) for rec in records]
             self._persist(records, pending="finish")
             self._commit({"open": {}}, records)
+            if self.header is not None:     # completion: written only when the run actually finishes
+                lifecycle = [rec for rec in self._run.records if rec["record"] in ("event_fired", "event_closed")]
+                done = normalize_record({
+                    "record": "run_finished", "run_id": self.run_id, "n_rows": self._n_rows,
+                    "n_events": sum(rec["record"] == "event_fired" for rec in lifecycle),
+                    "events_sha256": events_digest(lifecycle), "input_rows_sha256": self._rows_hash.hexdigest()})
+                self._persist([done], pending="finish")
             self._done = True
         return self._run.events()
 
@@ -443,12 +488,12 @@ class Monitor:
             self._next_n = state["next_n"]
 
 
-def run_monitor(scores, rules, fps=DEFAULT_FPS, journal_path=None, run_id=None):
+def run_monitor(scores, rules, fps=DEFAULT_FPS, journal_path=None, run_id=None, provenance=None):
     """Feed a whole score table (DataFrame or iterable of dicts) through a
     Monitor in the given row order and return this run's §4 events. Rows are
     not sorted here: out-of-order input is an error, as in a live feed."""
     rows = scores.to_dict("records") if hasattr(scores, "to_dict") else scores
-    monitor = Monitor(rules, fps=fps, journal_path=journal_path, run_id=run_id)
+    monitor = Monitor(rules, fps=fps, journal_path=journal_path, run_id=run_id, provenance=provenance)
     for row in rows:
         monitor.step(row)
     return monitor.finish()

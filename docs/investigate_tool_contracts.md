@@ -44,7 +44,7 @@ Out ok: `{session, t0_s, t1_s, n_frames, n_usable_frames, summary: {<col>: {mean
 
 In: `session`, `t0_s`, `t1_s`.
 Out ok: `{session, t0_s, t1_s, usable_fraction, flags_fired: [str], verdict: "reliable" | "unreliable", reason}`.
-Verdict rule (fixed, not tuned per run, versioned by name): Ava owns the quality policy. Candidate A: `usable_fraction >= 0.8` and no `frozen`/`out_of_frame` run > 0.5 s. Candidate B (Syed's): `usable_fraction >= 0.9`. Ava picks one on the validation sessions; the winner gets a version name, the other stays as a named alternative. Thresholds live in one constant and the version name is logged in the report.
+Verdict rule (fixed, not tuned per run, versioned by name): Ava owns the quality policy. Candidate A: `usable_fraction >= 0.8` and no `frozen`/`out_of_frame` run > 0.5 s. Candidate B (Syed's): `usable_fraction >= 0.9`. **Decision: `quality_v1` = candidate A**; B stays as the named alternative `quality_v1_strict90`. Evidence (`scripts/compare_quality_policies.py`, ground-truth attack bouts >= 1 s): A and B give identical counts on the 14 validation sessions and on pooled train+validation (pre_s 1/2/5 s: 33/21/14 usable on validation, 97/71/41 pooled); quality excludes 0 bouts, all exclusions are overlap or session edge. So the data cannot separate them; A is chosen because the frozen/out-of-frame veto guards a failure mode the fraction alone misses. Caveat: usable bouts sit in only 4 validation sessions (16 pooled), so the 4-paired-session gate is barely met on validation alone. Thresholds live in one constant and the version name is logged in the report.
 
 ## 4. compare_windows (my tools 2+3 composed)
 
@@ -81,7 +81,6 @@ Out ok: `{rule_id, status: "proposed"}`. Does nothing until the researcher appro
 ## Open items before freeze
 
 - 30 fps rounding rule text + test (Syed).
-- Quality policy A vs B decision (Ava, validation sessions).
 - Latency gap value (Igor).
 - Syed: declare `httpx2` in requirements/pyproject; skip POSIX-only tests (0o700, symlinks) on Windows with a marker.
 - Demo uses a deterministic emulator, not a live LLM; reports are insufficient_evidence / not_authorized. Say so to the judges.

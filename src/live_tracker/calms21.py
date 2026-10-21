@@ -31,6 +31,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .quality import SUGGESTED_MIN_SCORE, flag_tracking, interpolate_short_gaps
+
 FPS = 30.0
 IMAGE_SIZE = (1024, 570)  # width, height in pixels
 KEYPOINTS = ("nose", "left_ear", "right_ear", "neck", "left_hip", "right_hip", "tail_base")
@@ -128,6 +130,18 @@ def load_calms21(path_or_dict, sessions=None):
     # Plain strings, not categoricals: groupby on categoricals (observed=False)
     # would invent rows for session/frame combinations that do not exist.
     return poses, labels
+
+
+def flag_quality(poses):
+    """Quality flags with the team settings for CalMS21 (quality.py, owner: Ava).
+
+    Frame size = IMAGE_SIZE, low_conf below quality.SUGGESTED_MIN_SCORE (chosen
+    by Ava on the validation sessions; do not raise it without checking, it costs
+    attack and mount frames first), then short gaps filled. The result can go
+    straight into features.compute_features() and basic_features().
+    """
+    return interpolate_short_gaps(flag_tracking(
+        poses, frame_size=IMAGE_SIZE, score_col="score", min_score=SUGGESTED_MIN_SCORE))
 
 
 def make_split(train_ids, test_ids, val_frac=0.2, seed=0):

@@ -10,3 +10,4 @@ models/*
 *.zip
 outputs/
 *.egg-info/
+data/processed/

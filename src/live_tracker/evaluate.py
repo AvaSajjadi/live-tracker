@@ -157,6 +157,30 @@ def bout_metrics(aligned, behavior="attack", params=None, fps=FPS):
     }
 
 
+def onset_offsets(scores, labels, behavior="attack", params=None, fps=FPS):
+    """Per true bout: where the matching score-detected bout starts and ends.
+
+    For each true bout of `behavior` (a run of labeled frames, per session), the
+    first predicted bout (predicted_bouts with `params`) that shares >= 1 frame is
+    its match. onset_offset_s = detected start - true onset (positive = the
+    score is late), end_offset_s = detected end - true end. Unmatched bouts get
+    NaN. Use VALIDATION scores only.
+    Returns session, true_start, true_end, dur_s, onset_offset_s, end_offset_s.
+    """
+    a = _align(scores, labels)
+    rows = []
+    for sid, part in a.groupby("session", sort=True):
+        part = part.sort_values("frame")
+        pred = predicted_bouts(part[behavior].to_numpy(float), params, fps)
+        for st, en in _runs((part["label"] == behavior).to_numpy()):
+            hit = [b for b in pred if b[0] < en and st < b[1]]
+            on, off = ((hit[0][0] - st) / fps, (hit[0][1] - en) / fps) if hit else (np.nan, np.nan)
+            rows.append({"session": sid, "true_start": st, "true_end": en,
+                         "dur_s": (en - st) / fps, "onset_offset_s": on, "end_offset_s": off})
+    return pd.DataFrame(rows, columns=["session", "true_start", "true_end", "dur_s",
+                                       "onset_offset_s", "end_offset_s"])
+
+
 def summary_metrics(scores, labels, params=None, event_behaviors=("attack",), fps=FPS):
     """Flat dict of float metrics; the evaluate_fn for scripts/ablation.py.
 

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from live_tracker.evaluate import (EventParams, confusion, evaluate, event_metrics,
-                                   frame_metrics, predict_labels, predicted_bouts,
+                                   frame_metrics, onset_offsets, predict_labels, predicted_bouts,
                                    summary_metrics)
 
 FPS = 10.0
@@ -104,3 +104,21 @@ def test_evaluate_full_report():
     assert "mount_event_recall" in summary and list(table["class"]) == ["attack", "investigation",
                                                                        "mount", "other"]
     assert cm.loc["attack", "attack"] == 3
+
+
+def test_onset_offsets_by_hand():
+    # true attack frames 10-19; score high from 13 to 22 -> 0.3 s late start, 0.3 s late end
+    lab = ["other"] * 10 + ["attack"] * 10 + ["other"] * 10
+    p = np.zeros(30)
+    p[13:23] = 0.9
+    s, l = _tables(lab, p)
+    r = onset_offsets(s, l, params=EventParams(0.5, 0.0, 0.0), fps=FPS)
+    assert len(r) == 1
+    assert r.onset_offset_s.iloc[0] == pytest.approx(0.3) and r.end_offset_s.iloc[0] == pytest.approx(0.3)
+    # early start (score from frame 6) gives a negative offset; no score -> NaN
+    p2 = np.zeros(30)
+    p2[6:18] = 0.9
+    r2 = onset_offsets(_tables(lab, p2)[0], l, params=EventParams(0.5, 0.0, 0.0), fps=FPS)
+    assert r2.onset_offset_s.iloc[0] == pytest.approx(-0.4)
+    r3 = onset_offsets(_tables(lab, np.zeros(30))[0], l, fps=FPS)
+    assert r3.onset_offset_s.isna().all()

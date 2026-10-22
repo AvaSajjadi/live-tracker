@@ -16,8 +16,8 @@ Your files: `src/live_tracker/motion.py`, `filters.py`, `quality.py`, `features.
 
 ### 1. Team setup (H0, with everyone, 1 h)
 - [x] Clone, venv, `python -m pytest -q` passes (53 tests expected)
-- [ ] Review and merge PR #2 (`ignore-egg-info`)  *(not done: PR #2 still open)*
-- [ ] Agree on the new `INTERFACES.md` sections with Igor and Syed  *(spec written and merged; not yet confirmed with Igor and Syed)*
+- [x] Review and merge PR #2 (`ignore-egg-info`)  *(merged)*
+- [x] Agree on the new `INTERFACES.md` sections with Igor and Syed  *(Igor's model B and Syed's adapters are built on §5; the keypoint columns are marked opt-in)*
 
 ### 2. Write the "Feature table" interface in `INTERFACES.md` ✅ done (§5, PR #4)
 One row per `session × frame`. Columns (pixels, seconds):
@@ -57,18 +57,18 @@ For now use one center point per mouse (synthetic data via `formats.wide_to_long
 keypoint order and fps; add a synthetic multi-keypoint fixture to your tests.
 
 ### 5. Body center (needs H1a)
-- [ ] Center = mean of torso keypoints (e.g. neck + left hip + right hip, **only after the readme confirms these exist**). Never the nose alone.  *(code done in `body_center()`, torso names pending H1a; not tested on real data)*
+- [x] Center = mean of torso keypoints (e.g. neck + left hip + right hip, **only after the readme confirms these exist**). Never the nose alone.  *(`body_center()`; names from `docs/calms21_schema.md`; running on real validation sessions in the classifier, the sensitivity script and `pages/4_Real_Session.py`)*
 - [x] If some torso keypoints are missing in a frame, use the rest; if all are missing, NaN
 - [x] Write the definition in the docstring and in `INTERFACES.md`
 
 ### 6. Dyadic features (needs H1)
 - [x] Center distance and its rate (negative = approaching)
 - [x] Relative speed
-- [ ] Nose-to-nose distance; nose of A to tail base of B, and of B to A  *(waits for H1a: real keypoint names)*
-- [ ] Facing angle: angle between A's body axis (tail base → nose or neck) and the direction to B, for both mice  *(waits for H1a)*
+- [x] Nose-to-nose distance; nose of A to tail base of B, and of B to A  *(`features.keypoint_features()`, opt-in, not in the §5 table or the models)*
+- [x] Facing angle: angle between A's body axis (tail base → nose or neck) and the direction to B, for both mice  *(tail base → nose; 0 = pointing at the other mouse; `keypoint_features()`)*
 - [x] Time spent close (trailing count of seconds with distance below a parameter)
 - [x] Speed synchrony: trailing-window correlation of the two speeds
-- [ ] Tests: approaching / separating mice, A facing B vs facing away, missing keypoints  *(approaching/separating and missing mouse done; facing and missing keypoints on real names wait for H1a)*
+- [x] Tests: approaching / separating mice, A facing B vs facing away, missing keypoints  *(`tests/test_features_pair.py`, `tests/test_features_keypoints.py`)*
 
 These are motion **measurements**, not behavior labels. Write that in the docstring.
 
@@ -113,11 +113,12 @@ Use Igor's `splits/split_manifest.json`. **Never look at test sessions for tunin
 
 ### 9. Sensitivity tests (`scripts/sensitivity.py`)
 For a few validation sessions, measure how much the features change when you:
-- [ ] add small coordinate jitter (e.g. 1, 2, 5 px)
-- [ ] remove short runs of frames (gaps)
-- [ ] change smoothing settings
-- [ ] change thresholds by ±20%
+- [x] add small coordinate jitter (e.g. 1, 2, 5 px)
+- [x] remove short runs of frames (gaps)
+- [x] change smoothing settings
+- [x] change thresholds by ±20%
 Save a small results table to `outputs/sensitivity.csv` (outputs/ is git-ignored; copy the table into the report).
+*(run on 4 real validation sessions: `python scripts/sensitivity.py --calms21 ... --sessions ...`; table in `docs/motion_engine_results.md`)*
 This measures **feature stability**, not classification accuracy. Keep them separate.
 
 ### 10. Live paths are causal only
@@ -133,26 +134,27 @@ This measures **feature stability**, not classification accuracy. Keep them sepa
 ### ⏳ Wait for H4 (`evaluate()` + model A results) from Igor
 
 ### 11. Ablation: basic features vs basic + ScopeScore features
-- [ ] Same classifier type, same split, same tuning budget, only the features differ
-- [ ] Compare on **validation**; report the test set **once**, at the end, for both models
-- [ ] Metrics: per-class F1 (attack, mount, investigation), event-level attack precision/recall, onset-to-alert latency, false alerts/hour
-- [ ] Write an honest conclusion: if ScopeScore features don't help, say so
-- [ ] Optional, **only if time is left**: SPARC / log dimensionless jerk, with written definitions, and kept only if they help on validation
+- [x] Same classifier type, same split, same tuning budget, only the features differ
+- [x] Compare on **validation**  *(done)*
+- [ ] Report the test set **once**, at the end, for both models  *(deliberately not run: `--final` waits for a team decision)*
+- [x] Metrics: per-class F1 (attack, mount, investigation), event-level attack precision/recall, onset-to-alert latency, false alerts/hour
+- [x] Write an honest conclusion: if ScopeScore features don't help, say so  *(helps investigation and attack; does not help mount; `docs/motion_engine_results.md`)*
+- [ ] Optional, **only if time is left**: SPARC / log dimensionless jerk, with written definitions, and kept only if they help on validation  *(not built)*
 
 ### 12. Motion-engine page in `app.py`
-- [ ] Load one real CalMS21 session (via Igor's loader), show features + tracking warnings
-- [ ] Synthetic demo option stays, still clearly labeled
+- [x] Load one real CalMS21 session (via Igor's loader), show features + tracking warnings  *(new page `pages/4_Real_Session.py`, validation cache only; `app.py` is unchanged)*
+- [x] Synthetic demo option stays, still clearly labeled  *(unchanged in `app.py`)*
 
 ### 13. Help integration (H5)
-- [ ] Review Igor's and Syed's PRs; fix feature bugs they find
+- [x] Review Igor's and Syed's PRs; fix feature bugs they find  *(read #19-#25 and Igor's classify/evaluate; no feature bugs found)*
 
 ---
 
 ## Day 5: Wed Oct 21
 
-- [ ] README: rewrite "ScopeScore adaptations" to list **only what was built and tested**, plus what was deliberately *not* transferred (no surgical thresholds, no clinical meaning)
-- [ ] Report / slides: motion engine section, sensitivity table, ablation table (measured numbers only)
-- [ ] Final full test run on Windows; update `IMPLEMENTATION_STATUS.md` with commands and results
+- [x] README: rewrite "ScopeScore adaptations" to list **only what was built and tested**, plus what was deliberately *not* transferred (no surgical thresholds, no clinical meaning)
+- [ ] Report / slides: motion engine section, sensitivity table, ablation table (measured numbers only)  *(the tables and caveats are in `docs/motion_engine_results.md`; slides not made)*
+- [x] Final full test run on Windows; update `IMPLEMENTATION_STATUS.md` with commands and results
 - [ ] Rehearse demo with the team
 
 ## Done when

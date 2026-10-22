@@ -15,9 +15,9 @@ hackathon prototype that works on **already-tracked pose data** (2D body keypoin
 A proposed rule does nothing until the researcher confirms it. A deterministic monitor, with no language model in the
 loop, then turns per-frame scores into timestamped, journaled events.
 
-> **Status:** active hackathon project (October 2026). This README describes what is on `main`. Work that is still in
-> open pull requests is listed separately under [In progress](#in-progress-not-on-main-yet). Nothing here is a
+> **Status:** active hackathon project (October 2026). This README describes what is on `main`. Nothing here is a
 > validated scientific instrument; see [Scientific integrity and limitations](#scientific-integrity-and-limitations).
+> Measured motion-engine results (validation sessions only) are in `docs/motion_engine_results.md`.
 
 ## Why this matters
 
@@ -44,7 +44,7 @@ Live Tracker is built around those three constraints.
 | **Researcher approval** | Every rule starts as `proposed`; only an explicit Confirm approves it. The workflow is UI-independent and tested without a browser | `src/live_tracker/rules.py`, `src/live_tracker/rule_workflow.py` |
 | **Streaming monitor** | Deterministic: approved rules + per-frame scores → alert / ask / log events. Decisions use only past and current frames; tracking loss ends a bout | `src/live_tracker/monitor.py` |
 | **Event journal** | Append-only lifecycle journal with crash recovery, plus the `INTERFACES.md` §4 event-log export | `src/live_tracker/event_log.py` |
-| **Streamlit dashboard** | Two pages: the motion engine (tracking quality and smoothing) and the Rules page (propose → Confirm / Reject) | `app.py`, `pages/1_Rules.py` |
+| **Streamlit dashboard** | Five pages: the motion engine on a CSV (tracking quality and smoothing), Rules (propose → Confirm / Reject), Replay (synthetic sessions), Investigation (evidence behind a replayed session), and Real Session (the motion engine on one real CalMS21 validation session) | `app.py`, `pages/1_Rules.py` to `pages/4_Real_Session.py` |
 | **Synthetic test data** | A labeled synthetic pose CSV and a synthetic per-frame score generator. Every synthetic session id starts with `SYNTHETIC_` | `example_pose_demo.csv`, `src/live_tracker/fake_scores.py` |
 
 ## How the parts fit together
@@ -77,7 +77,7 @@ Live Tracker is built around those three constraints.
  event_log.py ── journal, §4 event-log export
         │
         ▼
- in progress: replay page, session summary, evidence-grounded investigation
+ replay page and session summary (synthetic sessions), evidence-grounded investigation (offline, association-only)
 ```
 
 The monitor has two separate inputs. Classifier probabilities say how likely each behavior is in each frame. They
@@ -177,10 +177,21 @@ This page turns a sentence into a monitoring rule, and nothing is approved witho
 - Actions: alert me, ask me (each event waits for your confirm / reject), or log.
 - Anything it cannot turn into a valid rule gives a clarification, never a guessed rule.
 
+### Real Session (`pages/4_Real_Session.py`)
+
+Shows the motion engine on one real CalMS21 **validation** session: tracking quality and warnings, the causal
+features, the keypoint features, and the dataset's own annotation as context (never used by a feature). It reads only
+the hash-verified validation cache. Build it once from the official train file, then pick a session:
+
+```bash
+.venv/bin/python -m live_tracker.investigation_data --source data/raw/calms21/calms21_task1_train.json --all
+```
+
+Without the cache, the page says so and shows this command. Test sessions cannot be opened from it.
+
 ### Monitor (Python API)
 
-On `main` the monitor has no page yet; the replay page is [in progress](#in-progress-not-on-main-yet). It can be run
-from Python on synthetic scores:
+The monitor runs behind the Replay page (synthetic sessions only). It can also be run from Python on synthetic scores:
 
 ```python
 from live_tracker.fake_scores import demo_scores
@@ -269,18 +280,19 @@ real data. `scripts/sensitivity.py` runs on the synthetic demo by default
 - **Held-out data stays held out.** Test sessions are never used for training or tuning.
 - **Pixels, not millimetres.** No physical scale is claimed.
 
-## In progress (not on `main` yet)
+## Investigation, replay and session summary
 
-These are open pull requests and branches. They are not part of `main` until they merge, and their scope may change in
-review.
+Merged into `main` on 2026-10-22. The replay uses synthetic sessions only; nothing here has been run on a held-out
+test session.
 
 | Work | Status |
 |---|---|
-| **Investigation foundation:** verified score-drop loading with provenance, journal provenance binding, and a written 30 fps seconds-to-frame rule (`frame(t) = floor(30·t + 0.5)`) | [PR #19](https://github.com/AvaSajjadi/live-tracker/pull/19) |
-| **Contract v1 investigation tools:** `query_events`, `get_window_features`, `check_tracking_quality` and `compare_windows`, with versioned tracking-quality policies, session-aware counts and evidence gates | [PR #20](https://github.com/AvaSajjadi/live-tracker/pull/20) (stacked on #19) |
-| **Evidence-grounded claims and reports:** structured claims checked against evidence, association-only wording, and a bounded agent loop (12 tool calls, at most 2 follow-up comparisons) | [PR #21](https://github.com/AvaSajjadi/live-tracker/pull/21) (stacked on #20) |
-| **Offline integration and docs:** a deterministic, synthetic, offline integration run and a Contract v1 demo | [PR #22](https://github.com/AvaSajjadi/live-tracker/pull/22) (stacked on #21) |
-| **Replay page and session summary** for recorded sessions (synthetic sessions only so far; not a live camera) | branch `syed/day34-replay` |
+| **Investigation foundation:** verified score-drop loading with provenance, journal provenance binding, and a written 30 fps seconds-to-frame rule (`frame(t) = floor(30·t + 0.5)`) | merged, [PR #19](https://github.com/AvaSajjadi/live-tracker/pull/19) |
+| **Contract v1 investigation tools:** `query_events`, `get_window_features`, `check_tracking_quality` and `compare_windows`, with versioned tracking-quality policies, session-aware counts and evidence gates | merged, [PR #20](https://github.com/AvaSajjadi/live-tracker/pull/20) |
+| **Evidence-grounded claims and reports:** structured claims checked against evidence, association-only wording, and a bounded agent loop (12 tool calls, at most 2 follow-up comparisons) | merged, [PR #21](https://github.com/AvaSajjadi/live-tracker/pull/21) |
+| **Offline integration and docs:** a deterministic, synthetic, offline integration run and a Contract v1 demo | merged, [PR #22](https://github.com/AvaSajjadi/live-tracker/pull/22) |
+| **Replay page and session summary** for recorded sessions (synthetic sessions only; not a live camera), with a Contract v1 evidence panel | merged, [PR #24](https://github.com/AvaSajjadi/live-tracker/pull/24) |
+| **Investigation page:** the bouts, windows, tracking status and comparison outcome behind a replayed session | merged, [PR #25](https://github.com/AvaSajjadi/live-tracker/pull/25) |
 
 Investigation results are designed to be **association-only** ("precedes / is associated with"), never causal.
 They report insufficient evidence when the data cannot support a comparison. The tool contract is
@@ -291,6 +303,9 @@ They report insufficient evidence when the data cannot support a comparison. The
 ```
 app.py                     Streamlit main page: motion engine and tracking quality
 pages/1_Rules.py           Streamlit page: plain-English rules with researcher approval
+pages/2_Replay.py          Streamlit page: replay of synthetic sessions with events, warnings and summary
+pages/3_Investigation.py   Streamlit page: the evidence behind a replayed session
+pages/4_Real_Session.py    Streamlit page: the motion engine on one real validation session
 src/live_tracker/          the package (quality, filters, features, calms21, classify, evaluate,
                            agent, claude_agent, rules, rule_workflow, monitor, event_log, ...)
 tests/                     pytest suite (synthetic fixtures only)
@@ -323,16 +338,31 @@ The plan and the per-person task lists are in `plan/`.
 
 ## Origins: ScopeScore adaptations
 
-The motion engine started as a generic 2D motion starter inspired by ScopeScore and adapted to mice:
-- short-gap interpolation, with no long-gap interpolation;
-- segment-aware smoothing;
-- frame-to-frame velocity and acceleration;
-- relative mouse distance and approach / separation speed;
-- movement bout detection with configurable thresholds;
-- tracking validity flags;
-- deterministic, duration-gated alert extraction.
+The motion engine started as a generic 2D motion starter inspired by ScopeScore and adapted to mice. What was built
+and tested (`features.py`, `quality.py`, `filters.py`):
+- tracking validity flags (missing, out of frame, jump, frozen, low confidence) and tracking-loss warnings;
+- short-gap interpolation (at most 3 frames), no long-gap interpolation; filled points are marked `imputed`;
+- causal One-Euro and EMA smoothing, reset per session, mouse and long gap;
+- per-mouse speed, acceleration, heading, turn rate, trailing-window path length, straightness and idle fraction,
+  and causal pauses;
+- two-mouse body-center distance and its rate (approach / separation), relative speed, time spent close and
+  speed correlation;
+- keypoint features (nose-to-nose, nose-to-tail-base, facing angle), opt-in via `keypoint_features()`; they are
+  not in the trained models;
+- causality tests (changing later frames leaves earlier values unchanged), and a sensitivity script for feature
+  stability.
 
-ScopeScore's surgical thresholds are not transferred, and attack is not claimed from speed alone.
+Measured on the 14 validation sessions (`docs/motion_engine_results.md`): adding these features to plain pose
+geometry improved investigation and attack detection and did not improve mount. The attack result rests on four
+validation sessions, and validation shares animals with train, so the numbers are optimistic.
+
+Deliberately not transferred or not done:
+- ScopeScore's surgical thresholds, and any clinical meaning; attack is not claimed from speed alone;
+- Savitzky-Golay smoothing uses future frames, so it stays in the starter section of `app.py`, labeled offline only;
+  the starter's `movement_bouts` finds whole runs after the fact and no live code calls it (the causal `in_pause`
+  feature replaces it);
+- SPARC / log dimensionless jerk: never built;
+- the tuned quality values in `params.py` are not wired into the defaults, and the models were not retrained with them.
 
 ## Attribution
 

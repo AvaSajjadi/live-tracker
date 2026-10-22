@@ -24,6 +24,12 @@ IMPORTANT: run this on train/validation sessions only, never on test sessions.
 Usage:
   python scripts/sensitivity.py                       # synthetic demo data
   python scripts/sensitivity.py --long-csv sessions.csv --sessions s01 s02
+  python scripts/sensitivity.py --calms21 data/raw/calms21/calms21_task1_train.json \
+      --sessions task1/train/mouse005_task1_annotator1 ...      # real validation sessions
+--calms21 reads the official train file, keeps only the named sessions, and refuses any
+session that is not in the manifest's train or validation split (test sessions can never
+be named). It uses the team's real settings: torso keypoints, image frame size, low_conf
+at SUGGESTED_MIN_SCORE.
 Output: outputs/sensitivity.csv (git-ignored; copy the table into the report).
 """
 
@@ -40,8 +46,10 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from live_tracker.calms21 import IMAGE_SIZE, TORSO_KEYPOINTS, check_manifest, load_calms21  # noqa: E402
 from live_tracker.features import FeatureParams, compute_features  # noqa: E402
 from live_tracker.formats import wide_to_long  # noqa: E402
+from live_tracker.quality import SUGGESTED_MIN_SCORE  # noqa: E402
 
 KEY_COLS = ("session", "frame", "time_s", "tracking_ok")
 THRESHOLD_FIELDS = ("max_step_s", "window_s", "heading_min_speed_px_s", "idle_speed_px_s",
@@ -157,8 +165,26 @@ def run_sensitivity(long_df, params=None, repeats=5, seed=0, **feature_kwargs):
     return pd.concat(rows, ignore_index=True)
 
 
+def load_real_sessions(json_path, sessions, manifest_path):
+    """(long pose table, compute_features keyword arguments) for named train/validation sessions.
+
+    Refuses test sessions and anything not in the manifest before the JSON is opened."""
+    import json
+    manifest = check_manifest(json.loads(Path(manifest_path).read_text()))
+    allowed = set(manifest["train"]) | set(manifest["validation"])
+    refused = sorted(set(sessions) - allowed)
+    if refused:
+        raise SystemExit(f"refused: not in the train/validation split (test sessions are never used here): {refused}")
+    poses, _ = load_calms21(json_path, sessions=sessions)
+    kwargs = dict(torso_keypoints=TORSO_KEYPOINTS, frame_size=IMAGE_SIZE, score_col="score",
+                  min_score=SUGGESTED_MIN_SCORE)
+    return poses, kwargs
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--calms21", help="official CalMS21 Task 1 train JSON; needs --sessions")
+    ap.add_argument("--manifest", default=str(ROOT / "splits" / "split_manifest.json"))
     ap.add_argument("--long-csv", help="long pose table (session, mouse, frame, time_s, x, y); "
                                        "default: the synthetic demo")
     ap.add_argument("--sessions", nargs="*", help="only these sessions (train/val only!)")
@@ -167,7 +193,13 @@ def main(argv=None):
     ap.add_argument("--out", default=str(ROOT / "outputs" / "sensitivity.csv"))
     args = ap.parse_args(argv)
 
-    if args.long_csv:
+    feature_kwargs = {}
+    if args.calms21:
+        if not args.sessions:
+            raise SystemExit("--calms21 needs --sessions (train/validation only)")
+        long_df, feature_kwargs = load_real_sessions(args.calms21, args.sessions, args.manifest)
+        print(f"Using REAL CalMS21 sessions {args.sessions} (not the test split).")
+    elif args.long_csv:
         long_df = pd.read_csv(args.long_csv)
     else:
         long_df = wide_to_long(pd.read_csv(ROOT / "example_pose_demo.csv"), session="SYNTHETIC_demo")
@@ -177,7 +209,7 @@ def main(argv=None):
         if long_df.empty:
             raise SystemExit(f"no rows for sessions {args.sessions}")
 
-    result = run_sensitivity(long_df, repeats=args.repeats, seed=args.seed)
+    result = run_sensitivity(long_df, repeats=args.repeats, seed=args.seed, **feature_kwargs)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(out, index=False)

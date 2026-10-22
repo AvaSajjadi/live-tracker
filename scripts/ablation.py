@@ -173,6 +173,12 @@ def to_markdown(df, digits=3):
 
 # --- command line -----------------------------------------------------------------------
 
+def read_table(path):
+    """CSV or Parquet (by extension): classify.py writes Parquet feature files."""
+    path = Path(path)
+    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+
+
 def _resolve(spec):
     module, _, func = spec.partition(":")
     if not func:
@@ -182,9 +188,9 @@ def _resolve(spec):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--basic", required=True, help="CSV: session, frame + basic feature columns")
-    ap.add_argument("--scope", required=True, help="CSV: compute_features() output")
-    ap.add_argument("--labels", required=True, help="CSV: session, frame, time_s, label")
+    ap.add_argument("--basic", required=True, help="CSV or Parquet: session, frame + basic feature columns")
+    ap.add_argument("--scope", required=True, help="CSV or Parquet: compute_features() output")
+    ap.add_argument("--labels", required=True, help="CSV or Parquet: session, frame, time_s, label")
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--fit", required=True, help="module:function (see module docstring)")
     ap.add_argument("--evaluate", required=True, help="module:function (see module docstring)")
@@ -194,8 +200,8 @@ def main(argv=None):
     ap.add_argument("--out-dir", default=str(ROOT / "outputs"))
     args = ap.parse_args(argv)
 
-    sets = build_feature_sets(pd.read_csv(args.basic), pd.read_csv(args.scope))
-    labels = pd.read_csv(args.labels)
+    sets = build_feature_sets(read_table(args.basic), read_table(args.scope))
+    labels = read_table(args.labels)
     fit_fn, eval_fn = _resolve(args.fit), _resolve(args.evaluate)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)

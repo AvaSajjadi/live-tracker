@@ -105,10 +105,15 @@ Dyadic (one column per pair; `_ab` means A relative to B):
 |---|---|---|---|
 | `dist_center`, `dist_rate` | px, px/s | body-center distance and its rate (negative = approaching) | done |
 | `rel_speed` | px/s | speed of A relative to B | done |
-| `dist_nose_nose`, `dist_nose_tail_ab`, `dist_nose_tail_ba` | px | keypoint distances | Day 2, needs H1a |
-| `facing_ab`, `facing_ba` | rad | angle between body axis and direction to the other mouse | Day 2, needs H1a |
+| `dist_nose_nose`, `dist_nose_tail_ab`, `dist_nose_tail_ba` | px | keypoint distances (nose of A to nose of B; nose of A to tail base of B; nose of B to tail base of A) | opt-in: `keypoint_features()`, not in this table |
+| `facing_ab`, `facing_ba` | rad, 0 to π | angle between the mouse's body axis (tail base → nose) and the direction from its body center to the other's; 0 = pointing at it, π = away. NaN if the axis is shorter than `min_axis_px` (default 5 px) | opt-in: `keypoint_features()`, not in this table |
 | `close_time_s` | s | seconds of the trailing window with `dist_center` < `close_dist_px` | done |
 | `speed_corr_w` | -1–1 | trailing correlation of the two speeds (NaN if one is constant) | done |
+
+The keypoint rows are produced by `features.keypoint_features(long_df, torso_keypoints=...)`, a separate causal
+function with the columns `dist_nose_nose, dist_nose_tail_ab, dist_nose_tail_ba, facing_ab, facing_ba` (one row per
+session × frame). They are **not** in the `compute_features()` table, so the classifier's input (model B) is unchanged;
+nothing has yet tested whether they help.
 
 Plus `session, frame, time_s, tracking_ok`. `tracking_ok` comes from
 `frame_tracking_ok()`: false if any needed point of either mouse is missing,

@@ -110,9 +110,10 @@ py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e . -r requirements.txt
 ```
 
-`requirements.txt` lists version ranges for `numpy`, `pandas`, `scipy`, `scikit-learn`, `streamlit`, `joblib` and `pytest`.
+`requirements.txt` lists version ranges for `numpy`, `pandas`, `scipy`, `scikit-learn`, `streamlit`, `joblib`, `pyarrow` (the
+classifier's feature files are Parquet) and `pytest`.
 
-Installing the dependencies may need internet access. After installation, the default application (both pages, with
+Installing the dependencies may need internet access. After installation, the default application (all pages, with
 the offline rule parser) runs without an API key and does not need a network connection.
 
 The optional Claude cross-check on the Rules page needs the extra `claude` dependency, installed into the same

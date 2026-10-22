@@ -214,6 +214,10 @@ from made-up scores and say nothing about mice.
 
 Real data is not in this repository. Data, videos and keys never go into Git. Download CalMS21 yourself from the
 official Caltech record (link under [Attribution](#attribution)), then:
+- **Download only Task 1.** Get `task1_classic_classification.zip` (no videos, no MARS features). Unzip it and put
+  `calms21_task1_train.json` (1.2 GB) and `calms21_task1_test.json` (632 MB) in `data/raw/calms21/` (git-ignored). The
+  `taskprog_features_*.json` files in the same zip are not used. Building the features loads the train file once and
+  needs about 4 GB of RAM.
 - **Check the files first.** Verify the JSON layout before relying on it (`docs/calms21_schema.md`). This prints the
   structure of a file without assuming it:
   `.venv/bin/python -m live_tracker.calms21_inspect data/raw/calms21/<file>.json`
@@ -226,8 +230,11 @@ official Caltech record (link under [Attribution](#attribution)), then:
   ```bash
   .venv/bin/python -m live_tracker.classify features --train data/raw/calms21/calms21_task1_train.json \
                                                      --test  data/raw/calms21/calms21_task1_test.json
-  .venv/bin/python -m live_tracker.classify train --name model_a --features basic   # model B: --features basic,motion
-  .venv/bin/python -m live_tracker.classify scores --name model_a --split-name validation
+  .venv/bin/python -m live_tracker.classify train --name model_a --features basic
+  .venv/bin/python -m live_tracker.classify train --name model_b --features basic,motion   # the model the demo uses
+  .venv/bin/python -m live_tracker.classify scores --name model_b --split-name validation
+  .venv/bin/python scripts/tune_attack_rule.py     # demo attack rule, chosen on validation only
+  .venv/bin/python scripts/check_leakage.py        # test sessions never reach training, tuning or demo scores
   ```
   Windows PowerShell (the backtick continues a line):
   ```powershell
@@ -235,11 +242,18 @@ official Caltech record (link under [Attribution](#attribution)), then:
       --train data\raw\calms21\calms21_task1_train.json `
       --test  data\raw\calms21\calms21_task1_test.json
   .\.venv\Scripts\python.exe -m live_tracker.classify train --name model_a --features basic
-  .\.venv\Scripts\python.exe -m live_tracker.classify scores --name model_a --split-name validation
+  .\.venv\Scripts\python.exe -m live_tracker.classify train --name model_b --features basic,motion
+  .\.venv\Scripts\python.exe -m live_tracker.classify scores --name model_b --split-name validation
+  .\.venv\Scripts\python.exe scripts\tune_attack_rule.py
+  .\.venv\Scripts\python.exe scripts\check_leakage.py
   ```
+  - Model A and model B both tune `C` on validation. Model B (basic + motion features) is the one the demo uses.
+  - `--split-name test` writes test-session scores. Run it only once, with the rule frozen, under the team's test
+    policy. It is never an input for tuning or for the demo.
+  - The chosen demo rule is `evaluate.ATTACK_RULE_V1`. Method, grid and caveats are in `docs/attack_rule_v1.md`.
 
-The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `compare_quality_policies.py`, `dryrun_*.py`) need the
-real data. `scripts/sensitivity.py` runs on the synthetic demo by default
+The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.py`, `check_leakage.py`,
+`compare_quality_policies.py`, `dryrun_*.py`) need the real data. `scripts/sensitivity.py` runs on the synthetic demo by default
 (`.venv/bin/python scripts/sensitivity.py`; Windows: `.\.venv\Scripts\python.exe scripts\sensitivity.py`).
 
 ## Tests
@@ -262,7 +276,8 @@ real data. `scripts/sensitivity.py` runs on the synthetic demo by default
   accuracy, F1 or latency numbers. Any such result belongs with the run that produced it and the split it used.
 - **Thresholds are not tuned unless stated.** Quality and feature thresholds in `FeatureParams` and the default rule
   thresholds (0.8 / 0.5) are placeholders. `src/live_tracker/params.py` records the values Ava chose on train and
-  validation sessions; they are not yet wired into the defaults.
+  validation sessions; they are not yet wired into the defaults. The demo attack rule (`evaluate.ATTACK_RULE_V1`) was
+  chosen on the 14 validation sessions only (`docs/attack_rule_v1.md`); `Rule` defaults are unchanged.
 - **Not every step is causal.** The complete default pose-to-feature pipeline is **not guaranteed to be causal**.
   - **Causal:** the smoothing filters, the feature arithmetic given its input flags, and the monitor's decisions use
     only past and current frames. The tests check this.

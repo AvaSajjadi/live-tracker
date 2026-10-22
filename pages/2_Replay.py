@@ -36,7 +36,7 @@ WORKFLOW_KEY = "rule_workflow"
 REPLAY_CACHE = "replay_cache"
 SESSION_KEY = "replay_session"
 SPEED_KEY = "replay_speed"
-INVESTIGATION_CACHE = "replay_investigation_cache"
+INVESTIGATION_CACHE = ri.CACHE_KEY
 ACTIVE_RUN = "replay_active_run"
 SPEEDS = {"1×": 1.0, "2×": 2.0, "5×": 5.0}
 TICK_S = 0.25                                      # playback refresh while playing
@@ -334,11 +334,7 @@ def render_investigation():
         cache = st.session_state.get(INVESTIGATION_CACHE)
         if not isinstance(cache, dict):
             cache = st.session_state[INVESTIGATION_CACHE] = {}
-        config = ri.effective_config()                   # resolved once; the same snapshot keys, runs and records
-        ident = (cache_key, ri.config_digest(config))
-        if ident not in cache:
-            cache[ident] = ri.investigate_replay(entry, rules, run, config)
-        res = cache[ident]
+        res = ri.cached_investigation(cache, cache_key, entry, rules, run)
         for item in res["rules"]:
             q, c = item["query"], item["compare"]
             st.markdown(f"**Rule {item['rule_id']}** · investigation `{item['investigation_id']}` · "

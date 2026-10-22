@@ -30,7 +30,9 @@ from . import investigation_tools_v1 as v1
 from .fake_scores import SYNTHETIC_PREFIX
 from .replay_view import content_digest
 
-__all__ = ["PRESET", "config_digest", "effective_config", "investigate_replay"]
+__all__ = ["CACHE_KEY", "PRESET", "cached_investigation", "config_digest", "effective_config", "investigate_replay"]
+
+CACHE_KEY = "replay_investigation_cache"     # st.session_state dict shared by the Replay and Investigation pages
 
 PRESET = {"pre_s": 2.0, "baseline_s": 5.0, "baseline_gap_s": 1.0, "feature": "dist_center"}
 UNSUPPORTED_ZERO = ("ask threshold 0 is not supported by Contract v1 investigation: query_events requires a threshold "
@@ -58,6 +60,19 @@ def effective_config():
 def config_digest(config):
     """SHA-256 of a configuration snapshot (canonical JSON)."""
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def cached_investigation(cache, replay_identity, entry, rules, run_id):
+    """The investigation for one replay identity (replay_view.cache_identity: score-bound run_id = session, rules,
+    fps, score rows; pose digest; page config; storage) under the settings resolved now (effective_config, once).
+    Computed once per (replay identity, config digest) and reused from `cache`, so any change of pose, scores,
+    rules, session or effective settings recomputes and an ordinary rerun does not. Every page that shows
+    investigation evidence goes through this one function and one cache."""
+    config = effective_config()
+    ident = (replay_identity, config_digest(config))
+    if ident not in cache:
+        cache[ident] = investigate_replay(entry, rules, run_id, config)
+    return cache[ident]
 
 
 def investigate_replay(entry, rules, run_id, config=None):

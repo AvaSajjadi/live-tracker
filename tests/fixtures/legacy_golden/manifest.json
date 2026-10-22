@@ -1,0 +1,71 @@
+{
+ "baseline_commit": "c62711d",
+ "inputs": {
+  "contaminated": "21a0d0dfd1d691de0fc03c6b1d960b3997eaa61275f691d92a866fce116b9b48",
+  "effect": "ca18cf2623723899281ded960de960ff11389e84a69bbfc99ca01db08f0ca96f",
+  "incomplete": "dfcb9537c2f7d078587c4423795921d341c95dcced34f9970d337c4e77e7659e",
+  "insufficient": "9d5e3930464af67ad7f7e492886bb174ef87cebc2a0bfae0ffdf0f2ae7723097",
+  "live": "fbda46968830ecc73ae3c120d3f11ac3bd09a174c73db5c43b5df535ff4dc1cb",
+  "partial": "755302f87add8a97b7145be1924fec780e50185c95db6da981f4461eae9bde08",
+  "real_full": "c4b194b6a0f6945ef02dc646e46be779d8e5a86d18fbebef1b610fed35316840"
+ },
+ "note": "SHA-256 of legacy JSON text (investigation_report.to_json_text) and Markdown, computed with the pre-M0 source (commit c62711d); see scripts/legacy_golden.py",
+ "renders": {
+  "contaminated": [
+   "b4debb26241eeb2f96bfe7bf2cd0019cbd9e4a2e312de5f3ff996fb6e98637c0",
+   "d2b1fc05f0f45d1fac9b53a3c812abaa815a954ff25e09e49a4ace4fa1889aa3"
+  ],
+  "contaminated:nopolicy": [
+   "f6f40c1bf5723ac5e406d9af2b5ab5aec88c74501e67b0eba598315230d64130",
+   "b4a155032d5c15b61363dd20dae2f3ff61323c8c6b80c2b9dfa83a717a42607b"
+  ],
+  "effect": [
+   "92bc491a194f8931515aac1acde3c53b9350a47b4bdff7f6870c149059a12d6d",
+   "b5e6275c4354ea95b35c01a44ab8999059661965dd19e116776a68098b9524f0"
+  ],
+  "effect:nopolicy": [
+   "cabfc9c08dffae17b479306a359465cc8180993eb44df73e83661a67bd8074de",
+   "d619fd31dca514a1311d66eb1d4beb11cd8ec89bc55482bfcb79e76e4a98519d"
+  ],
+  "incomplete": [
+   "b0d727068808bd90529639badb4fc4ffd4d4e17df43f4e67b6405c602474ca2d",
+   "816f5a0525f1a2a47dbec6f3eab3525aec2f10bb8ccebbead10ce427702f7776"
+  ],
+  "incomplete:nopolicy": [
+   "46a13a348a1dc95c3d428f88717d5675252d78883f9683915f37539c3b6c563c",
+   "034c39a279c88490465d9846fe23e798e728c9e5585914a0447cdcd94e6e8cfd"
+  ],
+  "insufficient": [
+   "ef460012ba939455581056bee183d7dfbecd21ea34ebbfdfec3d87a6eae84ed3",
+   "1e0b2f63c55ec655b10167b12bd093f1990ddbcd1062c55814df2735699862f6"
+  ],
+  "insufficient:nopolicy": [
+   "608a6217f6fe08776774dda77e1ad21df8432c76f486e4c16a76a20fe9d349ca",
+   "95dfe72508b21405c4f208832486d559a5d21f6f4f30181163114f02472e3edb"
+  ],
+  "live": [
+   "23e20d518cdf7ae6912a6a8ae526379b23165e47fd4f00c7866f45dce586b389",
+   "126094a07e3a1a4c22d4824c819540545dacf92372f0336e25514f9c2a8297ba"
+  ],
+  "live:nopolicy": [
+   "95c9aa2ca3e7853f3de5ad756fefe1f8567eab3b22296e0aedb0e4066b0bcbcb",
+   "ba1797d8870c00e3fa3bf8c25915491927a3e6d28116c8770b922fcc517e8dd5"
+  ],
+  "partial": [
+   "1bbc8b9f813a1fe0ecd0369c2623ebf79f19abec748d5b459ced690fc8e851e6",
+   "11b415925e60d0e6eb33b8596bfb1554e4fe9885183ad743bf273b1bc997dc60"
+  ],
+  "partial:nopolicy": [
+   "1a23a42ca2c9cef1074a721a76d2f4e28805ab6775a8bccc2ba1100418ec688e",
+   "d5b395dc8e083e4a47edfbc306a735e68e24de56ec298dc29c5936f206fbdb41"
+  ],
+  "real_full": [
+   "70e4f44dc578a9d9229bc83741dbad01d83dc491b17e1c2c07897bb27c5335f0",
+   "4baea4ce393a27b9162613bb3ce42ce1c052b8a6ed05d23b91cc28170ed73fca"
+  ],
+  "real_full:nopolicy": [
+   "2d766e96fc4d97279fc20ca739db7693eeef70e02cc3b17cb0881da57dc6a83f",
+   "5a6f1e621f6aea5133751bd4577943634e3c69e6963ef33ef89adcced3216823"
+  ]
+ }
+}

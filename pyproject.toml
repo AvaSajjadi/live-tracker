@@ -11,6 +11,12 @@ requires-python = ">=3.10"
 # optional Claude rule-proposal path (src/live_tracker/claude_agent.py); the
 # offline parser, the demo and all tests work without it
 claude = ["anthropic>=0.40,<2"]
+# Stage 9 investigation: the deterministic offline emulator (investigation_live,
+# scripts/stage9_integration.py) drives the anthropic SDK through httpx2's
+# MockTransport, so it imports httpx2 directly. httpx2 is a real distribution
+# (pydantic/httpx2) and is what anthropic 1.x itself requires (httpx2>=2.0,<3);
+# 1.15 is the lowest anthropic version verified here. No network call is made.
+investigation = ["anthropic>=1.15,<2", "httpx2>=2.0,<3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

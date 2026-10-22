@@ -10,7 +10,7 @@ spec.loader.exec_module(cl)
 
 TR = ["task1/train/mouse001_task1_annotator1", "task1/train/mouse002_task1_annotator1"]
 VA = ["task1/train/mouse003_task1_annotator1"]
-TE = ["task1/test/mouse071_task1_annotator1"]
+TE = ["task1/test/mouse999_task1_annotator1"]
 MANIFEST = {"seed": 0, "train": TR, "validation": VA, "test": TE}
 FRAMES = {TR[0]: 10, TR[1]: 7, VA[0]: 5, TE[0]: 9}
 
@@ -44,6 +44,6 @@ def test_scores_must_be_validation_only():
 def test_repo_mentions():
     clean = {"splits/split_manifest.json": TE[0], "README.md": "nothing here"}
     assert all(_ok(cl.check_repo(clean, TE)))
-    leak = {**clean, "docs/demo.md": "replay mouse071_task1_annotator1"}
+    leak = {**clean, "docs/demo.md": "replay mouse999_task1_annotator1"}
     (name, ok, detail), = cl.check_repo(leak, TE)
     assert not ok and detail == "docs/demo.md"

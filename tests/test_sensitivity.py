@@ -103,3 +103,32 @@ def test_summary_names_most_changed_feature(table):
     assert len(s) == len(table[["disturbance", "setting"]].drop_duplicates())
     row = s[(s.disturbance == "gaps") & (s.setting == "10 frames")].iloc[0]
     assert row["max_frac_nan_changed"] > 0
+
+
+# --- real CalMS21 sessions: the manifest guard (the JSON is never opened for a refused request) ---
+
+def _manifest_file(tmp_path):
+    import json
+    m = {"seed": 0, "train": ["task1/train/mouse001"], "validation": ["task1/train/mouse002"],
+         "test": ["task1/test/mouse071"]}
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(m))
+    return path
+
+
+@pytest.mark.parametrize("session", ["task1/test/mouse071", "task1/train/not_in_manifest"])
+def test_real_sessions_refuse_test_and_unknown_before_opening_the_json(tmp_path, session):
+    missing_json = tmp_path / "does_not_exist.json"          # opening it would raise FileNotFoundError
+    with pytest.raises(SystemExit, match="refused"):
+        sens.load_real_sessions(missing_json, [session], _manifest_file(tmp_path))
+
+
+def test_real_sessions_one_test_session_among_valid_ones_refuses_all(tmp_path):
+    with pytest.raises(SystemExit, match="mouse071"):
+        sens.load_real_sessions(tmp_path / "x.json", ["task1/train/mouse002", "task1/test/mouse071"],
+                                _manifest_file(tmp_path))
+
+
+def test_calms21_option_needs_sessions(tmp_path):
+    with pytest.raises(SystemExit, match="--sessions"):
+        sens.main(["--calms21", str(tmp_path / "x.json"), "--out", str(tmp_path / "o.csv")])

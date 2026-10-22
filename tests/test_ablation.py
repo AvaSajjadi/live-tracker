@@ -141,3 +141,12 @@ def test_failed_test_run_does_not_burn_the_lock(tmp_path):
 def test_markdown_table():
     md = abl.to_markdown(pd.DataFrame({"feature_set": ["A"], "f1": [0.12345]}))
     assert md.splitlines()[0] == "| feature_set | f1 |" and "0.123" in md
+
+
+def test_read_table_reads_csv_and_parquet(tmp_path):
+    df = pd.DataFrame({"session": ["SYN_t0"] * 3, "frame": [0, 1, 2], "f": [0.5, 1.5, 2.5]})
+    df.to_csv(tmp_path / "t.csv", index=False)
+    pd.testing.assert_frame_equal(abl.read_table(tmp_path / "t.csv"), df)
+    pytest.importorskip("pyarrow")          # classify.py writes Parquet; CI may not have pyarrow
+    df.to_parquet(tmp_path / "t.parquet", index=False)
+    pd.testing.assert_frame_equal(abl.read_table(tmp_path / "t.parquet"), df)

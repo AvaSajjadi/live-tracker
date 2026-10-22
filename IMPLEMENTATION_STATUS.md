@@ -1,6 +1,6 @@
 # Implementation status
 
-Last updated: 2026-10-17
+Last updated: 2026-10-22
 
 ## Stage 0: starter audit
 
@@ -62,21 +62,42 @@ python scripts/sensitivity.py            # synthetic demo -> outputs/sensitivity
 python scripts/ablation.py --help        # needs Igor's fit / evaluate functions
 ```
 
-## Still missing / blockers
+## Stage 3: motion engine on real data (Ava, 2026-10-22, branch `ava/finish-motion-engine`)
 
-- CalMS21 not downloaded or inspected: no loader, keypoint mapping, labels, or fps check.
-  Waiting on Igor (schema notes, then loader and split manifest).
-- Body center is implemented but untested on real data: the torso keypoint names must come
-  from the CalMS21 readme, not from memory.
-- Not built yet (need the real keypoints): nose-to-nose, nose-to-tail, facing angle.
-- All thresholds are placeholders. Tuning on train/validation sessions needs the split manifest.
-- Ablation and sensitivity have no real results. The expected split manifest layout
-  (`train` / `validation` / `test` lists of session IDs) is an assumption.
-- No classifier, agent, replay, or evaluation yet.
+Measured on the CalMS21 train / validation sessions only. The test split was not read and `--final` of the
+ablation was not run. Full numbers, caveats and commands: `docs/motion_engine_results.md`.
 
-## Next
+| What | Result |
+|---|---|
+| Ablation, basic vs basic + ScopeScore features (14 validation sessions) | macro F1 0.499 -> 0.651 (paired +0.060, 95 % interval +0.040 to +0.082); better in 14 of 14 sessions. Helps investigation and attack; does **not** help mount (0.620 -> 0.605). Attack rests on 4 sessions; validation shares animals with train, so numbers are optimistic. |
+| Sensitivity on 4 real validation sessions | Position features are stable; acceleration is the fragile one (5 px jitter: 0.57 of its spread; no smoother: 2.8). Threshold changes show up in the tails, not the median. |
+| `features.keypoint_features()` | nose-to-nose, nose-to-tail, facing angle; causal, opt-in, not in the section 5 table or the models; 15 tests. Not yet tested as classifier inputs. |
+| `pages/4_Real_Session.py` + `session_view.py` | one real validation session: tracking quality, features, keypoint features, annotation as context. Reads only the hash-verified validation cache. 11 tests; run headless on real data. |
+| `scripts/ablation.py` | reads Parquet as well as CSV. |
+| `scripts/sensitivity.py` | `--calms21` runs on real train/validation sessions and refuses any session outside the manifest's train/validation lists. |
 
-1. Igor: schema notes, loader, split manifest.
-2. Ava: nose / tail / facing features, tune parameters on train/val, sensitivity on real
-   sessions, motion-engine page with a real session, ablation once `evaluate()` exists.
-3. Baseline classifier (attack / mount / investigation) on train sessions only.
+Full suite on this branch (Windows, Python 3.12.10, Streamlit 1.66.1, pyarrow installed):
+`python -m pytest -q` -> **3419 passed, 46 skipped, 11 xfailed, 0 failed** (37 min).
+
+Commands:
+
+```
+python scripts/ablation.py --basic data/processed/basic.parquet --scope data/processed/motion.parquet     --labels data/processed/labels.parquet --manifest splits/split_manifest.json     --fit live_tracker.classify:fit_scores --evaluate live_tracker.evaluate:summary_metrics
+python scripts/sensitivity.py --calms21 data/raw/calms21/calms21_task1_train.json --sessions <validation ids>
+python -m live_tracker.investigation_data --source data/raw/calms21/calms21_task1_train.json --all
+python -m streamlit run app.py
+```
+
+## Still missing / open
+
+- Test-split evaluation: not run. It happens once, at the end, under a policy the team agrees first.
+- Whether the keypoint features help a classifier: untested (needs regenerating features and retraining).
+- Tuned quality values in `params.py` (jump 3000 px/s, One-Euro beta 0.05) are not wired into the defaults, and
+  the models were not retrained with them. Stage 9 investigation runs with the jump flag off.
+- `pyarrow` is needed by `classify.py` and the ablation but is not declared in `pyproject.toml` or
+  `requirements.txt`.
+- Slides / report, and the demo rehearsal.
+- Contract v1 decisions still to confirm with Syed: see `plan/AVA.md` and the open items in
+  `docs/contract_v1_integration.md` section 6.
+- The motion-engine models were refit here from Igor's Oct 19 feature files; his saved model artifacts are not in
+  the repository, so Model B's exact settings and validation results still need to be committed or written down.

@@ -30,6 +30,8 @@ from .quality import flag_tracking, interpolate_short_gaps, tracking_loss_events
 
 DYADIC_COLS = ("dist_center", "dist_rate", "rel_speed", "close_time_s", "speed_corr_w")
 
+KEYPOINT_COLS = ("dist_nose_nose", "dist_nose_tail_ab", "dist_nose_tail_ba", "facing_ab", "facing_ba")
+
 FEATURE_COLS = ("point_ok", "uses_imputed", "speed", "accel", "heading", "turn_rate",
                 "path_len_w", "straightness_w", "idle_frac_w", "in_pause")
 
@@ -329,11 +331,114 @@ def dyadic_features(df, params=None, torso_keypoints=None,
     speed_corr_w  trailing correlation of the two speeds (NaN if one is constant)
 
     Measurements only: being close and fast is not the same as fighting.
-    Keypoint features (nose-to-nose, facing angle) wait for the CalMS21 schema.
+    Keypoint features (nose-to-nose, facing angle) are in keypoint_features().
     """
     p = params or FeatureParams()
     center = body_center(df, torso_keypoints, x_col, y_col)
     return _dyadic(_prepare(center, p, x_col, y_col, time_col), p, time_col)
+
+
+def _keypoint_xy(flags, keypoint, p, x_col, y_col, time_col):
+    """Causally smoothed (x, y, ok) of ONE keypoint per session x mouse x frame.
+
+    smooth_dataframe groups by session and mouse, so each keypoint is smoothed
+    on its own table: one keypoint's track never feeds another's filter.
+    """
+    one = flags[flags["keypoint"] == keypoint].drop(columns="keypoint")
+    if one.empty:
+        raise ValueError(f"keypoint {keypoint!r} not in data")
+    return _prepare(one, p, x_col, y_col, time_col)
+
+
+def _facing_angle(tail, nose, own_center, other_center, min_axis_px):
+    """Angle in [0, pi] between the body axis (tail_base -> nose) and the direction from
+    the mouse's own body center to the other mouse's body center. 0 = pointing straight
+    at the other mouse, pi = pointing straight away. NaN if the axis is shorter than
+    min_axis_px (the nose sits on the tail base: no direction) or the centers coincide."""
+    axis, to_other = nose - tail, other_center - own_center
+    na, nt = np.hypot(axis[:, 0], axis[:, 1]), np.hypot(to_other[:, 0], to_other[:, 1])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos = np.einsum("ij,ij->i", axis, to_other) / (na * nt)
+    angle = np.arccos(np.clip(cos, -1.0, 1.0))
+    return np.where((na >= min_axis_px) & (nt > _TOL), angle, np.nan)
+
+
+def keypoint_features(long_df, params=None, torso_keypoints=None, nose="nose", tail_base="tail_base",
+                      min_axis_px=5.0, frame_size=None, score_col=None, min_score=None,
+                      x_col="x", y_col="y", time_col="time_s"):
+    """Causal two-mouse features that need individual keypoints (columns in KEYPOINT_COLS).
+
+    dist_nose_nose     nose of A to nose of B, px
+    dist_nose_tail_ab  nose of A to tail base of B, px
+    dist_nose_tail_ba  nose of B to tail base of A, px
+    facing_ab          angle between A's body axis (tail_base -> nose) and the direction from
+                       A's body center to B's body center, rad in [0, pi]; 0 = A points at B
+    facing_ba          the same for B
+
+    These are geometry measurements: a nose close to a tail base or a mouse pointing at the
+    other is not by itself investigation, mounting or attack. Nothing looks at a past or
+    future frame: each value uses its own frame's smoothed keypoints (causal One-Euro, one
+    filter per keypoint, same settings as the other features). Missing, invalid or
+    out-of-frame keypoints give NaN, never 0. min_axis_px is a placeholder (a nose less than
+    this far from the tail base gives no direction); tune on train/val sessions only.
+
+    Not part of compute_features(): the §5 table, and the models trained on it, are unchanged.
+    The same flagging step as compute_features() is run if long_df has no quality flags yet
+    (its short-gap fill looks at frames after the gap, so that step is not causal).
+    Returns session, frame, time_s, then KEYPOINT_COLS (one row per session x frame).
+    """
+    p = params or FeatureParams()
+    flags = long_df
+    if "valid" not in flags.columns:
+        flags = interpolate_short_gaps(flag_tracking(
+            flags, frame_size=frame_size, score_col=score_col, min_score=min_score))
+    if torso_keypoints is None:
+        raise ValueError("pass torso_keypoints: the facing angle needs the body center, which "
+                         "is defined by named torso keypoints (never the nose alone)")
+    center = _prepare(body_center(flags, torso_keypoints, x_col, y_col), p, x_col, y_col, time_col)
+    named = {"nose": _keypoint_xy(flags, nose, p, x_col, y_col, time_col),
+             "tail": _keypoint_xy(flags, tail_base, p, x_col, y_col, time_col),
+             "center": center}
+    parts = []
+    for session in (sorted(center["session"].unique(), key=str) if "session" in center.columns else [None]):
+        arr = {}
+        c = center if session is None else center[center["session"] == session]
+        mice = sorted(c["mouse"].unique(), key=str)
+        if len(mice) != 2:
+            raise ValueError(f"session {session!r}: keypoint features need exactly 2 mice, got {mice}")
+        for name, table in named.items():
+            t = table if session is None else table[table["session"] == session]
+            # a mouse whose nose (or tail base) is never tracked has no rows: NaN features, not an error
+            arr[name] = [t[t["mouse"] == m].set_index("frame") for m in mice]
+        frames = arr["center"][0].index.union(arr["center"][1].index).sort_values()
+        times = (arr["center"][0][time_col].reindex(frames)
+                 .fillna(arr["center"][1][time_col].reindex(frames))).to_numpy(float)
+        xy, ok = {}, {}
+        for name, (a, b) in arr.items():
+            for who, tab in (("a", a), ("b", b)):
+                tab = tab.reindex(index=frames, columns=["_x", "_y", "_ok"])
+                xy[name, who] = tab[["_x", "_y"]].to_numpy(float)
+                ok[name, who] = tab["_ok"].astype("boolean").fillna(False).to_numpy(bool)
+
+        def dist(n1, w1, n2, w2):
+            good = ok[n1, w1] & ok[n2, w2]
+            d = np.hypot(*(xy[n1, w1] - xy[n2, w2]).T)
+            return np.where(good, d, np.nan)
+
+        def facing(me, other):
+            good = ok["nose", me] & ok["tail", me] & ok["center", me] & ok["center", other]
+            ang = _facing_angle(xy["tail", me], xy["nose", me], xy["center", me], xy["center", other], min_axis_px)
+            return np.where(good, ang, np.nan)
+
+        out = pd.DataFrame({"frame": frames.to_numpy(), time_col: times,
+                            "dist_nose_nose": dist("nose", "a", "nose", "b"),
+                            "dist_nose_tail_ab": dist("nose", "a", "tail", "b"),
+                            "dist_nose_tail_ba": dist("nose", "b", "tail", "a"),
+                            "facing_ab": facing("a", "b"), "facing_ba": facing("b", "a")})
+        if session is not None:
+            out.insert(0, "session", session)
+        parts.append(out)
+    return pd.concat(parts, ignore_index=True)
 
 
 def to_wide(feat, time_col="time_s"):

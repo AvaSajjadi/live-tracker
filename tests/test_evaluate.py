@@ -4,9 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from live_tracker.evaluate import (EventParams, confusion, evaluate, event_metrics,
+from live_tracker.evaluate import (ATTACK_RULE_V1, EventParams, confusion, evaluate, event_metrics,
                                    frame_metrics, onset_offsets, predict_labels, predicted_bouts,
-                                   summary_metrics)
+                                   monitor_event_metrics, summary_metrics)
+from live_tracker.rules import Rule, validate_rule
 
 FPS = 10.0
 
@@ -122,3 +123,35 @@ def test_onset_offsets_by_hand():
     assert r2.onset_offset_s.iloc[0] == pytest.approx(-0.4)
     r3 = onset_offsets(_tables(lab, np.zeros(30))[0], l, fps=FPS)
     assert r3.onset_offset_s.isna().all()
+
+
+def test_monitor_event_metrics_by_hand():
+    # true attack frames 10-29; score high on 12-29 and 40-47; tracking lost at frame 20
+    lab = ["other"] * 10 + ["attack"] * 20 + ["other"] * 20
+    p = np.zeros(50)
+    p[12:30] = p[40:48] = 0.9
+    s, l = _tables(lab, p)
+    s["tracking_ok"] = True
+    s.loc[20, "tracking_ok"] = False                  # ends the first monitor bout
+    rule = Rule("R", "attack", min_duration_s=0.5, ask_threshold=0.5, status="approved")
+    m, bouts = monitor_event_metrics(s, l, rule, fps=FPS)
+    # bouts 12-19 (fires at 12 + 5 = 17), 21-29 (fires at 26), 40-47 (false alert)
+    assert (m["n_events"], m["n_true_bouts"], m["detected_true"]) == (3, 1, 1)
+    assert m["event_precision"] == pytest.approx(2 / 3) and m["event_recall"] == 1.0
+    assert m["false_alerts_per_hour"] == pytest.approx(1 / (50 / FPS / 3600))
+    assert bouts.start_offset_s.iloc[0] == pytest.approx(0.2)
+    assert bouts.fire_offset_s.iloc[0] == pytest.approx(0.7)
+
+
+def test_monitor_event_metrics_no_events():
+    s, l = _tables(["attack"] * 10, [0.1] * 10)
+    s["tracking_ok"] = True
+    m, bouts = monitor_event_metrics(s, l, Rule("R", "attack", min_duration_s=0.5,
+                                                status="approved"), fps=FPS)
+    assert m["n_events"] == 0 and m["event_recall"] == 0.0 and np.isnan(m["event_precision"])
+    assert bouts.start_offset_s.isna().all()
+
+
+def test_attack_rule_v1_is_a_valid_rule():
+    rule, errors = validate_rule({"rule_id": "attack_v1", **{k: v for k, v in ATTACK_RULE_V1.items()}})
+    assert not errors and rule.ask_threshold <= rule.alert_threshold

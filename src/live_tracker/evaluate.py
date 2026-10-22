@@ -49,6 +49,16 @@ class EventParams:
     merge_gap_s: float = 0.0
 
 
+# Demo attack rule, chosen on the 14 VALIDATION sessions with model B scores
+# through monitor.run_monitor (scripts/tune_attack_rule.py, docs/attack_rule_v1.md).
+# ask_threshold / min_duration_s: highest attack event F1; the top settings tie
+# (F1 0.722-0.724), so the one with the fewest false alerts per hour was taken.
+# alert_threshold: rules.Rule default; event confidence barely separates true from
+# false events on validation (precision 0.84 alerts vs 0.73 asks), so it is weak.
+ATTACK_RULE_V1 = {"behavior": "attack", "ask_threshold": 0.6, "min_duration_s": 0.5,
+                  "alert_threshold": 0.8, "alert_mode": "alert"}
+
+
 def _align(scores, labels):
     """One row per session x frame with the scores and the true label."""
     sessions = scores["session"].unique()
@@ -205,3 +215,45 @@ def evaluate(scores, labels, params=None, fps=FPS):
     pred = predict_labels(a)
     return (summary_metrics(scores, labels, params, BEHAVIORS, fps),
             frame_metrics(a["label"], pred), confusion(a["label"], pred))
+
+
+def monitor_event_metrics(scores, labels, rule, fps=FPS):
+    """Attack-style event metrics with the monitor's own bout rule.
+
+    Runs monitor.run_monitor (evidence = tracking_ok and score >= ask_threshold,
+    fires after min_duration_s, a tracking_ok=false frame ends the bout) on the
+    scores, then matches its events to true bouts of rule.behavior (shared frame,
+    bout = [first_frame, end)). Use VALIDATION scores only.
+    Returns (summary dict, per-true-bout table with start_offset_s =
+    first_frame - true onset and fire_offset_s = fired_frame - true onset).
+    """
+    from .monitor import run_monitor
+    a = _align(scores, labels)
+    events = run_monitor(scores.sort_values(KEYS), [rule], fps=fps)
+    by_sess = {}
+    for e in events:
+        by_sess.setdefault(e["session"], []).append(
+            (e["evidence"]["first_frame"], int(round(e["end_s"] * fps)), e["evidence"]["fired_frame"]))
+    rows, matched = [], set()
+    for sid, part in a.groupby("session", sort=True):
+        evs = by_sess.get(sid, [])
+        for st, en in _runs((part["label"] == rule.behavior).to_numpy()):
+            hit = [i for i, (s, e, _) in enumerate(evs) if s < en and st < e]
+            matched |= {(sid, i) for i in hit}
+            s, _, f = evs[hit[0]] if hit else (np.nan, np.nan, np.nan)
+            rows.append({"session": sid, "true_start": st, "true_end": en, "dur_s": (en - st) / fps,
+                         "start_offset_s": (s - st) / fps, "fire_offset_s": (f - st) / fps})
+    bouts = pd.DataFrame(rows, columns=["session", "true_start", "true_end", "dur_s",
+                                        "start_offset_s", "fire_offset_s"])
+    n_ev, n_true = len(events), len(bouts)
+    det = int(bouts["start_offset_s"].notna().sum())
+    prec = len(matched) / n_ev if n_ev else np.nan
+    rec = det / n_true if n_true else np.nan
+    hours = len(a) / fps / 3600
+    summary = {"n_events": n_ev, "n_true_bouts": n_true, "detected_true": det,
+               "event_precision": prec, "event_recall": rec,
+               "event_f1": 2 * prec * rec / (prec + rec) if n_ev and n_true and prec + rec else 0.0,
+               "false_alerts_per_hour": (n_ev - len(matched)) / hours if hours else np.nan,
+               "fire_offset_median_s": float(bouts["fire_offset_s"].median()) if det else np.nan,
+               "start_offset_median_s": float(bouts["start_offset_s"].median()) if det else np.nan}
+    return summary, bouts

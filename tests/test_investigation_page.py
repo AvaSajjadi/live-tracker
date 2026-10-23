@@ -122,6 +122,8 @@ def test_insufficient_evidence_is_explicit_and_no_effect_is_shown():
     assert metrics["Bouts found"] == "3" and metrics["Paired sessions"] == "0"
     assert "Per-session paired differences" not in texts(at.markdown)  # no chart without an effect
     assert "quality_v1" in texts(at.caption)
+    assert "Overlap policy: `overlap_v1`" in texts(at.caption)
+    assert "baseline_window_overlaps_bout" in texts(at.caption)        # the exclusion order is listed
 
 
 # ---- trace labelling ----

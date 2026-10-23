@@ -43,15 +43,24 @@ indicators, or synthetic numbers. Held-out test sessions are never loaded:
 the real constructors go through the Stage 9 EvidencePolicy and the verified
 cache, which only serve the validation split.
 
-What this module does NOT decide (still open; see docs/contract_v1_integration.md)
------------------------------------------------------------------------------------
+Finalized (approved by Ava): the overlap policy overlap_v1
+------------------------------------------------------------
+"Another bout" means another FIRED bout of the cited query: a monitor event
+of the same session and behavior that lasted at least min_duration_s. A
+threshold crossing that never fired (too short or sub-threshold) is not a
+bout. The bouts are the complete, unchanged, provenance-verified result of
+the cited query (_verified_bouts). Both windows are checked: a pre window
+that intersects another fired bout is excluded (pre_window_overlaps_bout),
+and so is a baseline window that intersects one
+(baseline_window_overlaps_bout). The policy is named and versioned
+(OVERLAP_POLICIES), and every compare_windows result carries its name and
+definition, as with the quality policy.
+
+Still open (see docs/contract_v1_integration.md)
+------------------------------------------------
 - event threshold, minimum duration and the score-to-event latency gap: the
   caller supplies threshold and min_duration_s; no latency gap is applied,
-  so start_s is a classifier threshold crossing, not a behavior onset;
-- whether "overlaps another bout" means fired events only (implemented: the
-  bouts given to compare_windows) or every sub-threshold run;
-- the overlap rule covers the pre window only (contract wording); a baseline
-  window that contains a bout is not excluded.
+  so start_s is a classifier threshold crossing, not a behavior onset.
 """
 
 from __future__ import annotations
@@ -76,9 +85,9 @@ from .features import DYADIC_COLS, FEATURE_COLS
 from .monitor import run_monitor
 from .rules import CLASSIFIER_BEHAVIORS, Rule
 
-__all__ = ["CONTRACT_VERSION", "ERROR_CODES", "InvestigationData", "InvestigationRunner", "QUALITY_POLICIES",
-           "QualityPolicy", "TOOLS", "check_tracking_quality", "compare_windows", "get_window_features",
-           "query_events"]
+__all__ = ["CONTRACT_VERSION", "ERROR_CODES", "InvestigationData", "InvestigationRunner", "OVERLAP_POLICIES",
+           "OverlapPolicy", "QUALITY_POLICIES", "QualityPolicy", "TOOLS", "check_tracking_quality", "compare_windows",
+           "get_window_features", "query_events"]
 
 CONTRACT_VERSION = "investigate-tool-contracts/v1"
 TOOLS = ("query_events", "get_window_features", "check_tracking_quality", "compare_windows")
@@ -91,8 +100,11 @@ ERROR_CODES = ("unknown_session", "bad_window", "unknown_feature", "unknown_beha
 # that are not exactly the bouts of the cited query on this data source)
 EXTENSION_ERROR_CODES = ("invalid_request", "unverified_bouts")
 INSUFFICIENT_REASONS = ("too_few_bouts", "too_few_usable_windows", "window_unreliable")
+# the order in which they are checked (the order of Ava's approved dry run, scripts/dryrun_contract_options.py):
+# a bout is excluded for the FIRST reason that applies. The order changes which reason is reported, never which
+# bouts are used
 EXCLUSION_REASONS = ("pre_window_overlaps_bout", "window_before_session_start", "pre_window_unreliable",
-                     "baseline_window_unreliable", "no_feature_values")
+                     "baseline_window_unreliable", "baseline_window_overlaps_bout", "no_feature_values")
 SCORE_COLUMNS = score_drops.SCORE_COLUMNS
 WINDOW_FEATURES = tuple(DYADIC_COLS)                  # Ava's pair features, as computed by the Stage 9 pipeline
 FLAG_NAMES = ("missing", "out_of_frame", "jump", "frozen", "low_conf")
@@ -132,6 +144,28 @@ QUALITY_POLICIES = {
     "quality_v1_strict90": QualityPolicy("quality_v1_strict90", 0.9),
 }
 DEFAULT_QUALITY_POLICY = "quality_v1"
+
+
+@dataclass(frozen=True)
+class OverlapPolicy:
+    """A versioned rule for which windows are excluded because another bout intersects them (Ava's decision)."""
+    name: str
+    other_bouts: str               # which bouts count
+    windows: tuple                 # which windows are checked against them
+
+    def to_json(self):
+        return {"name": self.name, "other_bouts": self.other_bouts, "windows_checked": list(self.windows),
+                "intersection": "half-open frame ranges [start, end) of the bout and the window share a frame",
+                "not_bouts": "threshold crossings that never fired (shorter than min_duration_s or below the "
+                             "threshold) are not bouts and exclude nothing"}
+
+
+# overlap_v1 = Ava's approved V1 (docs/contract_v1_overlap_options.md): fired bouts; pre AND baseline windows
+OVERLAP_POLICIES = {
+    "overlap_v1": OverlapPolicy("overlap_v1", "the other fired bouts of the cited query (same session and behavior; "
+                                              "the complete, verified query result)", ("pre", "baseline")),
+}
+DEFAULT_OVERLAP_POLICY = "overlap_v1"
 
 
 class _Refused(Exception):
@@ -625,13 +659,19 @@ def compare_windows(data, request):
     gap_s = _duration_s(request["baseline_gap_s"], "baseline_gap_s", allow_zero=True)
     gate = _gate(request)
     bouts = _verified_bouts(data, request)
+    overlap = OVERLAP_POLICIES[DEFAULT_OVERLAP_POLICY]
     windows = [_bout_windows(i, b, pre_s, base_s, gap_s) for i, b in enumerate(bouts)]
+
+    def hits_other_bout(k, a, z):          # [a, z) intersects another fired bout of the query (overlap policy)
+        b = bouts[k]
+        return any(j != k and o["session"] == b["session"] and o["behavior"] == b["behavior"]
+                   and o["end"] > a and o["start"] < z for j, o in enumerate(bouts))
+
     used, excluded = [], []
     for k, (b, (S, p0, b0, b1, before_start)) in enumerate(zip(bouts, windows)):
         pose = data._get(b["session"]).pose
         why = None
-        if any(j != k and o["session"] == b["session"] and o["behavior"] == b["behavior"]
-               and o["end"] > p0 and o["start"] < S for j, o in enumerate(bouts)):
+        if "pre" in overlap.windows and hits_other_bout(k, p0, S):
             why = "pre_window_overlaps_bout"
         elif before_start:
             why = "window_before_session_start"
@@ -639,6 +679,8 @@ def compare_windows(data, request):
             why = "pre_window_unreliable"
         elif _assess(pose, b0, b1, policy)["verdict"] != "reliable":
             why = "baseline_window_unreliable"
+        elif "baseline" in overlap.windows and hits_other_bout(k, b0, b1):
+            why = "baseline_window_overlaps_bout"
         else:
             pre, base = _values(pose, p0, S, feature), _values(pose, b0, b1, feature)
             if not pre.size or not base.size:
@@ -657,7 +699,9 @@ def compare_windows(data, request):
     common = {**_base(data), "feature": feature, **counts, "excluded": excluded,
               "pre_s": float(request["pre_s"]), "baseline_s": float(request["baseline_s"]),
               "baseline_gap_s": float(request["baseline_gap_s"]), "quality_policy": policy.name,
-              "evidence_gate": gate, "windows": {
+              "quality_policy_definition": policy.to_json(),
+              "overlap_policy": overlap.name, "overlap_policy_definition": overlap.to_json(),
+              "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate, "windows": {
                   "pre": "[start_s - pre_s, start_s)",
                   "baseline": "[start_s - pre_s - baseline_gap_s - baseline_s, start_s - pre_s - baseline_gap_s)",
                   "anchor": "start_s (never fired_s)", "truncation": "each window from the session truncated "
@@ -675,7 +719,10 @@ def compare_windows(data, request):
             "pre_mean": statistics.fmean(u["pre"] for u in used),
             "baseline_mean": statistics.fmean(u["baseline"] for u in used),
             "mean_diff": statistics.median(p["paired_diff"] for p in per_session),
-            "mean_diff_definition": "median over sessions of each session's mean (pre - baseline) difference",
+            "mean_diff_definition": ("the MEDIAN across paired sessions of the per-session paired differences "
+                                     "(per_session[].paired_diff: each session's mean of its used bouts' "
+                                     "pre - baseline); not a mean over windows or sessions (the field name is "
+                                     "historical and kept for compatibility)"),
             "per_session": per_session, "wording": WORDING}
 
 

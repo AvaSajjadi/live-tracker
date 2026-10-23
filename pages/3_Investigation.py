@@ -136,7 +136,8 @@ with tab_ev:
                 if outcome is None:
                     st.caption("Not compared.")
                 elif outcome == "used":
-                    st.success("Used in the comparison (both windows passed the quality policy).")
+                    st.success("Used in the comparison (both windows passed the quality and overlap "
+                               "policies).")
                 else:
                     st.warning(f"Excluded from the comparison: {outcome}.")
             if windows:
@@ -159,7 +160,7 @@ with tab_ev:
                 tooltip=["lane", "start", "end", "kind"])
             st.altair_chart(chart, width="stretch")
         if c is not None and c["status"] != "error":
-            with st.expander("All exclusions, evidence gate and quality policy"):
+            with st.expander("All exclusions, evidence gate, quality and overlap policies"):
                 if c["excluded"]:
                     st.dataframe(pd.DataFrame(c["excluded"]), hide_index=True, width="stretch")
                 else:
@@ -171,6 +172,8 @@ with tab_ev:
                            f"paired sessions (override: {gate['overridden']}).")
                 st.caption(f"Quality policy: `{c['quality_policy']}` "
                            f"{res['inputs']['config']['quality_policy_definition']}.")
+                st.caption(f"Overlap policy: `{c['overlap_policy']}` {c['overlap_policy_definition']}. "
+                           f"Exclusion reasons, checked in this order: {', '.join(c['exclusion_order'])}.")
             if c["status"] == "ok":
                 st.markdown("**Per-session paired differences** (pre minus baseline; association only)")
                 st.bar_chart(pd.DataFrame(c["per_session"]).set_index("session")["paired_diff"])

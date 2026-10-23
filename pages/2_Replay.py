@@ -334,7 +334,11 @@ def render_investigation():
         cache = st.session_state.get(INVESTIGATION_CACHE)
         if not isinstance(cache, dict):
             cache = st.session_state[INVESTIGATION_CACHE] = {}
-        res = ri.cached_investigation(cache, cache_key, entry, rules, run)
+        try:
+            res = ri.cached_investigation(cache, cache_key, entry, rules, run)
+        except ri.PolicyMismatch as exc:                      # fail closed: no result, no record, no download
+            st.error(f"The investigation was refused: {exc}")
+            return
         for item in res["rules"]:
             q, c = item["query"], item["compare"]
             st.markdown(f"**Rule {item['rule_id']}** · investigation `{item['investigation_id']}` · "

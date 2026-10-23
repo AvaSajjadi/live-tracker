@@ -91,8 +91,39 @@ Detected per attack session: mouse005 2 / 7, mouse028 1 / 6, mouse045 12 / 20, m
 - One feature, one baseline and one gap were analysed; the pre_s grid and follow-ups were fixed before the run. No
   confidence interval is reported (none is approved for Contract v1).
 
-## Not connected
+## In the app (read only)
 
-The Replay and Investigation pages remain synthetic-only: `replay_investigation` refuses any non-`SYNTHETIC` session,
-and neither page has a real-data entry. This run is reachable from the command line only; its outputs are not shown in
-the app.
+The Replay and Investigation pages have a **Data** choice: the existing SYNTHETIC demonstration (unchanged, the
+default) or a **recorded real validation run**. A run is chosen by its directory name under `outputs/validation_run_v1/`
+(or `$LIVE_TRACKER_VALIDATION_RUNS`) and checked again on every page run by
+`live_tracker.validation_run_view.load_run`; anything that does not check out is shown as a refusal with its reason,
+and nothing is substituted. The files are read through directory descriptors without following symlinks, each a
+regular file within a size limit enforced while reading.
+
+What the pages claim, in three levels (`VERIFICATION_LEVELS`):
+
+1. **Consistency of the recorded execution (checked).** The four files agree with each other, with the tracked split
+   manifest, with the journal's own validation (complete, `verified_score_drop`, frozen to exactly the stored
+   snapshot), with Contract v1's rules and with `ATTACK_RULE_V1`. Every monitor count (events, alerts / asks, end
+   reasons, events per session, tracking closures, durations) is derived from the journal. The query's bouts are the
+   journal's events. The probe is the runner's probe (session, window, feature, `quality_v1`). Each comparison's
+   counts, exclusions and contributing sessions are reconstructed from the verified bouts and its exclusions, its
+   gate status is the one those counts imply, and its effect is the median of finite per-session paired differences.
+2. **Independent authentication (not available).** No signature or independent registry binds these local files to
+   the run that executed. A coordinated edit of the record and summary with recomputed digests (other per-session
+   differences with a matching median) cannot be detected without re-running the tools on the data, so the pages say
+   "consistent", never "authenticated".
+3. **Recorded only (unverified claims).** The event-level evaluation, the annotated attack bouts per session and the
+   per-session tracking interruptions cannot be re-derived from the run's files. They are checked for internal
+   consistency and labelled as recorded, unverified claims; incomplete annotation coverage is shown as unknown, never
+   as zero, and the pages draw no conclusion about false alerts or attack prevalence from them.
+
+- **Replay (real):** the recorded rule and approval; journal-derived counts; per session the predicted events
+  (journal order and ids) and the recorded tracking interruptions; the recorded evaluation, labelled unverified; the
+  provenance. Browsing re-runs nothing and is not an approval.
+- **Investigation (real):** the query and its bouts, the probe, the three comparisons (2 s primary, 1 s and 5 s
+  follow-ups) with the gate, contributing sessions, exclusions by reason and both policies; the recorded trace with
+  each result's digest; what the evidence supports; provenance and a download of the recorded record. No language
+  model is involved.
+
+The `replay_investigation` bridge stays synthetic-only (the synthetic Replay sessions are its only input).

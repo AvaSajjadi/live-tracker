@@ -1,5 +1,8 @@
 """Replay page: watch a recorded SYNTHETIC session with the approved rules (new file, D3-2).
 
+Data choice (Phase 2B): the SYNTHETIC demonstration below, unchanged and the default, or a verified REAL validation
+run shown read only by live_tracker.validation_run_ui (nothing re-run; browsing is not an approval).
+
 Rendering only. What is shown comes from live_tracker.replay (causal frame
 states, D3-1) through live_tracker.replay_view (labels, playback ticks,
 skeleton image), so nothing appears before the replay position reached it.
@@ -30,6 +33,7 @@ from live_tracker import replay as rp
 from live_tracker import replay_investigation as ri
 from live_tracker import replay_view as rv
 from live_tracker import summary as sm
+from live_tracker import validation_run_ui as vui
 from live_tracker.rule_workflow import is_valid_workflow
 
 WORKFLOW_KEY = "rule_workflow"
@@ -51,6 +55,10 @@ def keys(run_id):
 
 
 st.title("Replay")
+# 0. data: the SYNTHETIC demonstration (below, unchanged) or a verified REAL validation run (read only)
+if vui.choose_mode("replay_data_mode_widget") == vui.REAL:
+    vui.render_replay()
+    st.stop()
 st.warning(rp.REPLAY_BANNER)
 
 # 1. approved rules (from the Rules page; never invented here)

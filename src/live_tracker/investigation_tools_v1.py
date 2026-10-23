@@ -121,6 +121,16 @@ START_MEANING = ("start_s is the first frame whose score is >= threshold with tr
                  "of the source's scores); no score-to-event latency gap is applied, so for classifier scores it "
                  "is not the annotated behavior onset")
 WORDING = "precedes / is associated with (never causes or leads to)"
+USABLE_VALUE_RULE = "finite value with tracking_ok on frames t and t-1 (Stage 9 rule)"
+CAUSAL_NOTE = "computed from the session truncated at t1_s"
+# compare_windows' window semantics and effect definition, as reported in every result
+WINDOW_DEFINITIONS = {
+    "pre": "[start_s - pre_s, start_s)",
+    "baseline": "[start_s - pre_s - baseline_gap_s - baseline_s, start_s - pre_s - baseline_gap_s)",
+    "anchor": "start_s (never fired_s)", "truncation": "each window from the session truncated at its own end"}
+MEAN_DIFF_DEFINITION = ("the MEDIAN across paired sessions of the per-session paired differences "
+                        "(per_session[].paired_diff: each session's mean of its used bouts' pre - baseline); not a "
+                        "mean over windows or sessions (the field name is historical and kept for compatibility)")
 
 
 @dataclass(frozen=True)
@@ -144,6 +154,17 @@ QUALITY_POLICIES = {
     "quality_v1_strict90": QualityPolicy("quality_v1_strict90", 0.9),
 }
 DEFAULT_QUALITY_POLICY = "quality_v1"
+
+
+def quality_reasons(policy, n_frames, n_usable_frames, longest_veto_frames):
+    """The reasons a window fails `policy`, in order, from its measurements (the ONE decision rule: _assess uses
+    it, and anything that checks a recorded verdict can reuse it). An empty list means reliable."""
+    reasons = []
+    if Fraction(n_usable_frames) < Fraction(str(policy.min_usable_fraction)) * n_frames:   # exact: no float rounding
+        reasons.append("usable_fraction_below_min")
+    if policy.veto_flags and longest_veto_frames > policy.veto_max_frames:
+        reasons.append("frozen_or_out_of_frame_run")
+    return reasons
 
 
 @dataclass(frozen=True)
@@ -437,16 +458,12 @@ def _assess(pose, first, stop, policy):
     flags = _prefix_flags(pose, stop)
     w = flags[(flags["frame"] >= first) & (flags["frame"] < stop)]
     fired = [f for f in FLAG_NAMES if f in w.columns and bool(w[f].any())]
-    reasons = []
-    if Fraction(n_ok) < Fraction(str(policy.min_usable_fraction)) * n:     # exact: no float rounding at 0.8
-        reasons.append("usable_fraction_below_min")
     longest = 0
     if policy.veto_flags:
         bad = w.assign(_b=w[list(policy.veto_flags)].any(axis=1)).groupby("frame")["_b"].any()
         bad = bad.reindex(range(first, stop), fill_value=False).to_numpy(bool)
         longest = _longest_run(bad)
-        if longest > policy.veto_max_frames:
-            reasons.append("frozen_or_out_of_frame_run")
+    reasons = quality_reasons(policy, n, n_ok, longest)
     return {"usable_fraction": n_ok / n, "n_frames": n, "n_usable_frames": n_ok, "flags_fired": fired,
             "longest_veto_run_s": longest / tb.FPS_INT if policy.veto_flags else None,
             "verdict": "unreliable" if reasons else "reliable", "reason": reasons[0] if reasons else None,
@@ -539,9 +556,7 @@ def get_window_features(data, request):
                       if v.size else {"mean": None, "min": None, "max": None, "n": 0})
     return {"status": "ok", **_base(data), "session": request["session"], "t0_s": float(request["t0_s"]),
             "t1_s": float(request["t1_s"]), "n_frames": stop - first, "n_usable_frames": int(ok[first:stop].sum()),
-            "summary": summary,
-            "usable_value_rule": "finite value with tracking_ok on frames t and t-1 (Stage 9 rule)",
-            "causal": "computed from the session truncated at t1_s"}
+            "summary": summary, "usable_value_rule": USABLE_VALUE_RULE, "causal": CAUSAL_NOTE}
 
 
 # ======================================================================
@@ -701,11 +716,8 @@ def compare_windows(data, request):
               "baseline_gap_s": float(request["baseline_gap_s"]), "quality_policy": policy.name,
               "quality_policy_definition": policy.to_json(),
               "overlap_policy": overlap.name, "overlap_policy_definition": overlap.to_json(),
-              "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate, "windows": {
-                  "pre": "[start_s - pre_s, start_s)",
-                  "baseline": "[start_s - pre_s - baseline_gap_s - baseline_s, start_s - pre_s - baseline_gap_s)",
-                  "anchor": "start_s (never fired_s)", "truncation": "each window from the session truncated "
-                                                                     "at its own end"}}
+              "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate,
+              "windows": dict(WINDOW_DEFINITIONS)}
     if len(bouts) < gate["min_n_windows"]:
         return {"status": "insufficient_evidence", "reason": "too_few_bouts", "n_available": len(bouts),
                 "n_required": gate["min_n_windows"], "failed_gate": "min_n_windows", **common}
@@ -719,10 +731,7 @@ def compare_windows(data, request):
             "pre_mean": statistics.fmean(u["pre"] for u in used),
             "baseline_mean": statistics.fmean(u["baseline"] for u in used),
             "mean_diff": statistics.median(p["paired_diff"] for p in per_session),
-            "mean_diff_definition": ("the MEDIAN across paired sessions of the per-session paired differences "
-                                     "(per_session[].paired_diff: each session's mean of its used bouts' "
-                                     "pre - baseline); not a mean over windows or sessions (the field name is "
-                                     "historical and kept for compatibility)"),
+            "mean_diff_definition": MEAN_DIFF_DEFINITION,
             "per_session": per_session, "wording": WORDING}
 
 

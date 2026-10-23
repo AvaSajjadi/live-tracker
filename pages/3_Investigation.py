@@ -1,5 +1,8 @@
 """Investigation page: the Contract v1 evidence behind a synthetic Replay session (new file).
 
+Data choice (Phase 2B): the SYNTHETIC demonstration below, unchanged and the default, or the recorded Contract v1
+tool run of a verified REAL validation run, shown read only by live_tracker.validation_run_ui.
+
 Shows, for one SYNTHETIC session and one approved rule, the record of the
 deterministic Contract v1 tool run (replay_investigation): the bouts found,
 each bout's windows, tracking status and comparison outcome, the recorded
@@ -20,6 +23,7 @@ from live_tracker import investigation_view as iv
 from live_tracker import replay as rp
 from live_tracker import replay_investigation as ri
 from live_tracker import replay_view as rv
+from live_tracker import validation_run_ui as vui
 from live_tracker.rule_workflow import is_valid_workflow
 from streamlit.errors import StreamlitPageNotFoundError
 
@@ -38,6 +42,11 @@ try:
     nav[1].page_link("pages/1_Rules.py", label="Rules", icon=":material/rule:")
 except StreamlitPageNotFoundError:                  # this file run on its own, outside the app's page list
     nav[0].caption("Replay and Rules are in the sidebar.")
+
+# 0. data: the SYNTHETIC demonstration (below, unchanged) or a verified REAL validation run (read only)
+if vui.choose_mode("investigation_data_mode_widget") == vui.REAL:
+    vui.render_investigation()
+    st.stop()
 
 # 1. approved rules (the same researcher workflow the Replay page reads)
 wf = st.session_state.get(WORKFLOW_KEY)

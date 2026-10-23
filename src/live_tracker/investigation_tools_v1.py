@@ -85,9 +85,9 @@ from .features import DYADIC_COLS, FEATURE_COLS
 from .monitor import run_monitor
 from .rules import CLASSIFIER_BEHAVIORS, Rule
 
-__all__ = ["CONTRACT_VERSION", "ERROR_CODES", "InvestigationData", "InvestigationRunner", "OVERLAP_POLICIES",
-           "OverlapPolicy", "QUALITY_POLICIES", "QualityPolicy", "TOOLS", "check_tracking_quality", "compare_windows",
-           "get_window_features", "query_events"]
+__all__ = ["CONTRACT_VERSION", "ERROR_CODES", "evidence_id", "InvestigationData", "InvestigationRunner",
+           "OVERLAP_POLICIES", "OverlapPolicy", "QUALITY_POLICIES", "QualityPolicy", "TOOLS", "check_tracking_quality",
+           "compare_windows", "comparison_problems", "FollowUps", "get_window_features", "query_events"]
 
 CONTRACT_VERSION = "investigate-tool-contracts/v1"
 TOOLS = ("query_events", "get_window_features", "check_tracking_quality", "compare_windows")
@@ -330,6 +330,14 @@ def _sha(text):
 
 def _canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def evidence_id(tool, request, result):
+    """The deterministic identity of one executed call: "ev:<tool>:<first 24 hex of the SHA-256>" of the canonical
+    {tool, request, result}. Altering the request or the result changes it."""
+    if tool not in TOOLS:
+        raise ValueError(f"unknown tool {tool!r}")
+    return f"ev:{tool}:{_sha(_canonical({'tool': tool, 'request': request, 'result': result}))[:24]}"
 
 
 def _base(data):
@@ -662,6 +670,18 @@ def _gate(request):
             "override_reason": why.strip()[:300] if lowered else None}
 
 
+def _gate_verdict(n_input, n_windows, n_sessions, gate):
+    """The evidence gate's decision: None when it is met, else the insufficient_evidence fields."""
+    if n_input < gate["min_n_windows"]:
+        return {"reason": "too_few_bouts", "n_available": n_input, "n_required": gate["min_n_windows"],
+                "failed_gate": "min_n_windows"}
+    for name, have in (("min_n_windows", n_windows), ("min_n_sessions", n_sessions)):
+        if have < gate[name]:
+            return {"reason": "too_few_usable_windows", "n_available": have, "n_required": gate[name],
+                    "failed_gate": name}
+    return None
+
+
 @_guard
 def compare_windows(data, request):
     """Pre-bout vs baseline windows anchored on start_s, paired by session."""
@@ -718,13 +738,9 @@ def compare_windows(data, request):
               "overlap_policy": overlap.name, "overlap_policy_definition": overlap.to_json(),
               "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate,
               "windows": dict(WINDOW_DEFINITIONS)}
-    if len(bouts) < gate["min_n_windows"]:
-        return {"status": "insufficient_evidence", "reason": "too_few_bouts", "n_available": len(bouts),
-                "n_required": gate["min_n_windows"], "failed_gate": "min_n_windows", **common}
-    for name, have in (("min_n_windows", counts["n_windows"]), ("min_n_sessions", counts["n_sessions"])):
-        if have < gate[name]:
-            return {"status": "insufficient_evidence", "reason": "too_few_usable_windows", "n_available": have,
-                    "n_required": gate[name], "failed_gate": name, **common}
+    verdict = _gate_verdict(len(bouts), counts["n_windows"], counts["n_sessions"], gate)
+    if verdict:
+        return {"status": "insufficient_evidence", **verdict, **common}
     per_session = [{"session": sid, "n_bouts": len(d), "paired_diff": statistics.fmean(d)}
                    for sid, d in sorted(by_session.items())]
     return {"status": "ok", **common,
@@ -735,6 +751,99 @@ def compare_windows(data, request):
             "per_session": per_session, "wording": WORDING}
 
 
+_COMPARE_COMMON = frozenset({"data_source", "derived_from", "contract_version", "association_only", "status", "feature",
+                             "n_input", "n_used", "n_excluded", "n_sessions", "n_bouts", "n_windows",
+                             "n_baseline_windows", "n_sessions_input", "excluded", "pre_s", "baseline_s",
+                             "baseline_gap_s", "quality_policy", "quality_policy_definition", "overlap_policy",
+                             "overlap_policy_definition", "exclusion_order", "evidence_gate", "windows"})
+_COMPARE_KEYS = {"ok": _COMPARE_COMMON | {"pre_mean", "baseline_mean", "mean_diff", "mean_diff_definition",
+                                          "per_session", "wording"},
+                 "insufficient_evidence": _COMPARE_COMMON | {"reason", "n_available", "n_required", "failed_gate"}}
+
+
+def _used_sessions(bouts, excluded):
+    """The sessions of the bouts a comparison used, in request order: the request's bouts without its excluded
+    ones. compare_windows lists exclusions as {session, start_s, why} in bout order, so they must be a
+    subsequence of the bouts with a reason from EXCLUSION_REASONS; None otherwise."""
+    j, kept = 0, []
+    for b in bouts:
+        x = excluded[j] if j < len(excluded) else None
+        if isinstance(x, dict) and set(x) == {"session", "start_s", "why"} and x["why"] in EXCLUSION_REASONS and \
+                (x["session"], x["start_s"]) == (b["session"], b["start_s"]):
+            j += 1
+        else:
+            kept.append(b["session"])
+    return kept if j == len(excluded) else None
+
+
+def comparison_problems(request, result):
+    """The internal consistency of one saved compare_windows result with its request under Contract v1, without
+    the data and without recomputing any measurement: its exact fields for its status; the request's parameters,
+    the fixed policies and definitions echoed; the gate (_gate) of the request; counts that agree with each other
+    and with the request's bouts; the status that the gate's own decision (_gate_verdict) gives for those counts;
+    and, for "ok", exactly one per-session row for each session of the used bouts (the request's bouts without the
+    documented exclusions), carrying that session's number of used bouts, and a mean_diff that is the median of
+    their paired differences (its definition). Problems (empty: consistent). Consistency, not authenticity."""
+    try:
+        status = result.get("status")
+        if status not in _COMPARE_KEYS or set(result) != _COMPARE_KEYS[status]:
+            return [f"a compare_windows result with status {str(status)[:30]!r} must have exactly its fields"]
+        gate = _gate(request)
+        policy = request.get("quality_policy", DEFAULT_QUALITY_POLICY)
+        bouts, r, problems = request["bouts"], result, []
+        echoed = {"feature": request["feature"], "pre_s": _finite(request["pre_s"]),
+                  "baseline_s": _finite(request["baseline_s"]), "baseline_gap_s": _finite(request["baseline_gap_s"]),
+                  "quality_policy": policy, "quality_policy_definition": QUALITY_POLICIES[policy].to_json(),
+                  "overlap_policy": DEFAULT_OVERLAP_POLICY,
+                  "overlap_policy_definition": OVERLAP_POLICIES[DEFAULT_OVERLAP_POLICY].to_json(),
+                  "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate,
+                  "windows": dict(WINDOW_DEFINITIONS), "contract_version": CONTRACT_VERSION, "association_only": True}
+        wrong = [k for k, v in echoed.items() if r[k] != v]
+        if wrong:
+            problems.append(f"the result does not echo its request and Contract v1's fixed method ({wrong})")
+        counts = [r[k] for k in ("n_input", "n_used", "n_excluded", "n_sessions", "n_bouts", "n_windows",
+                                 "n_baseline_windows", "n_sessions_input")]
+        if not all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts) or \
+                not isinstance(r["excluded"], list):
+            return problems + ["the result's counts are not counts"]
+        used = r["n_used"]
+        kept = _used_sessions(bouts, r["excluded"])
+        if kept is None:
+            problems.append("the excluded windows are not request bouts (in order) with a documented reason")
+            kept = []
+        if r["n_input"] != len(bouts) or r["n_sessions_input"] != len({b["session"] for b in bouts}) or \
+                not used == r["n_bouts"] == r["n_windows"] == r["n_baseline_windows"] or \
+                r["n_excluded"] != len(r["excluded"]) or used + r["n_excluded"] != r["n_input"] or \
+                used != len(kept) or r["n_sessions"] != len(set(kept)):
+            problems.append("the result's counts contradict each other or the request's bouts")
+        verdict = _gate_verdict(r["n_input"], r["n_windows"], r["n_sessions"], gate)
+        if (verdict is None) != (status == "ok"):
+            problems.append(f"status {status!r} contradicts the evidence gate for {r['n_windows']} windows in "
+                            f"{r['n_sessions']} sessions (at least {gate['min_n_windows']} in "
+                            f"{gate['min_n_sessions']} required)")
+        elif verdict is not None and {k: r[k] for k in verdict} != verdict:
+            problems.append("the insufficient_evidence fields are not the gate's decision for its counts")
+        elif status == "ok":
+            rows = r["per_session"]
+            if not isinstance(rows, list) or any(not isinstance(x, dict) or set(x) != {"session", "n_bouts",
+                                                                                        "paired_diff"} or
+                                                 _finite(x["paired_diff"]) is None or
+                                                 isinstance(x["n_bouts"], bool) or
+                                                 not isinstance(x["n_bouts"], int) or x["n_bouts"] < 1
+                                                 for x in rows):
+                return problems + ["per_session rows must be {session, n_bouts >= 1 (an integer), paired_diff}"]
+            want = [(sid, kept.count(sid)) for sid in sorted(set(kept))]       # compare_windows' by_session
+            if [(x["session"], x["n_bouts"]) for x in rows] != want:
+                problems.append("the per_session rows are not the sessions and counts of the request's bouts "
+                                "after the documented exclusions")
+            if r["mean_diff_definition"] != MEAN_DIFF_DEFINITION or r["wording"] != WORDING or \
+                    r["mean_diff"] != statistics.median(x["paired_diff"] for x in rows):
+                problems.append("the effect is not the median of its per-session paired differences")
+        return problems
+    except (KeyError, TypeError, ValueError, AttributeError, statistics.StatisticsError, _Refused):
+        return ["the compare_windows result or its request is malformed"]
+
+
 # ======================================================================
 # the budget (the agent's loop enforces; tools only report)
 # ======================================================================
@@ -743,6 +852,45 @@ _TOOL_FUNCS = {"query_events": query_events, "get_window_features": get_window_f
                "check_tracking_quality": check_tracking_quality, "compare_windows": compare_windows}
 _FIXED_FOLLOW_UP = ("query_run_id", "query", "bouts", "baseline_s", "baseline_gap_s", "feature", "min_n_windows",
                     "min_n_sessions", "gate_override_reason", "quality_policy")
+
+
+class FollowUps:
+    """The fixed-follow-up rule of one investigation's compare_windows calls, data-independent: every pre_s from
+    FOLLOW_UP_PRE_S; after the first analysis at most MAX_FOLLOW_UPS more, each changing only pre_s
+    (_FIXED_FOLLOW_UP) to a value not yet analysed. InvestigationRunner applies it; investigation_agent_v1
+    replays a saved report's comparisons through it."""
+
+    def __init__(self):
+        self.first = None
+        self.calls = 0                       # compare_windows analyses that ran (status other than "error")
+        self.analysed = set()                # their pre_s values
+
+    def problem(self, req):
+        """The refusal message for this request, or None."""
+        if not isinstance(req, dict) or "pre_s" not in req:
+            return None                                       # the tool itself reports the malformed request
+        pre = _finite(req["pre_s"])
+        if pre is None:
+            return None                                       # ditto: invalid_request from the tool
+        if pre not in FOLLOW_UP_PRE_S:
+            return f"pre_s must be one of the preselected values {list(FOLLOW_UP_PRE_S)}"
+        if self.first is None:
+            return None
+        if self.calls >= 1 + MAX_FOLLOW_UPS:
+            return f"at most {MAX_FOLLOW_UPS} follow-up compare_windows analyses after the first"
+        changed = [k for k in _FIXED_FOLLOW_UP if req.get(k) != self.first.get(k)]
+        if changed:
+            return f"a follow-up may change only pre_s (changed: {changed})"
+        if pre in self.analysed:
+            return f"pre_s {pre!r} was already analysed"
+        return None
+
+    def ran(self, req):
+        """Record an analysis that ran (a result other than "error")."""
+        if self.first is None:
+            self.first = copy.deepcopy(req)
+        self.calls += 1
+        self.analysed.add(_finite(req["pre_s"]))
 
 
 class InvestigationRunner:
@@ -760,9 +908,7 @@ class InvestigationRunner:
             raise ValueError(f"max_tool_calls must be 1-{MAX_TOOL_CALLS}")
         self.data, self.investigation_id, self.max_tool_calls = data, investigation_id, max_tool_calls
         self.attempts = []
-        self._first_compare = None
-        self._compare_calls = 0              # compare_windows analyses that ran (status other than "error")
-        self._analysed = set()               # their pre_s values
+        self.follow_ups = FollowUps()
 
     @property
     def calls_used(self):
@@ -800,35 +946,13 @@ class InvestigationRunner:
         if tool not in _TOOL_FUNCS:
             return _error("invalid_request", f"unknown tool {tool[:40]!r}; tools: {list(TOOLS)}")
         if tool == "compare_windows":
-            problem = self._compare_problem(req)
+            problem = self.follow_ups.problem(req)
             if problem:
                 return _error("invalid_request", problem)
         result = _TOOL_FUNCS[tool](self.data, req)
         if tool == "compare_windows" and result["status"] != "error":     # an analysis ran
-            if self._first_compare is None:
-                self._first_compare = req
-            self._compare_calls += 1
-            self._analysed.add(_finite(req["pre_s"]))
+            self.follow_ups.ran(req)
         return result
-
-    def _compare_problem(self, req):
-        if not isinstance(req, dict) or "pre_s" not in req:
-            return None                                       # the tool itself reports the malformed request
-        pre = _finite(req["pre_s"])
-        if pre is None:
-            return None                                       # ditto: invalid_request from the tool
-        if pre not in FOLLOW_UP_PRE_S:
-            return f"pre_s must be one of the preselected values {list(FOLLOW_UP_PRE_S)}"
-        if self._first_compare is None:
-            return None
-        if self._compare_calls >= 1 + MAX_FOLLOW_UPS:
-            return f"at most {MAX_FOLLOW_UPS} follow-up compare_windows analyses after the first"
-        changed = [k for k in _FIXED_FOLLOW_UP if req.get(k) != self._first_compare.get(k)]
-        if changed:
-            return f"a follow-up may change only pre_s (changed: {changed})"
-        if pre in self._analysed:
-            return f"pre_s {pre!r} was already analysed"
-        return None
 
     def record(self):
         """The full attempt log (JSON-ready), for the investigation report."""

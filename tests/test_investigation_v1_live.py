@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import socket
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ lr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lr)
 Emu = lr.EmulatedOpenRouterV1
 FAKE_OR = "sk-or-v1-FAKE-test-key-0123456789"
+FAKE_MGMT = "sk-or-v1-FAKE-management-key-5555555555"
 SEQUENCE = ["query_events", "check_tracking_quality", "get_window_features", "compare_windows", "compare_windows",
             "compare_windows", av1.FINISH]
 
@@ -229,22 +231,47 @@ def test_stage6_entry_points_refuse_a_v1_plan():
 CAPPED = {"limit": 0.5, "limit_remaining": 0.5, "usage": 0.0, "limit_reset": None, "is_free_tier": False}
 
 
-def metadata(key=None, pricing=None, raw=None):
-    calls = []
+ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/anthropic/claude-sonnet-5.5/endpoints"
+LISTED_PRICING = {"prompt": "0.000002", "completion": "0.00001", "input_cache_read": "0.0000001",
+                  "input_cache_write": "0.0000025"}
+
+
+def anthropic_endpoint(**kw):
+    return {"provider_name": "Anthropic", "tag": "anthropic", "pricing": dict(LISTED_PRICING),
+            "context_length": 200_000, "max_prompt_tokens": None, "max_completion_tokens": 64_000, "status": 0, **kw}
+
+
+def forbidden(url="https://openrouter.ai/api/v1/models/x/endpoints"):
+    return urllib.error.HTTPError(url, 403, "Forbidden", {}, None)
+
+
+def endpoint_list(*endpoints):
+    eps = endpoints or (anthropic_endpoint(),)
+    return {"data": {"id": "anthropic/claude-sonnet-5.5", "endpoints": list(eps)}}
+
+
+def metadata(key=None, pricing=None, raw=None, endpoints=None, management_only=False):
+    """Injected metadata GETs. management_only: the endpoint list answers 403 unless the management key is sent."""
+    calls, auth = [], []
 
     def get(url, headers=None):
         calls.append((url, sorted((headers or {}).keys())))
+        auth.append((url, (headers or {}).get("Authorization")))
+        if url == ENDPOINTS_URL:
+            if isinstance(endpoints, Exception):
+                raise endpoints
+            if management_only and (headers or {}).get("Authorization") != f"Bearer {FAKE_MGMT}":
+                raise forbidden(url)
+            return endpoints if endpoints is not None else endpoint_list()
         if "/models" in url:
             return {"data": [{"id": "anthropic/claude-sonnet-5.5", "context_length": 1_000_000,
                               "top_provider": {"max_completion_tokens": 128_000},
                               "supported_parameters": ["tools", "tool_choice", "reasoning"],
-                              "pricing": pricing or {"prompt": "0.000002", "completion": "0.00001",
-                                                     "input_cache_read": "0.0000001",
-                                                     "input_cache_write": "0.0000025"}}]}
+                              "pricing": pricing or dict(LISTED_PRICING)}]}
         if url.endswith("/key"):
             return raw if raw is not None else {"data": dict(CAPPED if key is None else key)}
         raise AssertionError(url)
-    get.calls = calls
+    get.calls, get.auth = calls, auth
     return get
 
 
@@ -263,11 +290,17 @@ def test_a_paid_run_needs_the_confirmed_budget_and_the_separate_authorization(in
     assert FAKE_OR not in capsys.readouterr().err
 
 
-def live_run(i, monkeypatch, get, name="live", cost=None):
+def live_run(i, monkeypatch, get, name="live", cost=None, env=None):
     monkeypatch.setattr(live, "MANIFEST", i["manifest"])
     emu, out = Emu(cost=cost), i["tmp"] / name
-    code = lr.main(argv(i, out, *AUTH), env={"OPENROUTER_API_KEY": FAKE_OR}, http_get=get,
-                   http_client=httpx2.Client(transport=httpx2.MockTransport(emu)))
+    sent_auth = []
+
+    def handler(request):                       # the Authorization each model request carries (fake keys only)
+        sent_auth.append(request.headers.get("authorization"))
+        return emu(request)
+    code = lr.main(argv(i, out, *AUTH), env={"OPENROUTER_API_KEY": FAKE_OR} if env is None else env, http_get=get,
+                   http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
+    emu.sent_auth = sent_auth
     return code, out, emu
 
 
@@ -281,7 +314,7 @@ def test_an_authorized_run_against_the_emulated_endpoint_uses_fetched_prices_and
     assert [x["step"] for x in s["steps"]][:3] == ["inputs", "preflight", "budget"]
     assert s["preflight"]["prices_basis"] == "fetched" and doc["budget"]["price_per_mtok"] == [2.5, 10.0]
     assert [u for u, _ in get.calls] == ["https://openrouter.ai/api/v1/models?supported_parameters=tools",
-                                         "https://openrouter.ai/api/v1/key"]
+                                         "https://openrouter.ai/api/v1/key", ENDPOINTS_URL]
     assert len(emu.requests) == 7 and lr.verify_saved(out) == []
     c = s["cost"]
     assert (c["target_usd"], c["provider_key_limit_usd"], c["over_target"]) == (0.5, 0.5, False)
@@ -431,3 +464,403 @@ def test_a_compatible_recorded_run_is_verified_against_the_same_query(inputs, ca
 def test_offline_tests_read_no_real_data_and_hash_their_own_fixtures(inputs):
     assert inputs["tmp"] in Path(inputs["zip"]).parents and inputs["tmp"] in Path(inputs["cache"]).parents
     assert hashlib.sha256(Path(inputs["zip"]).read_bytes()).hexdigest() == inputs["sha"]
+
+
+# ---- the standalone read-only preflight (--preflight-only) ----
+
+@pytest.fixture
+def no_model(monkeypatch):
+    """Any model request or investigation during a preflight fails the test."""
+    sent = []
+
+    def create(self, **kw):
+        sent.append(kw)
+        raise AssertionError("a model request was attempted")
+
+    def investigate(*a, **k):
+        raise AssertionError("an investigation was started")
+    monkeypatch.setattr(live.GuardedClient, "create", create)
+    monkeypatch.setattr(av1, "investigate_v1", investigate)
+    return sent
+
+
+def preflight(i, monkeypatch, capsys, get, *extra, env=None):
+    monkeypatch.setattr(live, "MANIFEST", i["manifest"])
+    before = sorted(p.name for p in i["tmp"].iterdir())
+    code = lr.main(["--preflight-only", "--manifest", str(i["manifest"]), "--cache-dir", str(i["cache"]), *extra],
+                   env={"OPENROUTER_API_KEY": FAKE_OR} if env is None else env, http_get=get)
+    io = capsys.readouterr()
+    assert FAKE_OR not in io.out + io.err and FAKE_MGMT not in io.out + io.err
+    assert sorted(p.name for p in i["tmp"].iterdir()) == before                                       # no file
+    return code, (json.loads(io.out) if io.out.strip() else None), io.err
+
+
+def test_a_capped_key_passes_the_read_only_preflight_without_any_model_request(inputs, monkeypatch, capsys,
+                                                                               no_model):
+    get = metadata()
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get)
+    assert code == 0 and r["ready"] and r["problems"] == [] and no_model == []
+    assert [u for u, _ in get.calls] == ["https://openrouter.ai/api/v1/models?supported_parameters=tools",
+                                         "https://openrouter.ai/api/v1/key", ENDPOINTS_URL]
+    assert get.auth == [(get.calls[0][0], None), ("https://openrouter.ai/api/v1/key", f"Bearer {FAKE_OR}"),
+                        (ENDPOINTS_URL, f"Bearer {FAKE_OR}")]       # no management key: the inference key
+    assert r["credentials"]["endpoint_metadata_get"] == "OPENROUTER_API_KEY"
+    m = r["confirmed_provider_metadata"]
+    assert m["key"] == {k: v for k, v in CAPPED.items()} and m["provider_key_limit_usd"] == 0.5
+    assert m["prices_basis"] == "fetched" and m["prices_usd_per_mtok"] == {"input": 2.5, "output": 10.0}
+    assert m["anthropic_endpoint"]["provider_name"] == "Anthropic"
+    req = r["local_configuration"]["request"]
+    assert req["routing"] == {"order": ["anthropic"], "allow_fallbacks": False} and req["requests_sent"] == 0
+    assert req["messages_url"] == "https://openrouter.ai/api/v1/messages" and req["sdk_max_retries"] == 0
+    assert req["retries_when_re_requested"] == 0 and req["adapter_fallbacks"] is False
+    assert not {"betas", "fallbacks", "thinking"} & set(req["sent_fields"]) and req["beta_endpoint_closed"]
+    e = r["estimate"]
+    assert e["estimated_worst_case_usd"] <= 0.5 and e["target_usd"] == 0.5 and e["max_request_chars"] > 0
+    assert any("usage.cost" in a for a in r["requires_a_model_response"])
+    assert r["mode"].startswith("read-only")
+
+
+@pytest.mark.parametrize("key, why", [
+    ({**CAPPED, "limit": 1.0, "limit_remaining": 0.9, "usage": 0.1}, "above $0.50"),
+    ({**CAPPED, "limit": None, "limit_remaining": None}, "unlimited"),
+    ({**CAPPED, "limit_reset": "monthly"}, "resets automatically"),
+    ({**CAPPED, "usage": 0.2, "limit_remaining": 0.3}, "does not cover"),
+    ({k: v for k, v in CAPPED.items() if k != "limit_reset"}, "lacks"),
+])
+def test_incorrect_key_limits_fail_the_preflight(inputs, monkeypatch, capsys, no_model, key, why):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(key))
+    assert code == 2 and not r["ready"] and any(why in p for p in r["problems"]) and no_model == []
+    assert r["confirmed_provider_metadata"]["provider_key_limit_usd"] is None
+
+
+@pytest.mark.parametrize("pricing, endpoints, why", [
+    ({"prompt": "0.000002"}, None, "pricing"),
+    ({**LISTED_PRICING, "request": "0.01"}, None, "pricing"),
+    (None, endpoint_list({"provider_name": "Anthropic", "tag": "anthropic",
+                          "pricing": {**LISTED_PRICING, "completion": "0.00002"}}), "priced above"),
+    (None, endpoint_list({"provider_name": "Anthropic", "tag": "anthropic", "pricing": {"prompt": "x"}}),
+     "not usable"),
+    (None, endpoint_list({"provider_name": "Anthropic", "tag": "anthropic", "pricing": dict(LISTED_PRICING),
+                          "max_completion_tokens": 1000}), "output allowance"),
+])
+def test_invalid_pricing_fails_the_preflight(inputs, monkeypatch, capsys, no_model, pricing, endpoints, why):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(pricing=pricing, endpoints=endpoints))
+    assert code == 2 and any(why in p for p in r["problems"]) and no_model == []
+
+
+@pytest.mark.parametrize("fail, why", [
+    ("/models?", "model_list"), ("/key", "key_status"), ("/endpoints", "endpoint list is unavailable")])
+def test_unreachable_provider_metadata_fails_the_preflight(inputs, monkeypatch, capsys, no_model, fail, why):
+    real = metadata()
+
+    def get(url, headers=None):
+        if fail in url:
+            raise OSError("unreachable")
+        return real(url, headers)
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get)
+    assert code == 2 and any(why in p for p in r["problems"]) and no_model == []
+
+
+@pytest.mark.parametrize("endpoints, why", [
+    ({"data": None}, "malformed"), ({"data": {"endpoints": "x"}}, "malformed"),
+    (endpoint_list({"provider_name": "Google Vertex", "tag": "google-vertex", "pricing": dict(LISTED_PRICING)}),
+     "0 Anthropic endpoints"),
+    (endpoint_list(*[{"provider_name": "Anthropic", "tag": "anthropic", "pricing": dict(LISTED_PRICING)}] * 2),
+     "2 Anthropic endpoints")])
+def test_a_model_without_exactly_one_anthropic_endpoint_fails_the_preflight(inputs, monkeypatch, capsys, no_model,
+                                                                           endpoints, why):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(endpoints=endpoints))
+    assert code == 2 and any(why in p for p in r["problems"]) and no_model == []
+
+
+def test_missing_configuration_fails_the_preflight(inputs, monkeypatch, capsys, no_model):
+    get = metadata()
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get, env={})
+    assert code == 2 and "api_key_present" in r["problems"] and "the key metadata was not received" in r["problems"]
+    assert all(h == [] for _, h in get.calls)                                # no key: no authenticated GET
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-extra: 1")
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata())
+    assert code == 2 and "clean_ambient_environment" in r["problems"]
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS")
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(), "--cache-dir", str(inputs["tmp"] / "absent"))
+    assert code == 2 and "validation_cache" in r["problems"]
+    code, r, err = preflight(inputs, monkeypatch, capsys, metadata(), "--target-usd", "0.75")
+    assert code == 2 and r is None and "at most 0.50" in err
+    assert no_model == []
+
+
+def test_the_preflight_refuses_another_manifest(inputs, monkeypatch, capsys, no_model):
+    get = metadata()
+    code = lr.main(["--preflight-only", "--manifest", str(inputs["manifest"]), "--cache-dir", str(inputs["cache"])],
+                   env={"OPENROUTER_API_KEY": FAKE_OR}, http_get=get)       # live.MANIFEST is the tracked one
+    r = json.loads(capsys.readouterr().out)
+    assert code == 2 and "tracked split manifest" in r["problems"][0] and get.calls == [] and no_model == []
+
+
+def test_a_paid_run_uses_the_same_preflight_checks(inputs, capsys, monkeypatch):
+    code, out, emu = live_run(inputs, monkeypatch, metadata(endpoints=endpoint_list(
+        {"provider_name": "Google Vertex", "tag": "google-vertex", "pricing": dict(LISTED_PRICING)})))
+    capsys.readouterr()
+    s = refused_before_any_model_request(code, out, emu)
+    assert "Anthropic endpoints" in s["steps"][-1]["message"]
+
+
+# ---- endpoint capacity (context, prompt and completion tokens) ----
+
+def planned(i):
+    plan = lv1.plan_v1(cache_dir=str(i["cache"]))
+    est = lv1.budget_v1(plan, live.Prices.from_openrouter(LISTED_PRICING, "test"))[1]
+    return plan, est, est["worst_request_input_tokens"], plan.per_request_max_tokens
+
+
+def test_codex_a_one_token_context_is_not_ready(inputs, monkeypatch, capsys, no_model):
+    get = metadata(endpoints=endpoint_list(anthropic_endpoint(context_length=1, max_completion_tokens=64_000)))
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get)
+    assert code == 2 and not r["ready"] and any("context_length 1 is below" in p for p in r["problems"])
+    assert no_model == []
+
+
+def test_capacity_counts_planned_input_and_reserved_output(inputs):
+    plan, est, need_in, need_out = planned(inputs)
+    ok = lambda **kw: lv1.capacity_problems(anthropic_endpoint(**kw), plan, est)[0]    # noqa: E731
+    assert ok() == [] and ok(context_length=need_in + need_out) == []
+    assert ok(context_length=need_in + need_out - 1) and ok(context_length=need_in)    # the output is reserved too
+    assert ok(max_prompt_tokens=need_in) == [] and ok(max_prompt_tokens=need_in - 1)
+    assert ok(max_completion_tokens=need_out) == [] and ok(max_completion_tokens=need_out - 1)
+    assert lv1.capacity_problems(anthropic_endpoint(), plan, None)[0]                     # no estimate: unverifiable
+
+
+@pytest.mark.parametrize("fields", [{"context_length": None}, {"context_length": "200000"},
+                                    {"context_length": 200_000.0}, {"context_length": True},
+                                    {"context_length": 0}, {"context_length": -5}, {"max_prompt_tokens": "x"},
+                                    {"max_prompt_tokens": 0}, {"max_completion_tokens": True},
+                                    {"max_completion_tokens": 1.5}])
+def test_missing_or_malformed_capacity_fails_the_preflight(inputs, monkeypatch, capsys, no_model, fields):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(endpoints=endpoint_list(anthropic_endpoint(**fields))))
+    assert code == 2 and any("capacity cannot be verified" in p or "malformed" in p for p in r["problems"])
+    no_context = {k: v for k, v in anthropic_endpoint().items() if k != "context_length"}
+    assert lv1.capacity_problems(no_context, *planned(inputs)[:2])[0]
+
+
+def test_paid_mode_refuses_insufficient_capacity_before_any_model_request(inputs, capsys, monkeypatch):
+    get = metadata(endpoints=endpoint_list(anthropic_endpoint(context_length=1)))
+    code, out, emu = live_run(inputs, monkeypatch, get)
+    capsys.readouterr()
+    s = refused_before_any_model_request(code, out, emu)
+    assert "context_length 1 is below" in s["steps"][-1]["message"]
+
+
+# ---- endpoint-list authentication and credential separation ----
+
+def test_a_documented_403_without_a_management_key_fails_closed(inputs, monkeypatch, capsys, no_model):
+    get = metadata(management_only=True)
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get)
+    assert code == 2 and r["confirmed_provider_metadata"]["anthropic_endpoint"] is None
+    assert any("HTTP 403" in p and "OPENROUTER_MANAGEMENT_KEY" in p for p in r["problems"]) and no_model == []
+    assert [u for u, _ in get.auth].count(ENDPOINTS_URL) == 1                    # no retry, no unauthenticated GET
+
+
+def test_a_management_key_is_used_only_for_the_endpoint_list(inputs, monkeypatch, capsys, no_model):
+    get = metadata(management_only=True)
+    env = {"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get, env=env)
+    assert code == 0 and r["ready"] and no_model == []
+    assert dict(get.auth) == {get.calls[0][0]: None, "https://openrouter.ai/api/v1/key": f"Bearer {FAKE_OR}",
+                              ENDPOINTS_URL: f"Bearer {FAKE_MGMT}"}
+    assert r["credentials"]["endpoint_metadata_get"] == "OPENROUTER_MANAGEMENT_KEY"
+
+
+def test_a_403_with_the_management_key_fails_closed(inputs, monkeypatch, capsys, no_model):
+    env = {"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(endpoints=forbidden()), env=env)
+    assert code == 2 and any("refused even with the management key" in p for p in r["problems"])
+
+
+@pytest.mark.parametrize("env, why", [
+    ({"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_OR}, "must be different keys"),
+    ({"OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}, "api_key_present")])
+def test_the_management_key_never_stands_in_for_the_inference_key(inputs, monkeypatch, capsys, no_model, env, why):
+    get = metadata()
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get, env=env)
+    assert code == 2 and any(why in p for p in r["problems"]) and no_model == []
+    assert all(a != f"Bearer {FAKE_MGMT}" for u, a in get.auth if u != ENDPOINTS_URL)   # never on /key
+
+
+def test_a_paid_run_sends_only_the_inference_key_to_the_model_and_writes_neither_key(inputs, capsys, monkeypatch):
+    env = {"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}
+    get = metadata(management_only=True)
+    built = []
+    real = live.build_model
+
+    def spy(plan, *, env=None, **kw):
+        built.append(dict(env or {}))
+        return real(plan, env=env, **kw)
+    monkeypatch.setattr(live, "build_model", spy)
+    code, out, emu = live_run(inputs, monkeypatch, get, env=env)
+    io = capsys.readouterr()
+    s, _ = outputs(out)
+    assert code == 0 and s["status"] == "verified" and len(emu.requests) == 7
+    assert set(emu.sent_auth) == {f"Bearer {FAKE_OR}"}                          # every model request
+    assert all(FAKE_MGMT not in json.dumps(e) for e in built)                  # the adapter never had it
+    assert s["preflight"]["endpoint_metadata_credential"] == "OPENROUTER_MANAGEMENT_KEY"
+    assert FAKE_MGMT not in io.out + io.err and FAKE_OR not in io.out + io.err
+    for f in out.iterdir():
+        text = f.read_text(encoding="utf-8")
+        assert FAKE_OR not in text and FAKE_MGMT not in text
+
+
+def test_a_paid_run_refuses_a_403_endpoint_list_before_any_model_request(inputs, capsys, monkeypatch):
+    code, out, emu = live_run(inputs, monkeypatch, metadata(management_only=True))
+    capsys.readouterr()
+    s = refused_before_any_model_request(code, out, emu)
+    assert "HTTP 403" in s["steps"][-1]["message"] and FAKE_OR not in json.dumps(s)
+
+
+# ---- metadata GETs never follow redirects (no credential forwarded) ----
+
+MODELS_URL = "https://openrouter.ai/api/v1/models?supported_parameters=tools"
+KEY_URL = "https://openrouter.ai/api/v1/key"
+
+
+class FakeServer:
+    """An offline urllib transport (no socket): answers by URL with (status, body, Location) and records every
+    request's URL and Authorization header (fake keys only)."""
+
+    def __init__(self, **override):
+        m = metadata()
+        self.routes = {MODELS_URL: (200, m(MODELS_URL), None), KEY_URL: (200, m(KEY_URL, {}), None),
+                       ENDPOINTS_URL: (200, m(ENDPOINTS_URL), None),
+                       "https://other.example/collect": (200, {"collected": True}, None),
+                       "http://openrouter.ai/api/v1/key": (200, {"collected": True}, None),
+                       "https://openrouter.ai/api/v1/elsewhere": (200, {"collected": True}, None)}
+        self.routes.update(override)
+        self.seen = []
+
+    def answer(self, req):
+        import email.message
+        import io
+        import urllib.response
+        self.seen.append((req.full_url, req.get_header("Authorization")))
+        code, body, location = self.routes.get(req.full_url, (404, {}, None))
+        headers = email.message.Message()
+        headers["Content-Type"] = "application/json"
+        if location:
+            headers["Location"] = location
+        r = urllib.response.addinfourl(io.BytesIO(json.dumps(body).encode()), headers, req.full_url, code)
+        r.msg = "emulated"
+        return r
+
+    def handlers(self):
+        import urllib.request
+        server = self
+
+        class HTTPS(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return server.answer(req)
+
+        class HTTP(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return server.answer(req)
+        return HTTPS(), HTTP()
+
+    def get(self):
+        import functools
+        return functools.partial(lv1.get_json_no_redirects, handlers=self.handlers())
+
+
+def redirect(location, code=302):
+    return (code, {}, location)
+
+
+def test_codex_a_cross_origin_302_does_not_forward_the_management_key():
+    server = FakeServer(**{ENDPOINTS_URL: redirect("https://other.example/collect")})
+    with pytest.raises(lv1.RedirectRefused) as e:
+        server.get()(ENDPOINTS_URL, {"Authorization": "Bearer FAKE-MANAGEMENT"})
+    assert e.value.code == 302 and "other.example" not in str(e.value)
+    assert server.seen == [(ENDPOINTS_URL, "Bearer FAKE-MANAGEMENT")]            # nothing sent to other.example
+
+
+def test_the_plain_urllib_opener_would_have_forwarded_it():
+    import urllib.request
+    server = FakeServer(**{ENDPOINTS_URL: redirect("https://other.example/collect")})
+    req = urllib.request.Request(ENDPOINTS_URL, headers={"Authorization": "Bearer FAKE-MANAGEMENT"})
+    urllib.request.build_opener(*server.handlers()).open(req).close()             # Stage 8's _get_json behaviour
+    assert server.seen[-1] == ("https://other.example/collect", "Bearer FAKE-MANAGEMENT")
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+@pytest.mark.parametrize("location", ["https://other.example/collect", "https://openrouter.ai/api/v1/elsewhere",
+                                      "http://openrouter.ai/api/v1/key"])
+def test_no_redirect_is_followed_same_origin_cross_origin_or_to_http(code, location):
+    for url, key in ((ENDPOINTS_URL, f"Bearer {FAKE_MGMT}"), (KEY_URL, f"Bearer {FAKE_OR}")):
+        server = FakeServer(**{url: redirect(location, code)})
+        with pytest.raises(lv1.RedirectRefused):
+            server.get()(url, {"Authorization": key})
+        assert server.seen == [(url, key)]
+
+
+@pytest.mark.parametrize("url", ["https://other.example/api/v1/key", "http://openrouter.ai/api/v1/key",
+                                 "https://openrouter.ai.other.example/api/v1/key"])
+def test_metadata_requests_go_only_to_openrouter_over_https(url):
+    server = FakeServer()
+    with pytest.raises(ValueError):
+        server.get()(url, {"Authorization": f"Bearer {FAKE_OR}"})
+    assert server.seen == []
+
+
+def test_normal_metadata_answers_still_succeed_and_errors_keep_their_status():
+    server = FakeServer()
+    assert server.get()(KEY_URL, {"Authorization": f"Bearer {FAKE_OR}"}) == {"data": CAPPED}
+    assert server.get()(MODELS_URL)["data"][0]["id"] == "anthropic/claude-sonnet-5.5"
+    server = FakeServer(**{ENDPOINTS_URL: (403, {}, None)})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        server.get()(ENDPOINTS_URL, {"Authorization": f"Bearer {FAKE_OR}"})
+    assert e.value.code == 403
+    server = FakeServer(**{KEY_URL: (204, {}, None)})
+    with pytest.raises(RuntimeError):
+        server.get()(KEY_URL, {"Authorization": f"Bearer {FAKE_OR}"})
+
+
+def default_get(monkeypatch, server):
+    """The preflight's own default GET (http_get not injected), over the offline transport."""
+    monkeypatch.setattr(lv1, "get_json_no_redirects", server.get())
+
+
+def test_the_default_preflight_get_succeeds_with_credentials_isolated(inputs, monkeypatch, capsys, no_model):
+    server = FakeServer()
+    default_get(monkeypatch, server)
+    env = {"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}
+    code, r, _ = preflight(inputs, monkeypatch, capsys, None, env=env)
+    assert code == 0 and r["ready"] and no_model == []
+    assert server.seen == [(MODELS_URL, None), (KEY_URL, f"Bearer {FAKE_OR}"), (ENDPOINTS_URL, f"Bearer {FAKE_MGMT}")]
+
+
+@pytest.mark.parametrize("url, location", [(ENDPOINTS_URL, "https://other.example/collect"),
+                                           (KEY_URL, "https://other.example/collect"),
+                                           (KEY_URL, "http://openrouter.ai/api/v1/key"),
+                                           (ENDPOINTS_URL, "https://openrouter.ai/api/v1/elsewhere")])
+def test_a_redirect_fails_the_preflight_without_forwarding_any_key(inputs, monkeypatch, capsys, no_model, url,
+                                                                  location):
+    server = FakeServer(**{url: redirect(location)})
+    default_get(monkeypatch, server)
+    env = {"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}
+    code, r, _ = preflight(inputs, monkeypatch, capsys, None, env=env)
+    assert code == 2 and not r["ready"] and no_model == []
+    if url == KEY_URL:
+        assert "key_status" in r["problems"] and "the key metadata was not received" in r["problems"]
+    else:
+        assert any("RedirectRefused, HTTP 302" in p for p in r["problems"])
+    assert location not in [u for u, _ in server.seen]                          # never followed
+    assert server.seen == [(MODELS_URL, None), (KEY_URL, f"Bearer {FAKE_OR}"), (ENDPOINTS_URL, f"Bearer {FAKE_MGMT}")]
+
+
+@pytest.mark.parametrize("url", [ENDPOINTS_URL, KEY_URL])
+def test_paid_mode_refuses_a_redirect_before_any_model_request(inputs, capsys, monkeypatch, url):
+    server = FakeServer(**{url: redirect("https://other.example/collect")})
+    default_get(monkeypatch, server)
+    env = {"OPENROUTER_API_KEY": FAKE_OR, "OPENROUTER_MANAGEMENT_KEY": FAKE_MGMT}
+    code, out, emu = live_run(inputs, monkeypatch, None, env=env)
+    io = capsys.readouterr()
+    s = refused_before_any_model_request(code, out, emu)
+    assert "https://other.example/collect" not in [u for u, _ in server.seen]
+    assert FAKE_OR not in json.dumps(s) + io.out + io.err and FAKE_MGMT not in json.dumps(s) + io.out + io.err

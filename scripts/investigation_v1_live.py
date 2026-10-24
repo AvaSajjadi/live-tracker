@@ -5,7 +5,14 @@ CalMS21 validation inputs of Phase 3B.1. Offline by default: no network, no key,
         [--model anthropic/claude-sonnet-5.5] [--target-usd 0.50] [--max-model-turns 8] [--max-tool-calls 8]
     python scripts/investigation_v1_live.py ARCHIVE ... --live --confirm-budget-usd 0.50 \\
         --authorize-paid-run "I authorize one paid Stage 9 v1 investigation"       # PAID: never run in review
+    python scripts/investigation_v1_live.py --preflight-only [--model M] [--target-usd T]   # read-only, no model
     python scripts/investigation_v1_live.py --verify-saved DIR                     # offline re-verification
+
+--preflight-only (investigation_live_v1.readiness_v1) makes only free metadata GETs (model list, key status, the
+model's endpoint list) and builds the request it would send offline: it never calls the model, starts an
+investigation, writes a file or prints the key. It prints the same checks a paid run requires, separated into
+confirmed provider metadata, locally confirmed configuration and what only a real model response can show; exit 0
+ready, 2 not ready. The step-by-step live procedure is docs/stage9_v1_live_run.md.
 
 Steps (every one reused; nothing here is new scientific, billing or verification logic):
 1. inputs      investigation_v1_validation.load_data (Phase 3B.1): the verified score drop, pose cache, split
@@ -25,7 +32,7 @@ Steps (every one reused; nothing here is new scientific, billing or verification
                check_query_against_run. The report and the ledger are always written once a model was built, so
                spending stays accounted; a failed check makes the status refused or failed, never verified.
 run.json records the plan, budget, estimate, preflight, cost ledger, every step and the files' SHA-256. No file holds
-the API key. Its cost section states target_usd (local), provider_key_limit_usd, actual_spend_usd and over_target;
+an API key (the inference key or the management key). Its cost section states target_usd (local), provider_key_limit_usd, actual_spend_usd and over_target;
 none of them is a guaranteed maximum charge. A live run needs a DEDICATED, non-shared OpenRouter key with a credit
 limit of at most $0.50 and no reset: the code cannot know whether the key is used elsewhere, nor guarantee the
 provider's billing. Publication is "not_authorized". Exit 0 verified, 2 refused, 1 otherwise (incomplete, over target,
@@ -130,9 +137,15 @@ class EmulatedOpenRouterV1:
 
 # ---- the run ----
 
-def _write(path, data, key):
-    if key and key.encode() in data:                       # never write a credential
-        raise RuntimeError(f"refusing to write {path.name}: it contains the API key")
+def _secrets(env):
+    """The credentials that must never be written or printed: the inference key and the management key."""
+    return tuple(k for k in ((env.get(n) or "").strip() for n in (live.PROVIDERS["openrouter"].key_env,
+                                                                   lv1.MANAGEMENT_KEY_ENV)) if k)
+
+
+def _write(path, data, secrets):
+    if any(k.encode() in data for k in secrets):            # never write a credential
+        raise RuntimeError(f"refusing to write {path.name}: it contains an API key")
     smoke.create_exclusive(path, data)
 
 
@@ -159,7 +172,7 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
         raise iv.RunRefused(f"no verified validation pose cache at {cache} (no synthetic substitute)")
     out = iv.prepare(args.out)
     args.archive = archive
-    key = (env.get(live.PROVIDERS[plan.provider].key_env) or "").strip() if args.live else ""
+    key = _secrets(env)
     summary = {"mode": "LIVE: paid OpenRouter requests" if args.live else
                "dry run (offline: emulated endpoint, no network, no model, no cost)",
                "steps": [], "plan": asdict(plan), "publication": av1.PUBLICATION,
@@ -183,7 +196,9 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
             pre = vr._step(summary, "preflight", lambda: lv1.preflight_v1(plan, manifest=manifest, env=env,
                                                                           http_get=http_get))
             summary["preflight"], key_limit = pre, pre["provider_key_limit_usd"]
-            prices, model_env = live.Prices(**pre["prices"]), env
+            # the adapter sees the capped inference key alone (never the management key)
+            key_env = live.PROVIDERS[plan.provider].key_env
+            prices, model_env = live.Prices(**pre["prices"]), {key_env: env.get(key_env, "")}
             compat = {"output_config": pre["compatibility"]["keep_output_config"],
                       "cache_control": pre["compatibility"]["keep_cache_control"]}
         else:
@@ -291,14 +306,34 @@ def parser():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true", help="PAID: one bounded investigation (needs both below)")
     mode.add_argument("--verify-saved", default=None, metavar="DIR", help="re-verify a finished output directory")
+    mode.add_argument("--preflight-only", action="store_true",
+                      help="read-only readiness checks (free metadata GETs; no model request, no file)")
     ap.add_argument("--confirm-budget-usd", type=float, default=None, help="with --live; must equal --target-usd")
     ap.add_argument("--authorize-paid-run", default=None, help=f'with --live: exactly "{lv1.PAID_RUN_AUTHORIZATION}"')
     return ap
 
 
+def preflight_only(args, *, env=None, http_get=None):
+    """(exit code, report text): the read-only preflight of the plan these arguments describe."""
+    env = os.environ if env is None else env
+    report = lv1.readiness_v1(make_plan(args), manifest=args.manifest, env=env, http_get=http_get)
+    text = json.dumps(report, indent=2, sort_keys=True, default=str)
+    if any(k in text for k in _secrets(env)):              # never print a credential
+        raise RuntimeError("refusing to print the preflight: it contains an API key")
+    return (0 if report["ready"] else 2), text
+
+
 def main(argv=None, **inject):
     ap = parser()
     args = ap.parse_args(argv)
+    if args.preflight_only:
+        try:
+            code, text = preflight_only(args, env=inject.get("env"), http_get=inject.get("http_get"))
+        except ValueError as exc:
+            print(f"refused ({type(exc).__name__}): {exc}", file=sys.stderr)
+            return 2
+        print(text)
+        return code
     if args.verify_saved:
         problems = verify_saved(args.verify_saved)
         print(json.dumps({"verified": not problems, "problems": problems}, indent=2))

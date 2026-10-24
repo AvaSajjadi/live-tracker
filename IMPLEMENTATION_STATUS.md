@@ -88,6 +88,21 @@ python -m live_tracker.investigation_data --source data/raw/calms21/calms21_task
 python -m streamlit run app.py
 ```
 
+## Stage 4: integration with Syed's platform and UI (2026-10-24, branch `ava/pr31-windows-compat`, PR #35)
+
+Merged into this branch: Syed's cross-platform run locking and safe Windows run loading (#31), and his UI stack
+(#32 verified overview and timeline, #33 evidence visualizations, #34 live agent progress). Docs: README Live Agent
+section and Windows steps in `docs/live_agent_demo.md`.
+
+Full suite (Windows, Python 3.12, `PYTHONPATH=src python -m pytest -q`) on the merged code:
+**4450 passed, 129 skipped, 11 xfailed, 0 failed** (39 min). GitHub Actions on PR #35: see the PR.
+
+Command: `PYTHONPATH=src python -m pytest -q`. Without `PYTHONPATH=src` (and without `pip install -e .`) the tests
+fail with "No module named live_tracker".
+
+Still open: test-split evaluation (not run; needs `calms21_task1_test.json` and the team's go), demo rehearsal, backup
+video, slides and poster for the submission.
+
 ## Still missing / open
 
 - Test-split evaluation: not run. It happens once, at the end, under a policy the team agrees first.

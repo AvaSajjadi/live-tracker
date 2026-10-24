@@ -17,15 +17,14 @@ Two things are kept apart on purpose:
 - reference compatibility: equivalence with run5 needs the exact initial request and result. A mismatch says only
   that the investigation is not run5's analysis.
 
-One investigation at a time: RunLock is an OS-level exclusive lock (fcntl.flock) on a stable file in the runs
-directory, held for the whole run by every browser session and process of the server alike, and each preflight
-issues a one-use token that a paid run consumes.
+One investigation at a time: RunLock is an OS-level exclusive lock (fcntl.flock; msvcrt.locking on Windows) on a
+stable file in the runs directory, held for the whole run by every browser session and process of the server alike,
+and each preflight issues a one-use token that a paid run consumes.
 """
 
 from __future__ import annotations
 
 import copy
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -155,26 +154,147 @@ class RunBusy(RuntimeError):
     """Another investigation holds the lock, or the lock cannot be taken safely (fail closed)."""
 
 
+# ---- the lock primitives, per platform ----
+# POSIX: fcntl.flock on the whole file (exclusive, non-blocking; contention is BlockingIOError), a shared lock as the
+# holder probe, and pread/pwrite of the metadata.
+# Windows (no fcntl): msvcrt.locking(LK_NBLCK) on ONE byte at WINDOWS_LOCK_OFFSET, far beyond the metadata. Windows
+# byte-range locks are mandatory, so a lock on byte 0 would make the holder's pid unreadable to everyone else. Like
+# flock, the lock belongs to one descriptor (two descriptors exclude each other, in one process or two) and is
+# released when it is closed or its process ends. msvcrt has no shared lock, so the holder probe takes the same
+# exclusive byte and releases it at once: a start racing a probe can be refused, never admitted twice. Contention
+# (investigation_data.WINDOWS_LOCK_CONTENTION) is raised as BlockingIOError, like flock's; any other error
+# propagates (fail closed). Windows has no pread/pwrite: the metadata is read and written after a seek, which is
+# race-free because each descriptor belongs to one RunLock (or one probe) only.
+# Opening: POSIX opens with O_NOFOLLOW (unchanged). Windows has no O_NOFOLLOW, and os.open would follow a symlink
+# at the final component (creating a dangling link's target), so it opens with CreateFileW (_winapi.CreateFile,
+# OPEN_ALWAYS | FILE_FLAG_OPEN_REPARSE_POINT): a reparse point (symlink, junction, ...) at the path is opened as
+# itself, never traversed, so nothing is created or touched behind it. The handle then becomes a CRT descriptor
+# (msvcrt.open_osfhandle; the handle is closed if that fails) and is checked before any lock or write: a regular
+# file, not a reparse point, and still the very file at the path (device and file id), so a replaced path is
+# refused. The msvcrt and _winapi modules are parameters so the Windows path is testable anywhere. There is no
+# fallback: without fcntl or msvcrt, importing this module fails.
+
+WINDOWS_LOCK_OFFSET = 1 << 20                       # 1 MiB: beyond any metadata (at most METADATA_BYTES are read)
+METADATA_BYTES = 4096
+
+
+class _Primitives:
+    def __init__(self, name, lock, probe, unlock, read, write, open_, verify):
+        self.name, self.lock, self.probe, self.unlock, self.read, self.write = name, lock, probe, unlock, read, write
+        self.open, self.verify = open_, verify                 # verify(path, fstat) raises OSError when unacceptable
+
+
+# CreateFileW arguments (Win32 ABI values)
+GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
+FILE_SHARE_READ, FILE_SHARE_WRITE = 0x1, 0x2
+OPEN_ALWAYS = 4
+FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT = 0x80, 0x00200000
+
+
+def _file_attributes(st):
+    """Windows file attributes of a stat result (None when not reported: then the file is refused)."""
+    return getattr(st, "st_file_attributes", None)
+
+
+def _windows_open(path, winapi, msvcrt_module):
+    """A read-write descriptor of the file AT path: created if absent, and if path is a reparse point, that reparse
+    point itself (refused by _windows_verify), never what it points to."""
+    handle = winapi.CreateFile(str(path), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               0, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                               0)                     # no security attributes (not inheritable), no template
+    try:
+        return msvcrt_module.open_osfhandle(handle, 0)      # binary; the descriptor now owns the handle
+    except BaseException:
+        winapi.CloseHandle(handle)
+        raise
+
+
+def _windows_verify(path, st):
+    attributes = _file_attributes(st)
+    if attributes is None or attributes & (stat.FILE_ATTRIBUTE_REPARSE_POINT | stat.FILE_ATTRIBUTE_DIRECTORY):
+        raise OSError("the lock file is a reparse point or a directory (or its attributes are unknown)")
+    at = os.lstat(path)
+    if stat.S_ISLNK(at.st_mode) or (_file_attributes(at) or 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or \
+            (at.st_dev, at.st_ino) != (st.st_dev, st.st_ino):
+        raise OSError("the lock path is a link, or not the file that was opened")
+
+
+def _read_start(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    return os.read(fd, METADATA_BYTES)
+
+
+def _write_start(fd, data):
+    os.lseek(fd, 0, os.SEEK_SET)
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError("the lock metadata could not be written")
+        view = view[n:]
+
+
+def _windows_primitives(msvcrt_module, winapi):
+    from .investigation_data import WINDOWS_LOCK_CONTENTION
+
+    def lock(fd):
+        os.lseek(fd, WINDOWS_LOCK_OFFSET, os.SEEK_SET)          # locking() works from the current position
+        try:
+            msvcrt_module.locking(fd, msvcrt_module.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in WINDOWS_LOCK_CONTENTION:
+                raise BlockingIOError(exc.errno, "the investigation lock is held") from None
+            raise
+
+    def unlock(fd):
+        os.lseek(fd, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+        msvcrt_module.locking(fd, msvcrt_module.LK_UNLCK, 1)
+    return _Primitives("msvcrt.locking", lock, lock, unlock, _read_start, _write_start,
+                       lambda path: _windows_open(path, winapi, msvcrt_module), _windows_verify)
+
+
+if os.name == "nt":  # pragma: no cover - Windows
+    import _winapi
+    import msvcrt
+
+    _LOCK = _windows_primitives(msvcrt, _winapi)
+else:
+    import fcntl
+
+    _LOCK = _Primitives("fcntl.flock",
+                        lambda fd: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB),
+                        lambda fd: fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB),
+                        lambda fd: fcntl.flock(fd, fcntl.LOCK_UN),
+                        lambda fd: os.pread(fd, METADATA_BYTES, 0),
+                        lambda fd, data: os.pwrite(fd, data, 0),
+                        lambda path: os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600),
+                        lambda path, st: None)
+
+
 class RunLock:
-    """One investigation at a time: an OS-level exclusive lock (fcntl.flock, LOCK_EX | LOCK_NB) on a stable lock file
-    in the runs directory, held on one open file descriptor for the whole critical section. Ownership is the kernel's
-    lock, never the file's content: the file is never unlinked (its inode is reused), its content (the holder's pid
-    and start time) is informational only, and an empty, unreadable or malformed file neither proves nor disproves
-    that a lock is held. The kernel releases the lock when the descriptor is closed, including when the holding
-    process dies, so a lock left on disk by a finished or killed process is simply free again. Any filesystem or
-    locking error refuses the run (RunBusy). A RunLock object is held at most once at a time."""
+    """One investigation at a time: an OS-level exclusive lock (fcntl.flock, LOCK_EX | LOCK_NB; on Windows
+    msvcrt.locking of one byte, see the lock primitives above) on a stable lock file in the runs directory, held on
+    one open file descriptor for the whole critical section. Ownership is the kernel's lock, never the file's
+    content: the file is never unlinked (its inode is reused), its content (the holder's pid and start time) is
+    informational only, and an empty, unreadable or malformed file neither proves nor disproves that a lock is held.
+    The OS releases the lock when the descriptor is closed, including when the holding process dies, so a lock left
+    on disk by a finished or killed process is simply free again. Any filesystem or locking error refuses the run
+    (RunBusy). A RunLock object is held at most once at a time."""
 
     def __init__(self, root):
         self.path = Path(root) / LOCK_NAME
         self.fd = None
 
     def _open(self):
-        """The lock file's descriptor: a regular file opened without following a symlink."""
+        """The lock file's descriptor: a regular file opened without following a symlink (on Windows, also not a
+        reparse point and still the file at the path; see the lock primitives). Checked before any lock or write."""
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = _LOCK.open(self.path)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
                 raise OSError("the lock path is not a regular file")
+            _LOCK.verify(self.path, st)
         except BaseException:
             os.close(fd)
             raise
@@ -183,26 +303,26 @@ class RunLock:
     def _write_metadata(self, fd):
         """Informational only (who holds it, since when); written after the lock is held."""
         os.ftruncate(fd, 0)
-        os.pwrite(fd, json.dumps({"pid": os.getpid(), "started": time.time()}).encode(), 0)
+        _LOCK.write(fd, json.dumps({"pid": os.getpid(), "started": time.time()}).encode())
 
     def holder(self):
         """None when no one holds the lock; otherwise what is known of the holder ({} when its metadata is not
-        readable). Probed with a non-blocking shared lock, so it never takes the lock from anyone; any error is
-        reported as held (fail closed)."""
+        readable). Probed with a non-blocking shared lock (on Windows, the exclusive byte, released at once), so it
+        never takes the lock from a holder; any error is reported as held (fail closed)."""
         try:
             fd = self._open()
         except OSError:
             return {"error": "the lock file cannot be opened"}
         try:
             try:
-                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                _LOCK.probe(fd)
             except OSError:                       # held exclusively elsewhere (or not lockable): busy
                 try:
-                    info = json.loads(os.pread(fd, 4096, 0) or b"{}")
+                    info = json.loads(_LOCK.read(fd) or b"{}")
                 except (OSError, ValueError):
                     info = {}
                 return info if isinstance(info, dict) else {}
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _LOCK.unlock(fd)
             return None
         finally:
             os.close(fd)
@@ -215,7 +335,7 @@ class RunLock:
         except OSError as exc:
             raise RunBusy(f"the investigation lock cannot be opened ({type(exc).__name__}); not started") from None
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _LOCK.lock(fd)
         except BlockingIOError:
             os.close(fd)
             raise RunBusy("another investigation is running; wait for it to finish") from None
@@ -238,7 +358,7 @@ class RunLock:
         if fd is None:
             return
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _LOCK.unlock(fd)
         finally:
             os.close(fd)
 

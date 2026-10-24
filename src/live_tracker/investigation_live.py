@@ -95,6 +95,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import investigation_agent as ia
+from . import investigation_agent_v1 as av1
 from . import investigation_context as ctx
 from . import investigation_contracts as ic
 
@@ -146,6 +147,10 @@ PRICE_SNAPSHOT = {
     }}
 
 
+# the Stage 6 formats, and the Stage 9 v1 agent's (budgeted and preflighted here, run by investigation_live_v1)
+LIVE_FORMATS = ia.FINDINGS_FORMATS + (av1.FINDINGS_FORMAT,)
+
+
 @dataclass(frozen=True)
 class LivePlan:
     """Everything a live run is allowed to do. Defaults are deliberately small."""
@@ -162,7 +167,8 @@ class LivePlan:
     max_result_chars: int = 10_000           # tool result shown to the model (Stage 6 rendering)
     coverage: str = "complete"               # "partial" only by explicit choice (disclosed in every result)
     cache_dir: str | None = None             # verified validation cache (default data/raw/calms21_validation)
-    findings_format: str = ctx.V2_FORMAT     # structured finish (M3); "legacy/1" only by explicit choice
+    findings_format: str = ctx.V2_FORMAT     # structured finish (M3); "legacy/1" only by explicit choice;
+                                             # "contract-v1/1": the Stage 9 v1 agent (investigation_live_v1 only)
 
     def __post_init__(self):
         if self.provider not in PROVIDERS:
@@ -171,8 +177,8 @@ class LivePlan:
             raise ValueError("target_usd must be in (0, 5]")
         if self.coverage not in ("complete", "partial"):
             raise ValueError("coverage must be 'complete' or 'partial'")
-        if self.findings_format not in ia.FINDINGS_FORMATS:
-            raise ValueError(f"findings_format must be one of {list(ia.FINDINGS_FORMATS)}")
+        if self.findings_format not in LIVE_FORMATS:
+            raise ValueError(f"findings_format must be one of {list(LIVE_FORMATS)}")
 
     @property
     def model_id(self):
@@ -261,8 +267,9 @@ def snapshot_prices(model):
 
 def _base_tokens(findings_format=ctx.V2_FORMAT):
     """System prompt and tool schemas of the format the run uses (sent with every request)."""
-    prompt, specs = ((ia.SYSTEM_PROMPT_V2, ia.TOOL_SPECS_V2) if findings_format == ctx.V2_FORMAT
-                     else (ia.SYSTEM_PROMPT, ia.TOOL_SPECS))
+    prompt, specs = {ctx.V2_FORMAT: (ia.SYSTEM_PROMPT_V2, ia.TOOL_SPECS_V2),
+                     av1.FINDINGS_FORMAT: (av1.SYSTEM_PROMPT_V1, av1.TOOL_SPECS_V1)}.get(
+        findings_format, (ia.SYSTEM_PROMPT, ia.TOOL_SPECS))
     return math.ceil((len(prompt) + len(json.dumps(specs))) / CHARS_PER_TOKEN) + 200
 
 
@@ -668,6 +675,11 @@ def preflight(plan, *, env=None, online=False, http_get=None):
 
 # ---- runs ----
 
+def _stage6_only(plan):
+    if plan.findings_format == av1.FINDINGS_FORMAT:
+        raise ValueError("a contract-v1/1 plan runs the Stage 9 v1 agent: use investigation_live_v1")
+
+
 def _tools_and_policy(plan):
     from .investigation_events import CalMS21InvestigationTools
     policy = ic.EvidencePolicy.from_manifest(MANIFEST)
@@ -852,6 +864,7 @@ def dry_run(plan=None):
     emulated endpoint. No network, no key, no cost."""
     import httpx2
     plan = plan or LivePlan()
+    _stage6_only(plan)
     require_clean_environment()
     provider = PROVIDERS[plan.provider]
     emulator = _EmulatedOpenRouter(legacy=plan.findings_format == ctx.LEGACY_FORMAT)
@@ -871,6 +884,7 @@ def run_live(plan, *, confirm_budget_usd, env=None, out_dir=None, http_get=None,
     """A paid investigation. Requires the budget to be confirmed and a fresh
     online preflight that passes; writes report.md / report.json / run.json."""
     env = os.environ if env is None else env
+    _stage6_only(plan)
     _confirmation(confirm_budget_usd, plan.target_usd)             # before any request or file
     if plan.provider != "openrouter":
         raise PermissionError("Anthropic live mode is disabled in Stage 8: it has no pricing endpoint and reports "

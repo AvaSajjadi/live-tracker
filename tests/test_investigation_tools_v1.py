@@ -6,6 +6,7 @@ the CalMS21 layout. Nothing reads CalMS21, a cache or a score archive.
 
 import copy
 import os
+import statistics
 
 import numpy as np
 import pandas as pd
@@ -299,10 +300,115 @@ def test_overlap_edge_and_quality_exclusions_are_reported():
     q = v1.query_events(d, {"session": list(d.sessions), "behavior": "attack", "min_duration_s": 1.0})
     r = v1.compare_windows(d, cmp_req(q))
     why = {(e["session"], e["start_s"]): e["why"] for e in r["excluded"]}
+    # overlap_v1 also excludes a BASELINE window that contains another fired bout: the extra 21.5-s bout's baseline
+    # [13.5, 18.5) contains the 12-s bout, and the 12-s bout's baseline [4, 9) contains the extra 4-s bout
     assert why == {(SESSIONS[0], 25.0): "pre_window_unreliable", (SESSIONS[1], 40.0): "baseline_window_unreliable",
-                   (SESSIONS[2], 25.0): "pre_window_overlaps_bout", (SESSIONS[3], 4.0): "window_before_session_start"}
-    assert r["n_input"] == 17 and r["n_used"] == 13 and r["n_excluded"] == 4
+                   (SESSIONS[2], 25.0): "pre_window_overlaps_bout", (SESSIONS[3], 4.0): "window_before_session_start",
+                   (SESSIONS[2], 21.5): "baseline_window_overlaps_bout",
+                   (SESSIONS[3], 12.0): "baseline_window_overlaps_bout"}
+    assert r["n_input"] == 17 and r["n_used"] == 11 and r["n_excluded"] == 6
     assert set(why.values()) <= set(v1.EXCLUSION_REASONS)
+
+
+# ---- overlap_v1 (Ava's approved overlap policy): fired bouts of the cited query; pre AND baseline windows ----
+
+def compare_on(d, **kw):
+    q = v1.query_events(d, {"session": list(d.sessions), "behavior": "attack", "min_duration_s": 1.0})
+    assert q["status"] == "ok"
+    return q, v1.compare_windows(d, cmp_req(q, **kw))
+
+
+def excluded_by(r):
+    return {(e["session"], e["start_s"]): e["why"] for e in r["excluded"]}
+
+
+def test_baseline_overlap_reason_counts_and_policy_are_reported():
+    # pre 2 s, gap 1 s, baseline 5 s: the 30-s bout's baseline is [22, 27) and holds a fired bout at 23-25 s,
+    # while its pre window [28, 30) is clear
+    seg = {SESSIONS[0]: [Segment("attack", 23.0, 25.0, 0.85, 0.95)]}
+    d = make(SESSIONS[:1], starts=(12.0, 30.0), extra_segments=seg)
+    q, r = compare_on(d, min_n_windows=1, min_n_sessions=1, gate_override_reason="synthetic unit test")
+    assert sorted(b["start_s"] for b in q["bouts"]) == [12.0, 23.0, 30.0]
+    assert excluded_by(r) == {(SESSIONS[0], 30.0): "baseline_window_overlaps_bout"}
+    assert (r["n_input"], r["n_used"], r["n_excluded"], r["n_windows"], r["n_baseline_windows"]) == (3, 2, 1, 2, 2)
+    assert r["overlap_policy"] == "overlap_v1" and r["overlap_policy_definition"] == \
+        v1.OVERLAP_POLICIES["overlap_v1"].to_json()
+    assert r["overlap_policy_definition"]["windows_checked"] == ["pre", "baseline"]
+    assert r["exclusion_order"] == list(v1.EXCLUSION_REASONS)
+    assert v1.EXCLUSION_REASONS == ("pre_window_overlaps_bout", "window_before_session_start",
+                                    "pre_window_unreliable", "baseline_window_unreliable",
+                                    "baseline_window_overlaps_bout", "no_feature_values")
+
+
+def test_threshold_crossings_that_never_fired_are_not_bouts():
+    # 0.5-s crossings (shorter than min_duration_s 1.0) inside the 30-s bout's baseline [22, 27) and pre [28, 30)
+    seg = {SESSIONS[0]: [Segment("attack", 23.0, 23.5, 0.85, 0.95), Segment("attack", 28.5, 29.0, 0.85, 0.95)]}
+    d = make(SESSIONS[:1], starts=(12.0, 30.0), extra_segments=seg)
+    q, r = compare_on(d, min_n_windows=1, min_n_sessions=1, gate_override_reason="synthetic unit test")
+    assert [b["start_s"] for b in q["bouts"]] == [12.0, 30.0]                # the blips did not fire
+    assert r["status"] == "ok" and r["excluded"] == [] and r["n_used"] == 2
+
+
+def test_a_bout_in_another_session_never_excludes():
+    seg = {SESSIONS[1]: [Segment("attack", 23.0, 25.0, 0.85, 0.95)]}       # same times, other session
+    d = make(SESSIONS[:2], starts=(12.0, 30.0), extra_segments=seg)
+    _, r = compare_on(d, min_n_windows=1, min_n_sessions=1, gate_override_reason="synthetic unit test")
+    assert excluded_by(r) == {(SESSIONS[1], 30.0): "baseline_window_overlaps_bout"}
+
+
+@pytest.mark.parametrize("case, segs, edit, expected", [
+    # the pre window AND the baseline hold another bout: the pre-window reason wins
+    ("pre_and_baseline", [Segment("attack", 23.0, 25.0, .85, .95), Segment("attack", 28.5, 29.7, .85, .95)], None,
+     "pre_window_overlaps_bout"),
+    # the baseline holds a bout AND is unreliable: quality is checked first (Ava's dry-run order)
+    ("baseline_overlap_and_unreliable", [Segment("attack", 23.0, 25.0, .85, .95)],
+     lambda sid, kp, sc: lose(kp, 25 * 30, 25 * 30 + 60), "baseline_window_unreliable"),
+    # the PRE window is unreliable and the baseline holds a bout: the pre-window quality reason
+    ("pre_unreliable_and_baseline_overlap", [Segment("attack", 23.0, 25.0, .85, .95)],
+     lambda sid, kp, sc: lose(kp, 28 * 30, 28 * 30 + 40), "pre_window_unreliable"),
+    # only the baseline overlap applies
+    ("baseline_overlap_only", [Segment("attack", 23.0, 25.0, .85, .95)], None, "baseline_window_overlaps_bout"),
+])
+def test_exclusion_order(case, segs, edit, expected):
+    d = make(SESSIONS[:1], starts=(12.0, 30.0), extra_segments={SESSIONS[0]: segs}, edit=edit)
+    _, r = compare_on(d, min_n_windows=1, min_n_sessions=1, gate_override_reason="synthetic unit test")
+    assert excluded_by(r)[(SESSIONS[0], 30.0)] == expected
+
+
+def test_a_baseline_before_session_start_is_reported_as_the_session_edge():
+    # the 5-s bout's baseline [-3, 2) starts before 0 s and also contains the fired 0.5-2.5 s bout (its pre window
+    # [3, 5) is clear): the session-edge reason comes first
+    d = make(SESSIONS[:1], starts=(0.5, 5.0, 20.0))
+    q = v1.query_events(d, {"session": list(d.sessions), "behavior": "attack", "min_duration_s": 1.0})
+    r = v1.compare_windows(d, cmp_req(q, min_n_windows=1, min_n_sessions=1, gate_override_reason="unit test"))
+    assert excluded_by(r)[(SESSIONS[0], 5.0)] == "window_before_session_start"
+
+
+def test_baseline_overlap_can_fail_the_evidence_gate_and_nothing_relaxes_it():
+    # 4 sessions x bouts at 12, 20, 28 s: every pre window is clear, but the 20-s and 28-s baselines ([12, 17) and
+    # [20, 25)) each hold the previous bout. 12 bouts in, 4 used (the 12-s bouts): the default gate fails
+    d = make(SESSIONS[:4], starts=(12.0, 20.0, 28.0))
+    q, r = compare_on(d)
+    assert r["status"] == "insufficient_evidence" and r["reason"] == "too_few_usable_windows"
+    assert r["failed_gate"] == "min_n_windows" and (r["n_available"], r["n_required"]) == (4, 10)
+    assert (r["n_input"], r["n_used"], r["n_excluded"], r["n_sessions"]) == (12, 4, 8, 4)
+    assert set(excluded_by(r).values()) == {"baseline_window_overlaps_bout"}
+    assert "mean_diff" not in r and "pre_mean" not in r and "per_session" not in r
+    assert r["evidence_gate"] == {"min_n_windows": 10, "min_n_sessions": 4, "overridden": False,
+                                  "override_reason": None}
+    assert r["overlap_policy"] == "overlap_v1"                         # traceable on an insufficient result too
+
+
+def test_the_overlap_policy_cannot_be_chosen_by_the_caller(data, query):
+    r = v1.compare_windows(data, cmp_req(query, overlap_policy="pre_only"))
+    assert r["status"] == "error" and r["code"] == "invalid_request"
+
+
+def test_mean_diff_is_the_median_of_per_session_paired_differences(data, query):
+    r = v1.compare_windows(data, cmp_req(query))
+    assert r["mean_diff"] == statistics.median(p["paired_diff"] for p in r["per_session"])
+    assert r["mean_diff_definition"].startswith("the MEDIAN across paired sessions of the per-session paired")
+    assert "not a mean" in r["mean_diff_definition"]
 
 
 def query2(data):

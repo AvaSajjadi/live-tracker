@@ -1,5 +1,11 @@
 # Contract v1: what should "overlaps another bout" mean? (dry run, 2026-10-22)
 
+> **Historical record. Decided:** Ava approved the recommendation below: `fired` for the pre window, and baseline
+> windows containing a fired bout are excluded (variant V1). It is implemented as the named overlap policy
+> `overlap_v1`, with the reason `baseline_window_overlaps_bout`; see `docs/contract_v1_integration.md` §2 and §6. The
+> rest of this page is the dry run as it was written before the decision. Its counts used placeholder event settings
+> (threshold 0.5, minimum 1.0 s), not Igor's frozen `ATTACK_RULE_V1`.
+
 Counts only. No effect value was computed, and none should be looked at before the rules below are
 chosen. Validation sessions only; the test split was not read.
 

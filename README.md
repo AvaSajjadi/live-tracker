@@ -44,7 +44,7 @@ Live Tracker is built around those three constraints.
 | **Researcher approval** | Every rule starts as `proposed`; only an explicit Confirm approves it. The workflow is UI-independent and tested without a browser | `src/live_tracker/rules.py`, `src/live_tracker/rule_workflow.py` |
 | **Streaming monitor** | Deterministic: approved rules + per-frame scores → alert / ask / log events. Decisions use only past and current frames; tracking loss ends a bout | `src/live_tracker/monitor.py` |
 | **Event journal** | Append-only lifecycle journal with crash recovery, plus the `INTERFACES.md` §4 event-log export | `src/live_tracker/event_log.py` |
-| **Streamlit dashboard** | Five pages: the motion engine on a CSV (tracking quality and smoothing), Rules (propose → Confirm / Reject), Replay (synthetic sessions), Investigation (evidence behind a replayed session), and Real Session (the motion engine on one real CalMS21 validation session) | `app.py`, `pages/1_Rules.py` to `pages/4_Real_Session.py` |
+| **Streamlit dashboard** | Six pages: the motion engine on a CSV (tracking quality and smoothing), Rules (propose → Confirm / Reject), Replay (synthetic sessions, or a verified real validation run), Investigation (evidence behind a replayed session), Real Session (the motion engine on one real CalMS21 validation session), and Live Agent (an AI agent investigates the validation data; see [Live Agent](#live-agent)) | `app.py`, `pages/1_Rules.py` to `pages/5_Live_Agent.py` |
 | **Synthetic test data** | A labeled synthetic pose CSV and a synthetic per-frame score generator. Every synthetic session id starts with `SYNTHETIC_` | `example_pose_demo.csv`, `src/live_tracker/fake_scores.py` |
 
 ## How the parts fit together
@@ -138,6 +138,14 @@ that starts Streamlit. Each cross-check is a paid API call.
 
 Streamlit prints the local URL, normally http://localhost:8501. To keep the server on this machine only, add
 `--server.address 127.0.0.1`.
+
+Always start from the repository root (the Live Agent page finds its data by relative path). If `live_tracker` is not
+installed with `pip install -e .`, put `src` on the Python path first. In Windows PowerShell:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
 
 ## Using the application
 
@@ -313,6 +321,23 @@ test session.
 Investigation results are designed to be **association-only** ("precedes / is associated with"), never causal.
 They report insufficient evidence when the data cannot support a comparison. The tool contract is
 `docs/investigate_tool_contracts.md`.
+
+## Live Agent
+
+Page `pages/5_Live_Agent.py` (not yet on `main` when this section was written; it arrives with the integration pull
+request). Full launch and demo steps, including Windows PowerShell: `docs/live_agent_demo.md`.
+
+- A researcher asks a question. A language model chooses the Contract v1 tool calls; every number in the answer comes
+  from those tools, not from the model.
+- It works on the verified CalMS21 **validation** split only. The test split is not used.
+- The saved report is reloaded and re-verified offline before anything is shown. Verification checks consistency, not
+  authenticity: the files are local and unsigned.
+- **Reopening saved investigations and the free rehearsal need no API key and no network.** A new paid run needs an
+  OpenRouter key, one ready preflight per run, a confirmation, and typed authorization. It is guarded on the client
+  side only, and only one investigation can run at a time.
+- Results are **association only**. The autonomous agent's run is not necessarily equivalent to the fixed reference
+  protocol (run5); the page shows that check separately.
+- The progress view, evidence charts and cost ledger show what was asked, which tools ran, and what was spent.
 
 ## Project structure
 

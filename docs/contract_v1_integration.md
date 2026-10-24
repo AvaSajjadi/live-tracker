@@ -108,8 +108,8 @@ frozen run that continues past `t1_s` is judged only on the frames before `t1_s`
 - `bouts` must equal that result exactly: every field of every bout, in order, with nothing dropped, added or
   duplicated.
 
-Anything else is `error` with code `unverified_bouts`. Only the recomputed bouts are used, and the overlap rule checks
-against all of them.
+Anything else is `error` with code `unverified_bouts`. Only the recomputed bouts are used, and the overlap policy
+checks against all of them.
 
 **Windows.** The absolute endpoints are formed in seconds first, and each one is converted with
 `frame(t) = floor(30·t + 0.5)`:
@@ -119,16 +119,43 @@ against all of them.
 Rounded duration counts are never subtracted; see `docs/timebase_30fps.md`. A window whose converted endpoints are
 equal is `bad_window`. Each window is measured from the session truncated at its own end.
 
-**Exclusions.** A bout is excluded for the first reason that applies, in this order (the order of Ava's dry run). Each
-exclusion is listed as `{session, start_s, why}`.
+**Overlap policy `overlap_v1` (finalized, approved by Ava).** "Another bout" is another **fired** bout of the cited
+query: a monitor event of the same session and behavior that lasted at least `min_duration_s`, taken from the
+complete, unchanged, provenance-verified query result. A threshold crossing that never fired (shorter than
+`min_duration_s`, or below the threshold) is not a bout and excludes nothing. **Both** windows are checked: a pre
+window or a baseline window that shares a frame with another fired bout (half-open frame ranges) is excluded. This is
+variant V1 of `docs/contract_v1_overlap_options.md`. The policy is named and versioned like the quality policy
+(`OVERLAP_POLICIES`); the caller cannot choose another one (an `overlap_policy` field is `invalid_request`).
+
+**Exclusions.** A bout is excluded for the first reason that applies, in this order (the order of Ava's dry run,
+`scripts/dryrun_contract_options.py`; the order decides which reason is reported, never which bouts are used). Each
+exclusion is listed as `{session, start_s, why}`, and every result carries the order as `exclusion_order`.
 
 | why | when |
 |---|---|
-| `pre_window_overlaps_bout` | another bout of the cited query (same session and behavior) intersects the pre window |
+| `pre_window_overlaps_bout` | another fired bout of the cited query (same session and behavior) intersects the pre window |
 | `window_before_session_start` | the baseline would start before frame 0 |
 | `pre_window_unreliable` | the pre window fails the quality policy |
 | `baseline_window_unreliable` | the baseline window fails the quality policy |
+| `baseline_window_overlaps_bout` | another fired bout of the cited query intersects the baseline window (`overlap_v1`) |
 | `no_feature_values` | either window has no usable value of the feature |
+
+**Traceability.** Every `compare_windows` result (`ok` and `insufficient_evidence`) carries `overlap_policy`,
+`overlap_policy_definition` and `exclusion_order`. The Replay bridge records the policy and its definition in its
+configuration snapshot (`inputs.config`, part of the exported JSON and of the configuration SHA-256 that keys its
+cache), and the Investigation page shows the policy and the exclusion order next to the quality policy. The bridge
+refuses (`PolicyMismatch`) a configuration snapshot that is not exactly the configuration the tools execute now for the
+quality policy it selects: preset, `threshold_from`, `contract_version`, quality policy name and definition (any
+registered policy, checked against its own definition), overlap policy name, definition and exclusion order, evidence
+gate and tool-call budget, with nothing missing or extra. This is checked before any tool call and again before the
+result is returned, and every executed response must report the same contract version, threshold, preset, quality and
+overlap policies and gate (`compare_windows` echoes `quality_policy_definition` for this). The executed query is bound to
+the approved rule: its canonical `query` (session, behavior, `min_duration_s`, threshold = the rule's ask threshold)
+and every duplicate the response carries, its run id and its complete bout set are recomputed from the rule and the
+data source and must match exactly, before the query is used; the comparison must cite exactly that query and those
+bouts. Nothing is returned, cached
+or exported on a mismatch; the Replay and Investigation pages show the refusal. A tool refusal stays a refusal and is
+given no policy metadata.
 
 **Counts:**
 - `n_input`, `n_used` and `n_excluded`;
@@ -137,8 +164,10 @@ exclusion is listed as `{session, start_s, why}`.
 - `n_baseline_windows` and `n_sessions_input`.
 
 **Aggregation:**
-- `mean_diff` is, as the contract says, the median over sessions of the per-session paired difference;
-- a session's paired difference is the mean of its bouts' `pre − baseline`;
+- `mean_diff` is the **median across paired sessions of the per-session paired differences**, as the contract says.
+  It is not a mean over windows or over sessions: the field name is historical and kept for compatibility, and
+  `mean_diff_definition` in every `ok` result says so;
+- a session's paired difference (`per_session[].paired_diff`) is the mean of its used bouts' `pre − baseline`;
 - `per_session` lists each session's `n_bouts` and `paired_diff`;
 - `pre_mean` and `baseline_mean` are plain means over used windows, reported for orientation only.
 
@@ -230,20 +259,35 @@ coverage is unchanged. Zip "symlink member" tests are portable and stay.
 One test gate in `test_investigation_data.py` now checks the local cache before the `/Volumes/...` source drive. This
 way the external drive path is never looked up unless the local cache exists.
 
-## 6. Open items
+## 6. Decisions and open items
 
-### For Ava
+### Finalized (approved by Ava)
+
+- **Pre-window overlap:** only the other **fired** bouts of the cited query count; sub-threshold or too-short runs are
+  not bouts (former item 3).
+- **Baseline overlap:** a baseline window that contains another fired bout is excluded, with its own reason
+  `baseline_window_overlaps_bout`, under the named policy `overlap_v1` (former item 4).
+- The evidence gate (10 windows, 4 sessions), the pre_s grid and `quality_v1` are unchanged; nothing relaxes the gate
+  when baseline overlap removes windows (an honest `insufficient_evidence` instead).
+
+### Historical: the questions as they were asked (now answered above)
+
+Items 3 and 4 below are kept as they were written before the decision. The dry run that informed it is
+`docs/contract_v1_overlap_options.md`.
+
+### For Ava (still open unless marked answered)
 
 1. **The 30 fps rule** `floor(30·t + 0.5)` is applied to every absolute window endpoint, including endpoints formed
    as `start_s − pre_s − …` in seconds. Durations are not rounded on their own. Nothing is open here unless you want
    durations restricted to whole frames.
 2. **Two added error codes:** `invalid_request` (malformed requests) and `unverified_bouts` (`compare_windows` bouts
    that are not exactly the bouts of the cited query on this data source).
-3. **"Overlaps another bout"** is implemented as overlap with another bout of the same behavior *of the cited
-   query*: fired events, so runs shorter than `min_duration_s` do not count. Your label dry
-   run counts every annotated bout, including short ones. Which do you want?
-4. **Baseline overlap:** following the contract's wording, only the pre window is checked for overlap. A baseline
-   window that contains a bout is **not** excluded; the internal Stage 9 tool does exclude it. Confirm or extend.
+3. *(Answered: fired bouts only.)* **"Overlaps another bout"** is implemented as overlap with another bout of the
+   same behavior *of the cited query*: fired events, so runs shorter than `min_duration_s` do not count. Your label
+   dry run counts every annotated bout, including short ones. Which do you want?
+4. *(Answered: baseline windows are excluded too, `overlap_v1`.)* **Baseline overlap:** following the contract's
+   wording, only the pre window was checked for overlap, and a baseline window that contained a bout was not
+   excluded; the internal Stage 9 tool does exclude it. Confirm or extend.
 5. **`compare_windows` input:** it needs `query_run_id`, `query` and the complete, unchanged bouts of that query (to
    bind them to authentic evidence). The contract lists only `bouts: [{session, start_s}]`. A subset of bouts is
    refused: to compare fewer sessions, query fewer sessions.

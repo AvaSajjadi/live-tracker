@@ -1,5 +1,8 @@
 """Investigation page: the Contract v1 evidence behind a synthetic Replay session (new file).
 
+Data choice (Phase 2B): the SYNTHETIC demonstration below, unchanged and the default, or the recorded Contract v1
+tool run of a verified REAL validation run, shown read only by live_tracker.validation_run_ui.
+
 Shows, for one SYNTHETIC session and one approved rule, the record of the
 deterministic Contract v1 tool run (replay_investigation): the bouts found,
 each bout's windows, tracking status and comparison outcome, the recorded
@@ -20,6 +23,7 @@ from live_tracker import investigation_view as iv
 from live_tracker import replay as rp
 from live_tracker import replay_investigation as ri
 from live_tracker import replay_view as rv
+from live_tracker import validation_run_ui as vui
 from live_tracker.rule_workflow import is_valid_workflow
 from streamlit.errors import StreamlitPageNotFoundError
 
@@ -38,6 +42,11 @@ try:
     nav[1].page_link("pages/1_Rules.py", label="Rules", icon=":material/rule:")
 except StreamlitPageNotFoundError:                  # this file run on its own, outside the app's page list
     nav[0].caption("Replay and Rules are in the sidebar.")
+
+# 0. data: the SYNTHETIC demonstration (below, unchanged) or a verified REAL validation run (read only)
+if vui.choose_mode("investigation_data_mode_widget") == vui.REAL:
+    vui.render_investigation()
+    st.stop()
 
 # 1. approved rules (the same researcher workflow the Replay page reads)
 wf = st.session_state.get(WORKFLOW_KEY)
@@ -136,7 +145,8 @@ with tab_ev:
                 if outcome is None:
                     st.caption("Not compared.")
                 elif outcome == "used":
-                    st.success("Used in the comparison (both windows passed the quality policy).")
+                    st.success("Used in the comparison (both windows passed the quality and overlap "
+                               "policies).")
                 else:
                     st.warning(f"Excluded from the comparison: {outcome}.")
             if windows:
@@ -159,7 +169,7 @@ with tab_ev:
                 tooltip=["lane", "start", "end", "kind"])
             st.altair_chart(chart, width="stretch")
         if c is not None and c["status"] != "error":
-            with st.expander("All exclusions, evidence gate and quality policy"):
+            with st.expander("All exclusions, evidence gate, quality and overlap policies"):
                 if c["excluded"]:
                     st.dataframe(pd.DataFrame(c["excluded"]), hide_index=True, width="stretch")
                 else:
@@ -171,6 +181,8 @@ with tab_ev:
                            f"paired sessions (override: {gate['overridden']}).")
                 st.caption(f"Quality policy: `{c['quality_policy']}` "
                            f"{res['inputs']['config']['quality_policy_definition']}.")
+                st.caption(f"Overlap policy: `{c['overlap_policy']}` {c['overlap_policy_definition']}. "
+                           f"Exclusion reasons, checked in this order: {', '.join(c['exclusion_order'])}.")
             if c["status"] == "ok":
                 st.markdown("**Per-session paired differences** (pre minus baseline; association only)")
                 st.bar_chart(pd.DataFrame(c["per_session"]).set_index("session")["paired_diff"])

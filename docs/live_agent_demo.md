@@ -20,6 +20,18 @@ PYTHONPATH=src ~/live-tracker/.venv/bin/streamlit run app.py
 `PYTHONPATH=src` is required. Without it, the shared virtual environment imports the `live_tracker` package of the
 other checkout (`~/live-tracker`), which has no Live Agent. Open the **Live Agent** page in the sidebar.
 
+On Windows PowerShell, from the repository root (use the repo's own `.venv`; there is no shared environment):
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+To set the key for a paid run without printing it:
+`$env:OPENROUTER_API_KEY = (Read-Host -AsSecureString "Key" | ConvertFrom-SecureString -AsPlainText)`
+(PowerShell 7). In Windows PowerShell 5.1, set `$env:OPENROUTER_API_KEY` yourself in the same window; never write it
+in a file.
+
 Reopening saved investigations and the free rehearsal need no key and make no network request. For the preflight or
 a paid run, set the key first without echo (see `docs/stage9_v1_live_run.md`, step 2):
 `read -rs "OPENROUTER_API_KEY?Key: " && export OPENROUTER_API_KEY`.

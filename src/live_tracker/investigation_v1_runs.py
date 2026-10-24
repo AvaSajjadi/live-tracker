@@ -17,9 +17,9 @@ Two things are kept apart on purpose:
 - reference compatibility: equivalence with run5 needs the exact initial request and result. A mismatch says only
   that the investigation is not run5's analysis.
 
-One investigation at a time: RunLock is an OS-level exclusive lock (fcntl.flock on POSIX, msvcrt.locking on Windows) on a stable file in the runs
-directory, held for the whole run by every browser session and process of the server alike, and each preflight
-issues a one-use token that a paid run consumes.
+One investigation at a time: RunLock is an OS-level exclusive lock (fcntl.flock; msvcrt.locking on Windows) on a
+stable file in the runs directory, held for the whole run by every browser session and process of the server alike,
+and each preflight issues a one-use token that a paid run consumes.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from pathlib import Path
 
 from . import investigation_agent_v1 as av1
 from . import investigation_live_v1 as lv1
+from . import investigation_tools_v1 as v1
 
 ROOT = Path(__file__).resolve().parents[2]
 LIVE_DIR_ENV, OFFLINE_DIR_ENV = "LIVE_TRACKER_V1_LIVE_DIR", "LIVE_TRACKER_V1_OFFLINE_DIR"
@@ -149,70 +150,151 @@ def preflight(config, inputs, *, env=None, http_get=None):
 
 # ---- one investigation at a time ----
 
-# ---- the OS lock, per platform ----
-# POSIX: fcntl.flock on the whole file (shared probe, exclusive hold); BlockingIOError means held elsewhere.
-# Windows (no fcntl): msvcrt.locking on one byte far past the metadata, so the holder's pid record stays readable
-# (Windows byte-range locks are mandatory); contention is one of investigation_data.WINDOWS_LOCK_CONTENTION, and a
-# probe takes the same exclusive lock for an instant (it cannot be shared there) and releases it at once.
-
-_WIN_LOCK_OFFSET = 1 << 20
-
-
-def _lock(fd, exclusive):
-    """True when the lock was taken without waiting, False when another holder has it; other errors propagate."""
-    if os.name == "nt":  # pragma: no cover - Windows
-        import msvcrt
-        from .investigation_data import WINDOWS_LOCK_CONTENTION
-        os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
-        try:
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            return True
-        except OSError as exc:
-            if exc.errno in WINDOWS_LOCK_CONTENTION:
-                return False
-            raise
-    import fcntl
-    try:
-        fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-        return True
-    except BlockingIOError:
-        return False
-
-
-def _unlock(fd):
-    if os.name == "nt":  # pragma: no cover - Windows
-        import msvcrt
-        os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        return
-    import fcntl
-    fcntl.flock(fd, fcntl.LOCK_UN)
-
-
 class RunBusy(RuntimeError):
     """Another investigation holds the lock, or the lock cannot be taken safely (fail closed)."""
 
 
+# ---- the lock primitives, per platform ----
+# POSIX: fcntl.flock on the whole file (exclusive, non-blocking; contention is BlockingIOError), a shared lock as the
+# holder probe, and pread/pwrite of the metadata.
+# Windows (no fcntl): msvcrt.locking(LK_NBLCK) on ONE byte at WINDOWS_LOCK_OFFSET, far beyond the metadata. Windows
+# byte-range locks are mandatory, so a lock on byte 0 would make the holder's pid unreadable to everyone else. Like
+# flock, the lock belongs to one descriptor (two descriptors exclude each other, in one process or two) and is
+# released when it is closed or its process ends. msvcrt has no shared lock, so the holder probe takes the same
+# exclusive byte and releases it at once: a start racing a probe can be refused, never admitted twice. Contention
+# (investigation_data.WINDOWS_LOCK_CONTENTION) is raised as BlockingIOError, like flock's; any other error
+# propagates (fail closed). Windows has no pread/pwrite: the metadata is read and written after a seek, which is
+# race-free because each descriptor belongs to one RunLock (or one probe) only.
+# Opening: POSIX opens with O_NOFOLLOW (unchanged). Windows has no O_NOFOLLOW, and os.open would follow a symlink
+# at the final component (creating a dangling link's target), so it opens with CreateFileW (_winapi.CreateFile,
+# OPEN_ALWAYS | FILE_FLAG_OPEN_REPARSE_POINT): a reparse point (symlink, junction, ...) at the path is opened as
+# itself, never traversed, so nothing is created or touched behind it. The handle then becomes a CRT descriptor
+# (msvcrt.open_osfhandle; the handle is closed if that fails) and is checked before any lock or write: a regular
+# file, not a reparse point, and still the very file at the path (device and file id), so a replaced path is
+# refused. The msvcrt and _winapi modules are parameters so the Windows path is testable anywhere. There is no
+# fallback: without fcntl or msvcrt, importing this module fails.
+
+WINDOWS_LOCK_OFFSET = 1 << 20                       # 1 MiB: beyond any metadata (at most METADATA_BYTES are read)
+METADATA_BYTES = 4096
+
+
+class _Primitives:
+    def __init__(self, name, lock, probe, unlock, read, write, open_, verify):
+        self.name, self.lock, self.probe, self.unlock, self.read, self.write = name, lock, probe, unlock, read, write
+        self.open, self.verify = open_, verify                 # verify(path, fstat) raises OSError when unacceptable
+
+
+# CreateFileW arguments (Win32 ABI values)
+GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
+FILE_SHARE_READ, FILE_SHARE_WRITE = 0x1, 0x2
+OPEN_ALWAYS = 4
+FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT = 0x80, 0x00200000
+
+
+def _file_attributes(st):
+    """Windows file attributes of a stat result (None when not reported: then the file is refused)."""
+    return getattr(st, "st_file_attributes", None)
+
+
+def _windows_open(path, winapi, msvcrt_module):
+    """A read-write descriptor of the file AT path: created if absent, and if path is a reparse point, that reparse
+    point itself (refused by _windows_verify), never what it points to."""
+    handle = winapi.CreateFile(str(path), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               0, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                               0)                     # no security attributes (not inheritable), no template
+    try:
+        return msvcrt_module.open_osfhandle(handle, 0)      # binary; the descriptor now owns the handle
+    except BaseException:
+        winapi.CloseHandle(handle)
+        raise
+
+
+def _windows_verify(path, st):
+    attributes = _file_attributes(st)
+    if attributes is None or attributes & (stat.FILE_ATTRIBUTE_REPARSE_POINT | stat.FILE_ATTRIBUTE_DIRECTORY):
+        raise OSError("the lock file is a reparse point or a directory (or its attributes are unknown)")
+    at = os.lstat(path)
+    if stat.S_ISLNK(at.st_mode) or (_file_attributes(at) or 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or \
+            (at.st_dev, at.st_ino) != (st.st_dev, st.st_ino):
+        raise OSError("the lock path is a link, or not the file that was opened")
+
+
+def _read_start(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    return os.read(fd, METADATA_BYTES)
+
+
+def _write_start(fd, data):
+    os.lseek(fd, 0, os.SEEK_SET)
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        if n <= 0:
+            raise OSError("the lock metadata could not be written")
+        view = view[n:]
+
+
+def _windows_primitives(msvcrt_module, winapi):
+    from .investigation_data import WINDOWS_LOCK_CONTENTION
+
+    def lock(fd):
+        os.lseek(fd, WINDOWS_LOCK_OFFSET, os.SEEK_SET)          # locking() works from the current position
+        try:
+            msvcrt_module.locking(fd, msvcrt_module.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in WINDOWS_LOCK_CONTENTION:
+                raise BlockingIOError(exc.errno, "the investigation lock is held") from None
+            raise
+
+    def unlock(fd):
+        os.lseek(fd, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+        msvcrt_module.locking(fd, msvcrt_module.LK_UNLCK, 1)
+    return _Primitives("msvcrt.locking", lock, lock, unlock, _read_start, _write_start,
+                       lambda path: _windows_open(path, winapi, msvcrt_module), _windows_verify)
+
+
+if os.name == "nt":  # pragma: no cover - Windows
+    import _winapi
+    import msvcrt
+
+    _LOCK = _windows_primitives(msvcrt, _winapi)
+else:
+    import fcntl
+
+    _LOCK = _Primitives("fcntl.flock",
+                        lambda fd: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB),
+                        lambda fd: fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB),
+                        lambda fd: fcntl.flock(fd, fcntl.LOCK_UN),
+                        lambda fd: os.pread(fd, METADATA_BYTES, 0),
+                        lambda fd, data: os.pwrite(fd, data, 0),
+                        lambda path: os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600),
+                        lambda path, st: None)
+
+
 class RunLock:
-    """One investigation at a time: an OS-level exclusive non-blocking lock (see _lock) on a stable lock file
-    in the runs directory, held on one open file descriptor for the whole critical section. Ownership is the kernel's
-    lock, never the file's content: the file is never unlinked (its inode is reused), its content (the holder's pid
-    and start time) is informational only, and an empty, unreadable or malformed file neither proves nor disproves
-    that a lock is held. The kernel releases the lock when the descriptor is closed, including when the holding
-    process dies, so a lock left on disk by a finished or killed process is simply free again. Any filesystem or
-    locking error refuses the run (RunBusy). A RunLock object is held at most once at a time."""
+    """One investigation at a time: an OS-level exclusive lock (fcntl.flock, LOCK_EX | LOCK_NB; on Windows
+    msvcrt.locking of one byte, see the lock primitives above) on a stable lock file in the runs directory, held on
+    one open file descriptor for the whole critical section. Ownership is the kernel's lock, never the file's
+    content: the file is never unlinked (its inode is reused), its content (the holder's pid and start time) is
+    informational only, and an empty, unreadable or malformed file neither proves nor disproves that a lock is held.
+    The OS releases the lock when the descriptor is closed, including when the holding process dies, so a lock left
+    on disk by a finished or killed process is simply free again. Any filesystem or locking error refuses the run
+    (RunBusy). A RunLock object is held at most once at a time."""
 
     def __init__(self, root):
         self.path = Path(root) / LOCK_NAME
         self.fd = None
 
     def _open(self):
-        """The lock file's descriptor: a regular file opened without following a symlink."""
+        """The lock file's descriptor: a regular file opened without following a symlink (on Windows, also not a
+        reparse point and still the file at the path; see the lock primitives). Checked before any lock or write."""
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
+        fd = _LOCK.open(self.path)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
                 raise OSError("the lock path is not a regular file")
+            _LOCK.verify(self.path, st)
         except BaseException:
             os.close(fd)
             raise
@@ -221,30 +303,26 @@ class RunLock:
     def _write_metadata(self, fd):
         """Informational only (who holds it, since when); written after the lock is held."""
         os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, json.dumps({"pid": os.getpid(), "started": time.time()}).encode())
+        _LOCK.write(fd, json.dumps({"pid": os.getpid(), "started": time.time()}).encode())
 
     def holder(self):
         """None when no one holds the lock; otherwise what is known of the holder ({} when its metadata is not
-        readable). Probed with a non-blocking shared lock, so it never takes the lock from anyone; any error is
-        reported as held (fail closed)."""
+        readable). Probed with a non-blocking shared lock (on Windows, the exclusive byte, released at once), so it
+        never takes the lock from a holder; any error is reported as held (fail closed)."""
         try:
             fd = self._open()
         except OSError:
             return {"error": "the lock file cannot be opened"}
         try:
             try:
-                free = _lock(fd, exclusive=False)
-            except OSError:                       # not lockable: busy
-                free = False
-            if not free:                          # held exclusively elsewhere
+                _LOCK.probe(fd)
+            except OSError:                       # held exclusively elsewhere (or not lockable): busy
                 try:
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    info = json.loads(os.read(fd, 4096) or b"{}")
+                    info = json.loads(_LOCK.read(fd) or b"{}")
                 except (OSError, ValueError):
                     info = {}
                 return info if isinstance(info, dict) else {}
-            _unlock(fd)
+            _LOCK.unlock(fd)
             return None
         finally:
             os.close(fd)
@@ -257,9 +335,10 @@ class RunLock:
         except OSError as exc:
             raise RunBusy(f"the investigation lock cannot be opened ({type(exc).__name__}); not started") from None
         try:
-            if not _lock(fd, exclusive=True):
-                os.close(fd)
-                raise RunBusy("another investigation is running; wait for it to finish") from None
+            _LOCK.lock(fd)
+        except BlockingIOError:
+            os.close(fd)
+            raise RunBusy("another investigation is running; wait for it to finish") from None
         except OSError as exc:
             os.close(fd)
             raise RunBusy(f"the investigation lock cannot be taken ({type(exc).__name__}); not started") from None
@@ -279,7 +358,7 @@ class RunLock:
         if fd is None:
             return
         try:
-            _unlock(fd)
+            _LOCK.unlock(fd)
         finally:
             os.close(fd)
 
@@ -393,10 +472,42 @@ def autonomous_status(saved):
         return "unverified", "This saved investigation does not verify: nothing of it is shown as a finding."
     d = saved.doc
     if d["finished"]:
-        return "verified", (f"Verified autonomous investigation: finding `{d['finding']}` (consistency-checked; "
-                            "publication not authorized).")
+        who = {"offline": "Verified investigation by the offline deterministic investigator (no model)",
+               "rehearsal": "Verified autonomous investigation (emulated rehearsal: no model, nothing spent)"}.get(
+                   saved.kind, "Verified autonomous investigation")
+        return "verified", f"{who}: finding `{d['finding']}` (consistency-checked; publication not authorized)."
     return "incomplete", (f"Verified but incomplete: the investigation stopped ({d['stopping_reason']}) before an "
                           "accepted finding; the evidence listed is partial and no finding was made.")
+
+
+def attribution(saved):
+    """Who chose the recorded actions, from the saved execution-mode metadata only (run.json's mode for Live Agent
+    runs, its model adapter for Phase 3B.1 runs; never the directory name). A real model is named only for a paid
+    run; anything unrecognised is attributed to no one in particular."""
+    s, model = saved.summary, saved.summary.get("model") or {}
+    if "key_policy" in s and "cost" in s:
+        lr = script("investigation_v1_live")
+        if s.get("mode") == lr.LIVE_MODE:
+            name = model.get("model") or "the model"
+            return {"mode": "paid_model", "label": f"paid model run (`{name}` via OpenRouter)",
+                    "chooser": f"Chosen by the model (`{name}`)", "replies": "Model",
+                    "intro": f"Each action was requested by the model `{name}` through paid OpenRouter requests; "
+                             "results are the tools' recorded outputs. No reasoning beyond the model's recorded "
+                             "text is shown."}
+        if s.get("mode") == lr.DRY_MODE:
+            return {"mode": "emulated", "label": "emulated rehearsal (no model, nothing spent)",
+                    "chooser": "Scripted by the emulator (no model)", "replies": "Emulated",
+                    "intro": "No model ran: the emulated endpoint answered each turn with the deterministic offline "
+                             "investigator's next call, so the parameters are scripted, not a model's choices. "
+                             "Results are the tools' recorded outputs."}
+    if model.get("adapter") == script("investigation_v1_validation").OFFLINE_MODEL:
+        return {"mode": "offline", "label": "offline deterministic investigation (no model)",
+                "chooser": "Set by the deterministic procedure (no model)", "replies": "Investigator",
+                "intro": "No model ran: Phase 3B.1's deterministic offline investigator chose each call by a fixed "
+                         "procedure. Results are the tools' recorded outputs."}
+    return {"mode": "unknown", "label": "execution mode not recorded", "chooser": "Recorded parameters",
+            "replies": "Recorded", "intro": "The execution mode is not recorded, so no action is attributed to a "
+                                            "model. Results are the tools' recorded outputs."}
 
 
 def _compact(request):
@@ -546,3 +657,252 @@ def cost_view(saved):
     """The recorded cost summary (Live Agent runs) or None; values as recorded and verified by verify_saved."""
     c = saved.summary.get("cost")
     return None if c is None else {k: copy.deepcopy(v) for k, v in c.items() if k != "ledger"}
+
+
+# ---- UI-1: the scientific overview and the recorded agent activity (read from the verified report only) ----
+
+FEATURE_MEANINGS = {                                  # features.py's own definitions of the pair features
+    "dist_center": "center distance between the two mice",
+    "dist_rate": "rate of change of the center distance (negative = approaching)",
+    "rel_speed": "magnitude of the difference of the two mice's velocities",
+    "close_time_s": "seconds of the trailing window with the mice closer than the close-distance threshold",
+    "speed_corr_w": "trailing correlation of the two mice's speeds",
+}
+FINDING_HEADLINES = {
+    "effect_described": "A descriptive association was measured",
+    "insufficient_evidence": "Not enough usable evidence for an effect",
+    "inconclusive": "Inconclusive",
+    "incomplete": "Stopped before a finding",
+}
+TOOL_TITLES = {
+    "query_events": ("Find predicted behavior bouts",
+                     "Threshold crossings of the classifier's scores, kept when they last long enough."),
+    "check_tracking_quality": ("Check tracking quality of one window",
+                               "Contract v1's fixed quality policy (quality_v1) on one session window."),
+    "get_window_features": ("Measure pair features in one window",
+                            "Mean, min, max and count of pair features over one session window."),
+    "compare_windows": ("Compare pre-bout windows with baselines",
+                        "Session-paired comparison of a feature before each bout and in an earlier baseline, with "
+                        "Contract v1's quality, overlap and evidence-gate policies."),
+    av1.FINISH: ("Submit the finding", "A structured finding citing fields of this run's results; no prose."),
+}
+
+
+def _unit(feature):
+    from .investigation_compare import UNITS
+    return UNITS.get(feature, "")
+
+
+def _evidence(doc):
+    return {e["evidence_id"]: e for e in doc["evidence"]}
+
+
+def _fmt(x, digits=4):
+    if isinstance(x, float):
+        return f"{x:.{digits}g}" if abs(x) < 1e4 else f"{x:.0f}"
+    return str(x)
+
+
+def overview(saved, reference=None):
+    """The researcher-facing summary of a VERIFIED saved investigation: every value is read from its report or its
+    accepted evidence (None when the report does not provide it); nothing is computed, interpreted or inferred."""
+    if not saved.verified:
+        return None
+    d, ev = saved.doc, _evidence(saved.doc)
+    finding = d["finding"]
+    primary = ev.get(d["primary_evidence_id"]) if d["primary_evidence_id"] else None
+    comp_ev = primary if primary and primary["tool"] == "compare_windows" else None
+    if comp_ev is None:                                        # incomplete or inconclusive: the last comparison
+        comp_ev = next((e for e in reversed(d["evidence"]) if e["tool"] == "compare_windows"), None)
+    queries = [e for e in d["evidence"] if e["tool"] == "query_events"]
+    query_ev = next((e for e in queries if comp_ev is not None and
+                     e["result"].get("query_run_id") == comp_ev["request"].get("query_run_id")),
+                    queries[0] if queries else None)               # the query the comparison used, else the first
+    comp = comp_ev["result"] if comp_ev else None
+    query = query_ev["result"] if query_ev else None
+    out = {"question": d["question"], "verified": True, "finding": finding,
+           "headline": FINDING_HEADLINES.get(finding, finding), "finding_text": av1.FINDING_TEXT.get(finding, ""),
+           "stopping_reason": d["stopping_reason"], "finished": d["finished"], "effect": None, "comparison": None,
+           "query": None, "spending": spending(saved), "primary_evidence_id": d["primary_evidence_id"]}
+    if comp is not None:
+        feature = comp.get("feature")
+        out["comparison"] = {
+            "status": comp.get("status"), "feature": feature, "unit": _unit(feature),
+            "feature_meaning": FEATURE_MEANINGS.get(feature, ""), "pre_s": comp.get("pre_s"),
+            "baseline_s": comp.get("baseline_s"), "baseline_gap_s": comp.get("baseline_gap_s"),
+            "n_windows": comp.get("n_windows"), "n_sessions": comp.get("n_sessions"),
+            "n_input": comp.get("n_input"), "n_used": comp.get("n_used"), "n_excluded": comp.get("n_excluded"),
+            "reason": comp.get("reason"), "n_available": comp.get("n_available"),
+            "n_required": comp.get("n_required"), "quality_policy": comp.get("quality_policy"),
+            "overlap_policy": comp.get("overlap_policy"), "evidence_gate": comp.get("evidence_gate"),
+            # the result's own definitions; Contract v1's when the result does not repeat them (e.g. insufficient)
+            "windows": comp.get("windows") or dict(v1.WINDOW_DEFINITIONS),
+            "mean_diff_definition": comp.get("mean_diff_definition") or v1.MEAN_DIFF_DEFINITION,
+            "wording": comp.get("wording")}
+        if finding == "effect_described" and comp.get("status") == "ok" and "mean_diff" in comp:
+            out["effect"] = {"value": comp["mean_diff"], "unit": _unit(feature), "feature": feature,
+                             "sign": "negative" if comp["mean_diff"] < 0 else "positive" if comp["mean_diff"] > 0
+                             else "zero"}
+    if query is not None:
+        q = query.get("query") or {}
+        out["query"] = {"behavior": query.get("behavior"), "threshold": query.get("threshold"),
+                        "threshold_sent": "threshold" in query_ev["request"],
+                        "min_duration_s": query.get("min_duration_s"), "n_bouts": query.get("n_bouts"),
+                        "n_sessions": query.get("n_sessions"), "n_sessions_searched": query.get("n_sessions_searched"),
+                        "data_source": query.get("data_source"), "start_meaning": query.get("start_meaning"),
+                        "sessions_requested": len(q.get("session") or [])}
+    if reference is not None:
+        out["reference"] = reference_summary(reference)
+    return out
+
+
+def spending(saved):
+    """Actual provider-reported spending (paid runs), $0 actual with a separate simulated cost (rehearsals), or $0
+    with no model (offline)."""
+    c = saved.summary.get("cost")
+    if saved.kind == "live" and c is not None:
+        return {"actual_usd": c["actual_spend_usd"], "complete": c["actual_spend_complete"], "simulated_usd": None,
+                "basis": "provider-reported (OpenRouter usage.cost)"}
+    if saved.kind == "rehearsal" and c is not None:
+        return {"actual_usd": 0.0, "complete": True, "simulated_usd": c["actual_spend_usd"],
+                "basis": "emulated endpoint: simulated cost, nothing spent"}
+    return {"actual_usd": 0.0, "complete": True, "simulated_usd": None, "basis": "no model was called"}
+
+
+def reference_summary(ref):
+    """The reference check's verdict and the threshold each side applied (from its rows), for the status panel."""
+    rows = {r["parameter"]: r for r in ref.get("rows", [])}
+    th = rows.get("threshold")
+    name = ref["reference"]
+    return {"reference": name, "available": ref["available"], "equivalent": ref["equivalent"],
+            "verdict": ref["verdict"], "differences": list(ref.get("differences", [])),
+            "agent_threshold": th["investigation (applied)"] if th else None,
+            "agent_threshold_sent": th["investigation (sent)"] != "not sent" if th else None,
+            "reference_threshold": th[f"{name} (applied)"] if th else None}
+
+
+def _arguments(name, args, step_of):
+    """The model's arguments as (parameter, value) pairs; an evidence reference is shown as the step it came from."""
+    if not isinstance(args, dict):
+        return [("arguments", str(args)[:200])]
+    out = []
+    for k, v in args.items():
+        if k == "query_from" and isinstance(v, dict):
+            ref = v.get("evidence_id")
+            out.append(("bouts from", f"step {step_of[ref]}'s query" if ref in step_of else f"{str(ref)[:40]}"))
+        elif k == "observations" and isinstance(v, list):
+            out.append(("cites", ", ".join(f"{o.get('field')} (step {step_of.get(o.get('evidence_id'), '?')})"
+                                           for o in v if isinstance(o, dict))))
+        elif k == "primary_evidence_id":
+            out.append(("primary evidence", f"step {step_of[v]}" if v in step_of else str(v)))
+        elif k == "sessions" and isinstance(v, list):
+            out.append(("sessions", f"{len(v)} sessions"))
+        elif k == "session" and isinstance(v, str):
+            out.append(("session", v.rsplit("/", 1)[-1]))
+        else:
+            out.append((k, _fmt(v) if not isinstance(v, (list, dict)) else json.dumps(v)))
+    if name == "query_events" and "threshold" not in args:
+        out.append(("threshold", "not set (Contract v1's default applies)"))
+    return out
+
+
+def _results(tool, r):
+    """The important recorded results of one accepted call, as (label, value) pairs."""
+    if tool == "query_events":
+        return [("bouts found", f"{r.get('n_bouts')} in {r.get('n_sessions')} of {r.get('n_sessions_searched')} "
+                                f"sessions searched"), ("threshold applied", _fmt(r.get("threshold"))),
+                ("minimum duration", f"{_fmt(r.get('min_duration_s'))} s")]
+    if tool == "check_tracking_quality":
+        return [("verdict", r.get("verdict")), ("usable fraction", _fmt(r.get("usable_fraction"))),
+                ("frames", f"{r.get('n_usable_frames')} usable of {r.get('n_frames')}"),
+                ("policy", r.get("quality_policy"))]
+    if tool == "get_window_features":
+        out = []
+        for f, s in (r.get("summary") or {}).items():
+            u = _unit(f)
+            out.append((f, f"mean {_fmt(s.get('mean'))} {u}, min {_fmt(s.get('min'))}, max {_fmt(s.get('max'))}, "
+                           f"n {s.get('n')}".replace("  ", " ")))
+        return out
+    if tool == "compare_windows":
+        out = [("status", r.get("status"))]
+        if r.get("status") == "ok":
+            out += [("median session-paired difference", f"{_fmt(r.get('mean_diff'))} {_unit(r.get('feature'))}"),
+                    ("windows used", f"{r.get('n_windows')} in {r.get('n_sessions')} sessions"),
+                    ("excluded", f"{r.get('n_excluded')} of {r.get('n_input')} bouts")]
+        else:
+            out += [("reason", r.get("reason")), ("available / required",
+                                                 f"{r.get('n_available')} / {r.get('n_required')}")]
+        return out
+    return []
+
+
+def timeline(doc, replies="Model"):
+    """The recorded investigation activity as visual steps, in trace order: every tool call and finish asked for
+    (accepted with its evidence, or refused with the refusal), every reply error or budget stop, and the final stop.
+    Built from the saved trace and accepted evidence only; no tool sequence is assumed. `replies` names what answered
+    each turn (attribution()'s "replies": a model only for a paid run). A finish produces no measurement: its step is a
+    finding accepted, never evidence."""
+    ev = _evidence(doc)
+    step_of, steps, note = {}, [], None
+    for t in doc["trace"]:
+        kind = t.get("kind")
+        if kind == "model_turn":
+            note = (t.get("text") or "").strip() or None
+            if t.get("outcome") in ("malformed", "usage_unavailable", "over_budget"):
+                steps.append({"kind": "event", "status": "problem", "title": f"{replies} reply not used",
+                              "description": {"malformed": "The reply was not a usable tool call.",
+                                              "usage_unavailable": "The reply reported no usable token usage.",
+                                              "over_budget": "The reply arrived past a budget limit; none of it "
+                                                             "was executed."}[t["outcome"]],
+                              "details": {k: t.get(k) for k in ("outcome", "problem", "input_tokens",
+                                                                "output_tokens")}, "trace_step": t["step"]})
+            continue
+        if kind in ("tool_call", "finish"):
+            n = len(steps) + 1
+            name = t.get("tool")
+            title, description = TOOL_TITLES.get(name, (f"Unknown tool {str(name)[:40]}",
+                                                        "Not a Contract v1 tool; refused."))
+            step = {"kind": "action", "number": n, "tool": name, "title": title, "description": description,
+                    "parameters": _arguments(name, t.get("arguments"), step_of), "trace_step": t["step"],
+                    "model_note": note, "arguments": t.get("arguments"), "evidence_id": t.get("evidence_id")}
+            if t.get("outcome") == "refused":
+                step.update(status="refused", outcome=f"refused: {t.get('refused')}",
+                            results=[("message", str(t.get("message"))[:400])])
+            elif kind == "finish":
+                step.update(status="finding_accepted", outcome="finding accepted (cites earlier evidence)",
+                            results=[("finding", doc["finding"] if doc["finished"] else
+                                      (t.get("arguments") or {}).get("finding"))])
+            else:
+                e = ev.get(t.get("evidence_id"))
+                status = e["status"] if e else t.get("outcome")
+                step.update(status="accepted" if status == "ok" else "accepted_insufficient"
+                            if status == "insufficient_evidence" else "accepted_other",
+                            outcome=f"accepted as evidence ({status})", results=_results(name, e["result"]) if e
+                            else [])
+                if e:
+                    step_of[e["evidence_id"]] = n
+            steps.append(step)
+            note = None
+        elif kind == "model_error":
+            steps.append({"kind": "event", "status": "problem", "title": f"{replies} request stopped",
+                          "description": f"The {replies.lower()} reply could not be used ({t.get('reason')}); the "
+                                         "run stopped.",
+                          "details": {"reason": t.get("reason")}, "trace_step": t["step"]})
+        elif kind == "budget_exceeded":
+            steps.append({"kind": "event", "status": "problem", "title": "Budget limit reached",
+                          "description": f"Stopped by the budget ({t.get('stopping_reason')}); calls not executed: "
+                                         f"{len(t.get('not_executed') or [])}.",
+                          "details": {k: t.get(k) for k in ("stopping_reason", "not_executed")},
+                          "trace_step": t["step"]})
+        elif kind == "stop":
+            reason = t.get("stopping_reason")
+            finished = reason == "finished"
+            steps.append({"kind": "end", "status": "finished" if finished else "incomplete",
+                          "title": f"Finding: {doc['finding']}" if finished else "Ended without a finding",
+                          "description": (av1.FINDING_TEXT.get(doc["finding"], "") if finished else
+                                          f"The investigation stopped ({reason}) before an accepted finding; the "
+                                          "evidence above is partial."),
+                          "supporting": [{"step": step_of.get(o["evidence_id"]), "field": o["field"],
+                                          "value": o["value"], "evidence_id": o["evidence_id"]}
+                                         for o in doc["observations"]], "trace_step": t["step"]})
+    return steps

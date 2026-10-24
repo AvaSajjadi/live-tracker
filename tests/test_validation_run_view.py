@@ -14,7 +14,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
+import stat
+import subprocess
+import types
 from pathlib import Path
 
 import pytest
@@ -61,6 +65,24 @@ def run_copy(made, tmp_path):
 
 def load(root, name, manifest, **kw):
     return vv.load_run(name, root, manifest_path=manifest, allow_synthetic=True, **kw)
+
+
+ERROR_PRIVILEGE_NOT_HELD = 1314                        # Windows: no symlink privilege (and no Developer Mode)
+
+
+def symlink_or_skip(link, target, directory=False):
+    """Create a symlink. Only Windows' missing symlink privilege (WinError 1314) skips; any other failure, and any
+    failure on POSIX, fails the test."""
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == ERROR_PRIVILEGE_NOT_HELD:
+            pytest.skip("Windows: creating a symlink needs SeCreateSymbolicLinkPrivilege or Developer Mode "
+                        "(WinError 1314)")
+        raise
+
+
+posix_reader = pytest.mark.skipif(os.name == "nt", reason="interposes the POSIX openat reader; Windows: see below")
 
 
 def read_json(path):
@@ -239,7 +261,7 @@ def test_symlinked_runs_are_neither_listed_nor_loaded(made, tmp_path):
     root, name, manifest = made
     other = tmp_path / "runs"
     other.mkdir()
-    (other / "linked").symlink_to(root / name, target_is_directory=True)
+    symlink_or_skip(other / "linked", root / name, directory=True)
     shutil.copytree(root / name, other / "real")
     (other / "real" / vv.SUMMARY).rename(other / "real" / "x.json")      # not a run: no summary
     assert vv.list_runs(other) == []
@@ -578,6 +600,7 @@ def test_a_rejected_run_shows_no_conclusion_and_no_download(real_copy, monkeypat
 
 # ---- filesystem safety ----
 
+@posix_reader
 def test_a_file_swapped_for_a_symlink_just_before_opening_is_refused(run_copy, monkeypatch, tmp_path):
     root, name, manifest = run_copy
     outside = tmp_path / "outside.json"
@@ -594,6 +617,7 @@ def test_a_file_swapped_for_a_symlink_just_before_opening_is_refused(run_copy, m
         load(root, name, manifest)
 
 
+@posix_reader
 def test_a_run_directory_swapped_during_loading_cannot_redirect_reads(run_copy, monkeypatch, tmp_path):
     root, name, manifest = run_copy
     expected = load(root, name, manifest).files
@@ -624,7 +648,7 @@ def test_an_oversized_file_is_refused_while_reading(run_copy, monkeypatch):
 def test_a_symlinked_runs_root_is_refused(made, tmp_path):
     root, name, manifest = made
     link = tmp_path / "linkroot"
-    link.symlink_to(root, target_is_directory=True)
+    symlink_or_skip(link, root, directory=True)
     with pytest.raises(vv.RunUnavailable, match="symlinks are refused"):
         load(link, name, manifest)
 
@@ -637,17 +661,242 @@ def test_unsupported_platforms_fail_closed(made, monkeypatch):
 
 
 def open_fds():
-    return len(os.listdir("/dev/fd"))
+    """This process's open descriptors where the OS lists them (/dev/fd, /proc/self/fd), else None."""
+    for d in ("/dev/fd", "/proc/self/fd"):
+        if os.path.isdir(d):
+            return len(os.listdir(d))
+    return None
 
 
-def test_descriptors_are_closed_on_success_and_on_refusal(run_copy):
+def closed(fd):
+    try:
+        os.fstat(fd)
+    except OSError:
+        return True
+    return False
+
+
+def test_descriptors_are_closed_on_success_and_on_refusal(run_copy, monkeypatch):
     root, name, manifest = run_copy
+    opened = []
+    if os.name == "nt":                                           # the Windows reader's opener
+        real = vv._windows_opener()
+        monkeypatch.setattr(vv, "_windows_opener", lambda: Tracking(real, opened))
+    else:                                                         # the POSIX reader's openat
+        real_openat = vv._openat
+        monkeypatch.setattr(vv, "_openat", lambda *a, **k: opened.append(real_openat(*a, **k)) or opened[-1])
     before = open_fds()
     load(root, name, manifest)
+    assert len(opened) == 2 + len(vv.RUN_FILES) and all(closed(fd) for fd in opened)
     (root / name / vv.JOURNAL).unlink()
+    opened.clear()
     with pytest.raises(vv.RunUnavailable):
         load(root, name, manifest)
-    assert open_fds() == before
+    assert opened and all(closed(fd) for fd in opened)
+    assert open_fds() == before                                   # (where the OS lists descriptors)
+
+
+# ---- the Windows reader (handle-based): natively on Windows, through a POSIX stand-in elsewhere ----
+
+LINK_FLAGS = getattr(os, "O_SYMLINK", 0) or (getattr(os, "O_PATH", 0) | getattr(os, "O_NOFOLLOW", 0))
+
+
+class PosixStandIn:
+    """SYNTHETIC stand-in for vv._NtOpener on POSIX, with its semantics: a symlink is opened AS ITSELF (O_SYMLINK on
+    macOS, O_PATH | O_NOFOLLOW on Linux), never followed; a child is opened relative to its parent's descriptor
+    (NtCreateFile's RootDirectory); a directory cannot be opened as a file."""
+
+    def _open(self, name, directory, dir_fd=None):
+        st = os.lstat(name, dir_fd=dir_fd)
+        if stat.S_ISLNK(st.st_mode):
+            return os.open(name, LINK_FLAGS, dir_fd=dir_fd)
+        if stat.S_ISDIR(st.st_mode) and not directory:
+            raise IsADirectoryError(21, "Is a directory")
+        return os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+
+    def root(self, path):
+        return self._open(path, True)
+
+    def child(self, parent_fd, name, directory):
+        return self._open(name, directory, parent_fd)
+
+
+def simulated_attributes(st):
+    """Windows' st_file_attributes, simulated from the POSIX mode (POSIX stat results have none)."""
+    return (stat.FILE_ATTRIBUTE_REPARSE_POINT if stat.S_ISLNK(st.st_mode) else
+            stat.FILE_ATTRIBUTE_DIRECTORY if stat.S_ISDIR(st.st_mode) else stat.FILE_ATTRIBUTE_NORMAL)
+
+
+class Tracking:
+    """Wraps an opener: records every descriptor it returns and runs `before(name)` before each child open."""
+
+    def __init__(self, inner, opened, before=None):
+        self.inner, self.opened, self.before = inner, opened, before
+
+    def root(self, path):
+        self.opened.append(self.inner.root(path))
+        return self.opened[-1]
+
+    def child(self, parent_fd, name, directory):
+        if self.before:
+            self.before(name)
+        self.opened.append(self.inner.child(parent_fd, name, directory))
+        return self.opened[-1]
+
+
+@pytest.fixture(params=["native" if os.name == "nt" else "simulated"])
+def windows_reader(request, monkeypatch):
+    """Route load_run through the Windows reader. Returns install(before=None) -> the list of opened descriptors."""
+    def install(before=None):
+        opened = []
+        if request.param == "native":
+            opener = Tracking(vv._windows_opener(), opened, before)
+            monkeypatch.setattr(vv, "_windows_opener", lambda: opener)
+        else:
+            opener = Tracking(PosixStandIn(), opened, before)
+            monkeypatch.setattr(vv, "_file_attributes", simulated_attributes)
+            monkeypatch.setattr(vv, "_read_run", lambda root, name: vv._read_run_windows(root, name, opener))
+        return opened
+    install.mode = request.param
+    return install
+
+
+def digests(run_dir):
+    return {f: hashlib.sha256((run_dir / f).read_bytes()).hexdigest() for f in vv.RUN_FILES}
+
+
+def make_junction(link, target):
+    """A Windows junction (no privilege needed). Skipped only where junctions do not exist (not Windows); a failure
+    to create one on Windows fails the test."""
+    if os.name != "nt":
+        pytest.skip("junctions exist on Windows only")
+    done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True, text=True)
+    assert done.returncode == 0 and os.path.lexists(link), \
+        f"mklink /J failed ({done.returncode}): {done.stdout.strip()} {done.stderr.strip()}"
+
+
+def test_windows_reader_loads_a_run_and_closes_every_handle(run_copy, windows_reader):
+    root, name, manifest = run_copy
+    opened = windows_reader()
+    run = load(root, name, manifest)
+    assert run.files == digests(root / name)                       # the exact bytes that were checked
+    assert len(opened) == 2 + len(vv.RUN_FILES) and all(closed(fd) for fd in opened)
+
+
+@pytest.mark.parametrize("link", ["symlink", "junction"])
+def test_windows_reader_refuses_a_linked_run_directory(run_copy, windows_reader, tmp_path, link):
+    root, name, manifest = run_copy
+    elsewhere = tmp_path / "elsewhere"
+    shutil.copytree(root / name, elsewhere)
+    (symlink_or_skip if link == "symlink" else make_junction)(root / "linked", elsewhere,
+                                                                 **({"directory": True} if link == "symlink" else {}))
+    opened = windows_reader()
+    with pytest.raises(vv.RunUnavailable, match="symlinks are refused"):
+        load(root, "linked", manifest)
+    assert vv.list_runs(root) == [name] and all(closed(fd) for fd in opened)
+
+
+@pytest.mark.parametrize("link", ["symlink", "junction"])
+def test_windows_reader_refuses_a_linked_runs_root(made, windows_reader, tmp_path, link):
+    root, name, manifest = made
+    (symlink_or_skip if link == "symlink" else make_junction)(tmp_path / "linkroot", root,
+                                                                 **({"directory": True} if link == "symlink" else {}))
+    opened = windows_reader()
+    with pytest.raises(vv.RunUnavailable, match="symlinks are refused"):
+        load(tmp_path / "linkroot", name, manifest)
+    assert all(closed(fd) for fd in opened)
+
+
+def test_windows_reader_refuses_a_file_swapped_for_a_symlink_before_opening(run_copy, windows_reader, tmp_path):
+    root, name, manifest = run_copy
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"status": "verified"}')
+    swapped = []
+
+    def swap(n):
+        if n == vv.SUMMARY and not swapped:
+            (root / name / vv.SUMMARY).unlink()
+            symlink_or_skip(root / name / vv.SUMMARY, outside)      # the swap, between selection and open
+            swapped.append(1)
+    opened = windows_reader(swap)
+    with pytest.raises(vv.RunUnavailable, match="symlink"):
+        load(root, name, manifest)
+    assert swapped and all(closed(fd) for fd in opened)
+
+
+def test_windows_reader_a_run_directory_swapped_while_held_cannot_redirect_reads(run_copy, windows_reader,
+                                                                                 tmp_path):
+    root, name, manifest = run_copy
+    expected = digests(root / name)
+    evil = tmp_path / "evil"
+    shutil.copytree(root / name, evil)
+    (evil / vv.RECORD).write_text("{}")                             # what a redirect would read
+    outcome = []
+
+    def swap(n):
+        if n == vv.RECORD and not outcome:                          # the run directory is already held
+            try:
+                (root / name).rename(root / "old")
+            except PermissionError:                                 # Windows: a held directory cannot be renamed
+                outcome.append("rename refused")
+                return
+            (root / name).mkdir()
+            for f in vv.RUN_FILES:
+                shutil.copy(evil / f, root / name / f)
+            outcome.append("swapped")
+    opened = windows_reader(swap)
+    try:
+        run = load(root, name, manifest)
+    except vv.RunUnavailable as exc:                                # the path no longer names the held directory
+        assert outcome == ["swapped"] and "changed while it was being opened" in str(exc)
+    else:
+        assert run.files == expected                                # read from the directory that was opened
+        assert outcome == ["rename refused"] if windows_reader.mode == "native" else outcome
+    assert all(closed(fd) for fd in opened)
+
+
+def test_windows_reader_refuses_reparse_points_and_unknown_attributes(run_copy, windows_reader, monkeypatch):
+    root, name, manifest = run_copy
+    opened = windows_reader()
+    real = vv._file_attributes
+    for fake, why in ((lambda st: None, "metadata .* is incomplete"),             # attributes not reported
+                      (lambda st: real(st) | stat.FILE_ATTRIBUTE_REPARSE_POINT, "symlinks are refused")):
+        monkeypatch.setattr(vv, "_file_attributes", fake)
+        with pytest.raises(vv.RunUnavailable, match=why):
+            load(root, name, manifest)
+    monkeypatch.setattr(vv, "_file_attributes", real)
+    assert all(closed(fd) for fd in opened)
+
+
+def test_windows_reader_refuses_wrong_kinds_and_oversized_files(run_copy, windows_reader, monkeypatch):
+    root, name, manifest = run_copy
+    opened = windows_reader()
+    (root / "plainfile").write_text("{}")
+    with pytest.raises(vv.RunUnavailable, match="not a real directory|not a directory|cannot be opened"):
+        load(root, "plainfile", manifest)                           # a file where a run directory should be
+    (root / name / vv.SNAPSHOT).unlink()
+    (root / name / vv.SNAPSHOT).mkdir()
+    with pytest.raises(vv.RunUnavailable, match="cannot be opened|not a regular file"):
+        load(root, name, manifest)                                  # a directory where a file should be
+    (root / name / vv.SNAPSHOT).rmdir()
+    with pytest.raises(vv.RunUnavailable, match="missing"):
+        load(root, name, manifest)
+    shutil.copy(run_copy[0] / name / vv.SUMMARY, root / name / vv.SNAPSHOT)       # present again (content wrong)
+    monkeypatch.setattr(vv, "MAX_FILE_BYTES", 1000)
+    with pytest.raises(vv.RunUnavailable, match="larger than 1000 bytes"):
+        load(root, name, manifest)
+    assert all(closed(fd) for fd in opened)
+
+
+def test_windows_reader_closes_held_handles_when_a_later_open_fails(run_copy, windows_reader):
+    root, name, manifest = run_copy
+    def fail(n):
+        if n == vv.JOURNAL:
+            raise PermissionError(13, "Access is denied")
+    opened = windows_reader(fail)
+    with pytest.raises(vv.RunUnavailable, match="cannot be opened"):
+        load(root, name, manifest)
+    assert len(opened) == 2 + vv.RUN_FILES.index(vv.JOURNAL) and all(closed(fd) for fd in opened)
 
 
 # ======================================================================
@@ -829,3 +1078,217 @@ def test_the_page_shows_contract_v1_definitions_not_record_text(monkeypatch):
     shown = texts(at.caption)
     assert v1.WINDOW_DEFINITIONS["pre"] in shown and v1.WINDOW_DEFINITIONS["anchor"] in shown
     assert "re-decided from these recorded counts" in shown and "recorded values" in shown
+
+
+# ---- Windows metadata: identity and attributes must be usable on BOTH sides (Codex audit, correction 1) ----
+
+class MetadataOs:
+    """The `os` that vv sees, with simulated fstat (the handle) and lstat (the path) results; everything else real."""
+
+    def __init__(self, handle, path):
+        self._handle, self._path = handle, path
+
+    def fstat(self, fd):
+        return self._handle(fd) if callable(self._handle) else self._handle
+
+    def lstat(self, path):
+        return self._path(path) if callable(self._path) else self._path
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+def meta(kind="file", dev=7, ino=42, attributes=None, drop=()):
+    """A simulated Windows stat result (attributes default to the kind's: ARCHIVE for a file, DIRECTORY)."""
+    if attributes is None:
+        attributes = stat.FILE_ATTRIBUTE_DIRECTORY if kind == "dir" else stat.FILE_ATTRIBUTE_ARCHIVE
+    fields = {"st_mode": (stat.S_IFDIR if kind == "dir" else stat.S_IFREG) | 0o644, "st_dev": dev, "st_ino": ino,
+              "st_file_attributes": attributes}
+    return types.SimpleNamespace(**{k: v for k, v in fields.items() if k not in drop})
+
+
+def checked_with(monkeypatch, tmp_path, handle, path, kind="file"):
+    """vv._windows_checked on a real descriptor with simulated metadata: (result or the refusal, opened fds). The
+    descriptor is always backed by a regular temporary file (Windows cannot open a directory with os.open); the
+    kind the checker sees ("file" or "dir") comes only from the simulated fstat / lstat results."""
+    target = tmp_path / ("d.descriptor" if kind == "dir" else "m.json")
+    target.write_text("{}")
+    fds = []
+
+    def open_():
+        fds.append(os.open(target, os.O_RDONLY))
+        return fds[-1]
+    monkeypatch.setattr(vv, "os", MetadataOs(handle, path))
+    try:
+        return vv._windows_checked(target, target.name, kind == "dir", open_), fds
+    except vv.RunUnavailable as exc:
+        return exc, fds
+    finally:
+        monkeypatch.setattr(vv, "os", os)
+
+
+HANDLE_INCOMPLETE, PATH_INCOMPLETE = "opened object's Windows metadata", "path's Windows metadata"
+
+
+@pytest.mark.parametrize("handle, path, why", [
+    pytest.param(meta(drop=("st_ino",)), meta(), HANDLE_INCOMPLETE, id="1 handle-side file id missing"),
+    pytest.param(meta(drop=("st_dev", "st_ino")), meta(), HANDLE_INCOMPLETE, id="1 handle-side identity missing"),
+    pytest.param(meta(), meta(drop=("st_ino",)), PATH_INCOMPLETE, id="2 path-side file id missing"),
+    pytest.param(meta(), meta(drop=("st_dev", "st_ino")), PATH_INCOMPLETE, id="2 path-side identity missing"),
+    pytest.param(meta(dev=0, ino=0), meta(dev=0, ino=0), HANDLE_INCOMPLETE, id="3 both identities (0, 0)"),
+    pytest.param(meta(dev=0), meta(dev=0), HANDLE_INCOMPLETE, id="4 device 0"),
+    pytest.param(meta(ino=0), meta(ino=0), HANDLE_INCOMPLETE, id="4 file id 0"),
+    pytest.param(meta(ino=None), meta(ino=None), HANDLE_INCOMPLETE, id="4 file id None"),
+    pytest.param(meta(dev=None), meta(dev=None), HANDLE_INCOMPLETE, id="4 device None"),
+    pytest.param(meta(ino="42"), meta(ino="42"), HANDLE_INCOMPLETE, id="4 file id not an integer"),
+    pytest.param(meta(ino=True), meta(ino=True), HANDLE_INCOMPLETE, id="4 file id a bool"),
+    pytest.param(meta(), meta(ino=0), PATH_INCOMPLETE, id="4 path-side file id 0"),
+    pytest.param(meta(drop=("st_file_attributes",)), meta(), HANDLE_INCOMPLETE, id="5 handle-side attributes missing"),
+    pytest.param(meta(attributes="32"), meta(), HANDLE_INCOMPLETE, id="5 handle-side attributes not an integer"),
+    pytest.param(meta(attributes=-1), meta(), HANDLE_INCOMPLETE, id="5 handle-side attributes negative"),
+    pytest.param(meta(), meta(drop=("st_file_attributes",)), PATH_INCOMPLETE, id="6 path-side attributes missing"),
+    pytest.param(meta(), meta(attributes=1 << 32), PATH_INCOMPLETE, id="6 path-side attributes out of range"),
+    pytest.param(meta(), meta(ino=43), "changed while it was being opened", id="7 different file id"),
+    pytest.param(meta(), meta(dev=8), "changed while it was being opened", id="7 different device"),
+    pytest.param(meta(), meta(attributes=stat.FILE_ATTRIBUTE_ARCHIVE | stat.FILE_ATTRIBUTE_REPARSE_POINT),
+                 "symlinks are refused", id="path-side reparse point"),
+    pytest.param(meta(attributes=stat.FILE_ATTRIBUTE_ARCHIVE | stat.FILE_ATTRIBUTE_REPARSE_POINT), meta(),
+                 "symlink", id="handle-side reparse point"),
+    pytest.param(meta(attributes=stat.FILE_ATTRIBUTE_DIRECTORY), meta(), "not a regular file",
+                 id="handle-side directory attribute on a file"),
+])
+def test_windows_metadata_must_be_usable_on_both_sides(monkeypatch, tmp_path, handle, path, why):
+    result, fds = checked_with(monkeypatch, tmp_path, handle, path)
+    assert isinstance(result, vv.RunUnavailable), f"accepted: {result}"
+    assert re.search(why, str(result)) and fds and all(closed(fd) for fd in fds)
+
+
+@pytest.mark.parametrize("attributes", [stat.FILE_ATTRIBUTE_ARCHIVE, 0], ids=["archive", "zero is a value"])
+def test_8_matching_usable_identities_and_attributes_are_accepted(monkeypatch, tmp_path, attributes):
+    fd, fds = checked_with(monkeypatch, tmp_path, meta(attributes=attributes), meta(attributes=attributes))
+    assert isinstance(fd, int) and fds == [fd] and not closed(fd)
+    os.close(fd)
+    d, fds = checked_with(monkeypatch, tmp_path, meta("dir"), meta("dir"), kind="dir")
+    assert isinstance(d, int) and fds == [d] and not closed(d)        # accepted as a directory (simulated metadata)
+    os.close(d)
+    refused, fds = checked_with(monkeypatch, tmp_path, meta("dir"), meta("dir"), kind="file")
+    assert isinstance(refused, vv.RunUnavailable) and "not a regular file" in str(refused)   # kinds still checked
+    assert fds and all(closed(fd) for fd in fds)
+    refused, fds = checked_with(monkeypatch, tmp_path, meta(), meta(), kind="dir")
+    assert isinstance(refused, vv.RunUnavailable) and "not a directory" in str(refused)
+    assert fds and all(closed(fd) for fd in fds)
+
+
+def test_9_codex_a_handle_for_file_a_checked_against_path_b_is_refused(tmp_path, monkeypatch):
+    """Codex's reproduction: metadata without usable identities ((0, 0) on both sides) once let a handle for A pass
+    as path B. Refused now; and with real identities, refused as another file."""
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text("{}")
+    b.write_text("{}")
+    fds = []
+
+    def open_a():
+        fds.append(os.open(a, os.O_RDONLY))
+        return fds[-1]
+
+    def as_windows(identity):
+        def stat_result(x):
+            real = os.fstat(x) if isinstance(x, int) else os.lstat(x)
+            dev, ino = (0, 0) if identity == "none" else (real.st_dev, real.st_ino)
+            return types.SimpleNamespace(st_mode=real.st_mode, st_dev=dev, st_ino=ino,
+                                         st_file_attributes=stat.FILE_ATTRIBUTE_ARCHIVE)
+        return stat_result
+    for identity, why in (("none", HANDLE_INCOMPLETE), ("real", "changed while it was being opened")):
+        monkeypatch.setattr(vv, "os", MetadataOs(as_windows(identity), as_windows(identity)))
+        with pytest.raises(vv.RunUnavailable, match=why):
+            vv._windows_checked(b, "b.json", False, open_a)          # the handle is A, the path names B
+        monkeypatch.setattr(vv, "os", os)
+    monkeypatch.setattr(vv, "os", MetadataOs(as_windows("real"), as_windows("real")))
+    fd = vv._windows_checked(a, "a.json", False, open_a)              # A against A: accepted
+    monkeypatch.setattr(vv, "os", os)
+    os.close(fd)
+    assert len(fds) == 3 and all(closed(x) for x in fds)
+
+
+# ---- native handle -> descriptor conversion (Codex audit, correction 3) ----
+
+class FakeConversion:
+    """SYNTHETIC stand-in for msvcrt.open_osfhandle and _winapi.CloseHandle over POSIX descriptors ("handles"):
+    open_osfhandle fails for the handles `fail` selects, else transfers ownership (the descriptor is the handle)."""
+
+    def __init__(self, fail=lambda handle: False):
+        self.fail, self.converted, self.closed_handles = fail, [], []
+
+    def open_osfhandle(self, handle, flags):
+        assert flags == os.O_RDONLY
+        if self.fail(handle):
+            raise OSError(24, "Too many open files")
+        self.converted.append(handle)
+        return handle
+
+    def CloseHandle(self, handle):
+        self.closed_handles.append(handle)
+        os.close(handle)
+
+
+class ConvertingStandIn(vv._NtOpener):
+    """The real _NtOpener._fd ownership logic over raw "handles" from PosixStandIn (the ctypes opens are replaced;
+    the conversion step is not)."""
+
+    def __init__(self, fake):                                        # (no ctypes: nothing native is loaded)
+        self._msvcrt = self._winapi = fake
+        self._raw_opener, self.raw = PosixStandIn(), []
+
+    def root(self, path):
+        self.raw.append(self._raw_opener.root(path))
+        return self._fd(self.raw[-1])
+
+    def child(self, parent_fd, name, directory):
+        self.raw.append(self._raw_opener.child(parent_fd, name, directory))
+        return self._fd(self.raw[-1])
+
+
+posix_stand_in = pytest.mark.skipif(os.name == "nt", reason="POSIX stand-in; natively, every Windows reader test "
+                                                            "converts real handles")
+
+
+@posix_stand_in
+def test_a_failed_handle_conversion_closes_the_native_handle_once(tmp_path):
+    raw = os.open(tmp_path, os.O_RDONLY)
+    fake = FakeConversion(fail=lambda h: True)
+    opener = ConvertingStandIn(fake)
+    with pytest.raises(OSError, match="Too many open files"):
+        opener._fd(raw)
+    assert fake.closed_handles == [raw] and closed(raw)               # closed by the opener, before any transfer
+
+
+@posix_stand_in
+def test_a_failed_conversion_refuses_the_run_and_nothing_proceeds(run_copy, monkeypatch):
+    root, name, manifest = run_copy
+    calls = []
+    fake = FakeConversion(fail=lambda h: calls.append(h) or len(calls) == 3 + vv.RUN_FILES.index(vv.RECORD))
+    opener = ConvertingStandIn(fake)
+    monkeypatch.setattr(vv, "_file_attributes", simulated_attributes)
+    monkeypatch.setattr(vv, "_read_run", lambda r, n: vv._read_run_windows(r, n, opener))
+    with pytest.raises(vv.RunUnavailable, match="cannot be opened"):
+        load(root, name, manifest)
+    failed = opener.raw[-1]
+    assert len(opener.raw) == 3 + vv.RUN_FILES.index(vv.RECORD)      # no open after the failed conversion
+    assert fake.closed_handles == [failed]                           # only the unconverted handle, once
+    assert len(fake.converted) == len(opener.raw) - 1                 # every handle but the last was transferred
+    assert all(closed(h) for h in opener.raw)                          # (descriptor numbers may be reused)
+
+
+@posix_stand_in
+def test_converted_handles_are_closed_once_by_their_descriptor(run_copy, monkeypatch):
+    root, name, manifest = run_copy
+    fake = FakeConversion()
+    opener = ConvertingStandIn(fake)
+    monkeypatch.setattr(vv, "_file_attributes", simulated_attributes)
+    monkeypatch.setattr(vv, "_read_run", lambda r, n: vv._read_run_windows(r, n, opener))
+    real_close, closes = os.close, []
+    monkeypatch.setattr(os, "close", lambda fd: closes.append(fd) or real_close(fd))
+    load(root, name, manifest)
+    monkeypatch.setattr(os, "close", real_close)
+    assert fake.closed_handles == [] and fake.converted == opener.raw  # ownership moved to every descriptor
+    assert sorted(closes) == sorted(opener.raw) and all(closed(h) for h in opener.raw)   # each closed exactly once

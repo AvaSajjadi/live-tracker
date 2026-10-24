@@ -74,27 +74,27 @@ def test_tuning_picks_best_C_and_records_it(data):
     assert info["feature_columns"] == ["f0", "f1", "f2"]
 
 
-def test_calibration_is_on_by_default_and_recorded(data):
+def test_calibration_when_asked_is_recorded(data):
     feats, labels = data
-    model, info = fit_model(feats, labels, MANIFEST, log=lambda *_: None)
+    model, info = fit_model(feats, labels, MANIFEST, params=FitParams(calibrate="sigmoid"),
+                            log=lambda *_: None)
     assert "sigmoid" in info["calibration"] and "validation" in info["calibration"]
     assert type(model).__name__ == "CalibratedClassifierCV"
     p = score_frames(model, feats, ["va1"])[list(BEHAVIORS)].to_numpy()
     assert ((p >= 0) & (p <= 1)).all()
 
 
-def test_calibration_can_be_switched_off(data):
+def test_calibration_is_off_by_default(data):
     feats, labels = data
-    model, info = fit_model(feats, labels, MANIFEST, params=FitParams(calibrate=None),
-                            log=lambda *_: None)
+    model, info = fit_model(feats, labels, MANIFEST, log=lambda *_: None)
     assert not info["calibration"]
     assert type(model).__name__ == "Pipeline"
 
 
 def test_calibration_keeps_the_chosen_C(data):
     feats, labels = data
-    grid = FitParams(C_grid=(1e-4, 1.0))
-    _, raw = fit_model(feats, labels, MANIFEST, params=FitParams(C_grid=grid.C_grid, calibrate=None),
+    grid = FitParams(C_grid=(1e-4, 1.0), calibrate="sigmoid")
+    _, raw = fit_model(feats, labels, MANIFEST, params=FitParams(C_grid=grid.C_grid),
                        log=lambda *_: None)
     _, cal = fit_model(feats, labels, MANIFEST, params=grid, log=lambda *_: None)
     assert raw["C"] == cal["C"] and raw["search"] == cal["search"]   # C is chosen before calibrating

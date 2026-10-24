@@ -4,9 +4,10 @@ Class-weighted logistic regression on per-frame features:
 - train on manifest["train"] sessions only
 - choose C on manifest["validation"] only (frame macro F1 of attack,
   investigation, mount)
-- calibrate the scores on manifest["validation"] (sigmoid, classifier frozen), so a
-  score of 0.8 is close to an 80 % chance. Validation numbers are then slightly
-  optimistic: the same sessions fit the calibration and report the result.
+- optional calibration (FitParams.calibrate="sigmoid", OFF by default): fits a sigmoid on
+  manifest["validation"] with the classifier frozen. Scores are then closer to real
+  probabilities, but attack scores drop and the demo attack rule must be chosen again
+  (docs/model_settings.md). Validation numbers are then slightly optimistic.
 - output probabilities for attack, investigation, mount (INTERFACES.md §2)
 
 Consecutive frames are nearly identical, so training uses every
@@ -61,7 +62,7 @@ class FitParams:
     C_grid: tuple = (0.01, 0.1, 1.0)
     train_stride: int = 3
     max_iter: int = 300
-    calibrate: str | None = "sigmoid"   # fitted on validation after C is chosen; None = raw scores
+    calibrate: str | None = None   # "sigmoid" = fit on validation after C is chosen. OFF by default: see docs/model_settings.md
     extra: dict = field(default_factory=dict)
 
 

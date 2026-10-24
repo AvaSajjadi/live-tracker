@@ -26,7 +26,9 @@ from . import investigation_v1_runs as runs
 PREFLIGHT_KEY = "live_agent_preflight"            # {"digest", "ready", "report", "token"}
 USED_KEY = "live_agent_used_tokens"
 GEN_KEY = "live_agent_generation"                 # renews the confirmation widgets after every run
-OPEN_KEY = "live_agent_open"                      # the saved investigation to show (its directory)
+OPEN_KEY = "live_agent_open"                      # a saved investigation to select once (its directory)
+SAVED_KEY = "live_agent_saved"                    # the saved-investigation selectbox: its value (a directory) is
+                                                  # the ONLY source of what the Saved tab shows
 MESSAGE_KEY = "live_agent_message"
 STATUS_BOX = {"verified": st.success, "incomplete": st.warning, "unverified": st.error}
 
@@ -115,8 +117,10 @@ def _run(config, inputs, paid, **kw):
     except Exception as exc:                       # the CLI's refusals: before any request or file
         st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}")
         return
+    # select the new run through the Session State API (sent to the browser), never by dropping the widget's
+    # state: a dropped state falls back to a default the browser is not told about, so the selector would keep
+    # showing the previous run above the new run's results
     st.session_state[OPEN_KEY] = str(runs.live_dir() / name)
-    st.session_state.pop("live_agent_saved", None)          # preselect the new run (that widget renders later)
     st.session_state[MESSAGE_KEY] = ("info", f"Investigation {name} finished with recorded status "
                                               f"`{summary.get('status')}`. Open the Saved investigations tab: the "
                                               "report is reloaded from disk and re-verified before it is shown.")
@@ -190,17 +194,25 @@ def render_cost(saved):
     if c is None:
         st.caption("No model was called (offline deterministic investigator): no cost.")
         return
-    m = st.columns(4)
-    m[0].metric("Actual spend (provider-reported)", f"${c['actual_spend_usd']:.5f}"
-                + ("" if c["actual_spend_complete"] else " +unknown"))
+    m = st.columns(5 if saved.kind == "rehearsal" else 4)
+    if saved.kind == "rehearsal":                 # an emulated ledger: nothing was spent
+        m[0].metric("Actual API spending", "$0.00")
+        m[4].metric("Simulated cost (emulated, not spent)", f"${c['actual_spend_usd']:.5f}")
+        st.info(f"Simulated cost ${c['actual_spend_usd']:.5f}; actual API spending $0. This rehearsal used the "
+                "emulated endpoint: its tokens and costs are emulated, no provider was called.")
+    else:
+        m[0].metric("Actual spend (provider-reported)", f"${c['actual_spend_usd']:.5f}"
+                    + ("" if c["actual_spend_complete"] else " +unknown"))
     m[1].metric("Local target", f"${c['target_usd']:.2f}")
     m[2].metric("Provider key limit", "none (no provider)" if c["provider_key_limit_usd"] is None
                 else f"${c['provider_key_limit_usd']:g}")
     m[3].metric("Over target", "yes" if c["over_target"] else "no")
-    st.caption(f"Key-limit mode `{c['authorization_mode']}`. {c['exposure']}. {c['note']}")
     if saved.kind == "rehearsal":
-        st.info("Rehearsal: tokens and costs are EMULATED, nothing was spent.")
-    st.dataframe(pd.DataFrame(runs.ledger_rows(saved.summary)), hide_index=True, width="stretch")
+        st.caption(f"Key-limit mode `{c['authorization_mode']}` (recorded; no key was used).")
+    else:
+        st.caption(f"Key-limit mode `{c['authorization_mode']}`. {c['exposure']}. {c['note']}")
+    st.dataframe(pd.DataFrame(runs.ledger_rows(saved.summary, simulated=saved.kind == "rehearsal")),
+                 hide_index=True, width="stretch")
 
 
 def render_saved(saved):
@@ -209,6 +221,8 @@ def render_saved(saved):
                  + "; ".join(map(str, saved.problems[:5])))
         return
     d = saved.doc
+    st.markdown(f"**Showing `{saved.name}`** ({runs.KIND_LABELS.get(saved.kind, saved.kind)}); every tab below is "
+                "this investigation's saved, re-verified files.")
     kind, text = runs.autonomous_status(saved)
     STATUS_BOX[kind](f"**Autonomous investigation.** {text}")
     st.caption(f"Recorded run status `{saved.summary.get('status')}`"
@@ -261,9 +275,11 @@ def render_open():
     if not entries:
         st.info("No saved investigation yet.")
         return
-    labels = [label for label, _ in entries]
-    want = st.session_state.get(OPEN_KEY)
-    index = next((n for n, (_, p) in enumerate(entries) if str(p) == want), 0)
-    pick = st.selectbox("Saved investigation", labels, index=index, key="live_agent_saved")
-    path = entries[labels.index(pick)][1]
+    label_of = {str(p): label for label, p in entries}
+    want = st.session_state.pop(OPEN_KEY, None)               # a just-completed run: selected once, explicitly
+    if want in label_of:
+        st.session_state[SAVED_KEY] = want
+    elif st.session_state.get(SAVED_KEY) not in label_of:     # first view, or the selected run is gone
+        st.session_state[SAVED_KEY] = next(iter(label_of))
+    path = st.selectbox("Saved investigation", list(label_of), format_func=label_of.__getitem__, key=SAVED_KEY)
     render_saved(runs.load_saved(path))

@@ -264,7 +264,7 @@ def test_a_rehearsal_that_does_not_reproduce_the_reference_is_still_a_verified_i
     assert "Verified autonomous investigation" in text
     assert "Verdict: not equivalent" in text and "threshold" in text and "not sent" in text
     assert "concerns run5 equivalence, not the investigation's own validity" in text
-    assert "EMULATED" in text                                                  # a rehearsal spends nothing
+    assert "actual API spending $0" in text                                    # a rehearsal spends nothing
 
 
 # ---- reopening and invalid reports ----
@@ -336,3 +336,95 @@ def test_the_genuine_live_run1_and_run3_are_shown_without_modification(monkeypat
     assert "Verified autonomous investigation" in text and "effect_described" in text
     assert "Verdict: not equivalent" in text and "$0.03224" in text and "best_effort" in text
     assert {p: digests(p) for p in (LIVE_RUN1, RUN3)} == before                 # nothing was written
+
+
+# ---- the selected saved investigation is always the one displayed ----
+
+def showing(at):
+    """The run the Saved tab says it shows, and the run its selector holds."""
+    shown = next(m.value for m in at.markdown if m.value.startswith("**Showing `"))
+    return shown.split("`")[1], Path(at.selectbox(key="live_agent_saved").value).name
+
+
+def displayed_question(at):
+    return next(c.value for c in at.caption if "Question: " in c.value).split("Question: ", 1)[1]
+
+
+def rehearse_asking(synthetic, question):
+    name, _ = runs.execute(runs.RunConfig(question=question, validation_run=runs.REFERENCE_RUN), synthetic["vi"],
+                           confirm_budget_usd=None, authorization=None, paid=False)
+    return name
+
+
+def test_switching_saved_runs_shows_exactly_the_selected_run(synthetic):
+    a = rehearse_asking(synthetic, "Question A: does the distance change before predicted attacks?")
+    b = rehearse_asking(synthetic, "Question B: does the distance change before predicted attacks?")
+    at = open_page()
+    for name, question in ((a, "Question A"), (b, "Question B"), (a, "Question A")):
+        at.selectbox(key="live_agent_saved").set_value(str(synthetic["tmp"] / "live" / name))
+        at = run(at)
+        assert showing(at) == (name, name) and displayed_question(at).startswith(question)
+        doc = json.loads((synthetic["tmp"] / "live" / name / "investigation_report.json").read_text())
+        obs = at.dataframe[0].value                                            # the Finding tab's observations
+        assert obs["evidence_id"].tolist() == [o["evidence_id"] for o in doc["observations"]]
+        prov = dict(zip(at.dataframe[-1].value["field"], at.dataframe[-1].value["value"]))
+        assert prov["directory"] == name and prov["report fingerprint"] == doc["fingerprint"]
+
+
+def test_a_completed_rehearsal_is_selected_in_the_browser_too(synthetic):
+    old = rehearse_asking(synthetic, "Question A: an earlier rehearsal")
+    at = open_page()
+    at.selectbox(key="live_agent_saved").set_value(str(synthetic["tmp"] / "live" / old))
+    at = run(at)
+    assert showing(at) == (old, old)
+    at.text_area(key="live_agent_question").input("Question C: the new rehearsal")
+    at = run(_click(run(at), "Run free rehearsal"))
+    (new,) = set(saved_dirs(synthetic["tmp"])) - {old}
+    sb = at.selectbox(key="live_agent_saved")
+    assert showing(at) == (new, new) and displayed_question(at).startswith("Question C")
+    assert sb.proto.set_value                     # the new selection is pushed to the browser, not only the server
+    assert sb.format_func(sb.value) == f"Live Agent: {new}"
+    at.selectbox(key="live_agent_saved").set_value(str(synthetic["tmp"] / "live" / old))
+    at = run(at)                                  # and the researcher can go back
+    assert showing(at) == (old, old) and displayed_question(at).startswith("Question A")
+    at = run(at)                                  # a plain rerun keeps the researcher's choice
+    assert showing(at) == (old, old)
+
+
+def test_reopening_a_saved_investigation_by_path_and_after_it_is_removed(synthetic):
+    a = rehearse_asking(synthetic, "Question A: kept")
+    b = rehearse_asking(synthetic, "Question B: removed later")
+    at = open_page(live_agent_open=str(synthetic["tmp"] / "live" / b))
+    assert showing(at) == (b, b)
+    for f in (synthetic["tmp"] / "live" / b).iterdir():
+        f.unlink()
+    (synthetic["tmp"] / "live" / b).rmdir()
+    at = run(at)                                  # the selected run vanished: another run, shown consistently
+    assert showing(at) == (a, a)
+
+
+# ---- emulated costs are simulated, not spending ----
+
+def test_a_rehearsal_shows_simulated_cost_and_zero_actual_spending(synthetic):
+    name = rehearse_asking(synthetic, "Question R: a rehearsal")
+    simulated = json.loads((synthetic["tmp"] / "live" / name / "run.json").read_text())["cost"]["actual_spend_usd"]
+    assert simulated > 0                                                       # the emulated ledger is unchanged
+    at = open_page()
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["Actual API spending"] == "$0.00"
+    assert metrics["Simulated cost (emulated, not spent)"] == f"${simulated:.5f}"
+    assert "Actual spend (provider-reported)" not in metrics
+    assert any(f"Simulated cost ${simulated:.5f}; actual API spending $0" in i.value for i in at.info)
+    ledger = next(df.value for df in at.dataframe if "cost status" in df.value.columns)
+    assert "simulated cost (USD, not spent)" in ledger.columns and "cost (USD)" not in ledger.columns
+
+
+def test_a_paid_run_still_shows_provider_reported_spending(synthetic, monkeypatch):
+    provider(monkeypatch)
+    at = run(_click(authorize(preflight(open_page())), "Start paid investigation"))
+    (name,) = saved_dirs(synthetic["tmp"])
+    spend = json.loads((synthetic["tmp"] / "live" / name / "run.json").read_text())["cost"]["actual_spend_usd"]
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["Actual spend (provider-reported)"] == f"${spend:.5f}" and "Actual API spending" not in metrics
+    ledger = next(df.value for df in at.dataframe if "cost status" in df.value.columns)
+    assert "cost (USD)" in ledger.columns

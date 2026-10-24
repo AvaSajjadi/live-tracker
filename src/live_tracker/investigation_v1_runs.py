@@ -463,11 +463,17 @@ def observation_rows(doc):
             for o in doc["observations"]]
 
 
-def ledger_rows(summary):
+KIND_LABELS = {"live": "paid OpenRouter investigation", "rehearsal": "emulated rehearsal: no model, no API spending",
+               "offline": "offline deterministic investigator: no model"}
+
+
+def ledger_rows(summary, simulated=False):
+    """The recorded ledger, one row per request; simulated=True (a rehearsal) labels the costs as emulated."""
     reqs = ((summary.get("cost") or {}).get("ledger") or {}).get("requests") or []
+    cost = "simulated cost (USD, not spent)" if simulated else "cost (USD)"
     return [{"request": n, "model requested": r.get("model_requested"), "model served": r.get("model_served"),
              "input tokens": r.get("input_tokens"), "output tokens": r.get("output_tokens"),
-             "cost (USD)": r.get("cost_usd"), "cost status": r.get("cost_status"),
+             cost: r.get("cost_usd"), "cost status": r.get("cost_status"),
              "reply used": bool(r.get("reply_used")), "withheld": r.get("withheld") or r.get("error") or ""}
             for n, r in enumerate(reqs, start=1)]
 
@@ -477,8 +483,7 @@ def provenance_rows(saved):
     ev = d["evidence"][0]["provenance"] if d["evidence"] else {}
     scores = (s.get("inputs") or {}).get("scores") or {}
     prov = scores.get("provenance") or {}
-    rows = [("kind", {"live": "paid OpenRouter investigation", "rehearsal": "emulated rehearsal (no model, no cost)",
-                      "offline": "offline deterministic investigator (no model)"}.get(saved.kind, saved.kind)),
+    rows = [("kind", KIND_LABELS.get(saved.kind, saved.kind)),
             ("directory", saved.name), ("recorded status", s.get("status")),
             ("model", (s.get("model") or {}).get("model") or (s.get("model") or {}).get("adapter")),
             ("language model", (s.get("model") or {}).get("language_model")),

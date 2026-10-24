@@ -32,7 +32,14 @@ RUN3 = ROOT / "outputs" / "investigation_v1" / "phase3b1_run3"
 def offline(monkeypatch, tmp_path):
     def blocked(*a, **k):
         raise AssertionError("network access attempted")
-    monkeypatch.setattr(socket.socket, "connect", blocked)
+    real_connect = socket.socket.connect
+
+    def guarded_connect(self, address, *a, **k):
+        # asyncio's Windows event loop connects a loopback socketpair to itself; that is not network access
+        if isinstance(address, tuple) and address and address[0] in ("127.0.0.1", "::1"):
+            return real_connect(self, address, *a, **k)
+        blocked()
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket, "create_connection", blocked)
     monkeypatch.setattr(live, "_get_json", blocked)
     monkeypatch.setattr(lv1, "get_json_no_redirects", blocked)

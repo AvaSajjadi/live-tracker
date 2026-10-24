@@ -17,7 +17,7 @@ Two things are kept apart on purpose:
 - reference compatibility: equivalence with run5 needs the exact initial request and result. A mismatch says only
   that the investigation is not run5's analysis.
 
-One investigation at a time: RunLock is an OS-level exclusive lock (fcntl.flock) on a stable file in the runs
+One investigation at a time: RunLock is an OS-level exclusive lock (fcntl.flock on POSIX, msvcrt.locking on Windows) on a stable file in the runs
 directory, held for the whole run by every browser session and process of the server alike, and each preflight
 issues a one-use token that a paid run consumes.
 """
@@ -25,7 +25,6 @@ issues a one-use token that a paid run consumes.
 from __future__ import annotations
 
 import copy
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -150,12 +149,52 @@ def preflight(config, inputs, *, env=None, http_get=None):
 
 # ---- one investigation at a time ----
 
+# ---- the OS lock, per platform ----
+# POSIX: fcntl.flock on the whole file (shared probe, exclusive hold); BlockingIOError means held elsewhere.
+# Windows (no fcntl): msvcrt.locking on one byte far past the metadata, so the holder's pid record stays readable
+# (Windows byte-range locks are mandatory); contention is one of investigation_data.WINDOWS_LOCK_CONTENTION, and a
+# probe takes the same exclusive lock for an instant (it cannot be shared there) and releases it at once.
+
+_WIN_LOCK_OFFSET = 1 << 20
+
+
+def _lock(fd, exclusive):
+    """True when the lock was taken without waiting, False when another holder has it; other errors propagate."""
+    if os.name == "nt":  # pragma: no cover - Windows
+        import msvcrt
+        from .investigation_data import WINDOWS_LOCK_CONTENTION
+        os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if exc.errno in WINDOWS_LOCK_CONTENTION:
+                return False
+            raise
+    import fcntl
+    try:
+        fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def _unlock(fd):
+    if os.name == "nt":  # pragma: no cover - Windows
+        import msvcrt
+        os.lseek(fd, _WIN_LOCK_OFFSET, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 class RunBusy(RuntimeError):
     """Another investigation holds the lock, or the lock cannot be taken safely (fail closed)."""
 
 
 class RunLock:
-    """One investigation at a time: an OS-level exclusive lock (fcntl.flock, LOCK_EX | LOCK_NB) on a stable lock file
+    """One investigation at a time: an OS-level exclusive non-blocking lock (see _lock) on a stable lock file
     in the runs directory, held on one open file descriptor for the whole critical section. Ownership is the kernel's
     lock, never the file's content: the file is never unlinked (its inode is reused), its content (the holder's pid
     and start time) is informational only, and an empty, unreadable or malformed file neither proves nor disproves
@@ -170,7 +209,7 @@ class RunLock:
     def _open(self):
         """The lock file's descriptor: a regular file opened without following a symlink."""
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise OSError("the lock path is not a regular file")
@@ -182,7 +221,8 @@ class RunLock:
     def _write_metadata(self, fd):
         """Informational only (who holds it, since when); written after the lock is held."""
         os.ftruncate(fd, 0)
-        os.pwrite(fd, json.dumps({"pid": os.getpid(), "started": time.time()}).encode(), 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, json.dumps({"pid": os.getpid(), "started": time.time()}).encode())
 
     def holder(self):
         """None when no one holds the lock; otherwise what is known of the holder ({} when its metadata is not
@@ -194,14 +234,17 @@ class RunLock:
             return {"error": "the lock file cannot be opened"}
         try:
             try:
-                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            except OSError:                       # held exclusively elsewhere (or not lockable): busy
+                free = _lock(fd, exclusive=False)
+            except OSError:                       # not lockable: busy
+                free = False
+            if not free:                          # held exclusively elsewhere
                 try:
-                    info = json.loads(os.pread(fd, 4096, 0) or b"{}")
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    info = json.loads(os.read(fd, 4096) or b"{}")
                 except (OSError, ValueError):
                     info = {}
                 return info if isinstance(info, dict) else {}
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock(fd)
             return None
         finally:
             os.close(fd)
@@ -214,10 +257,9 @@ class RunLock:
         except OSError as exc:
             raise RunBusy(f"the investigation lock cannot be opened ({type(exc).__name__}); not started") from None
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(fd)
-            raise RunBusy("another investigation is running; wait for it to finish") from None
+            if not _lock(fd, exclusive=True):
+                os.close(fd)
+                raise RunBusy("another investigation is running; wait for it to finish") from None
         except OSError as exc:
             os.close(fd)
             raise RunBusy(f"the investigation lock cannot be taken ({type(exc).__name__}); not started") from None
@@ -237,7 +279,7 @@ class RunLock:
         if fd is None:
             return
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _unlock(fd)
         finally:
             os.close(fd)
 

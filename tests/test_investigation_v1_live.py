@@ -290,15 +290,16 @@ def test_a_paid_run_needs_the_confirmed_budget_and_the_separate_authorization(in
     assert FAKE_OR not in capsys.readouterr().err
 
 
-def live_run(i, monkeypatch, get, name="live", cost=None, env=None):
+def live_run(i, monkeypatch, get, name="live", cost=None, env=None, extra=(), faults=None):
     monkeypatch.setattr(live, "MANIFEST", i["manifest"])
-    emu, out = Emu(cost=cost), i["tmp"] / name
+    emu, out = Emu(faults, cost=cost), i["tmp"] / name
     sent_auth = []
 
     def handler(request):                       # the Authorization each model request carries (fake keys only)
         sent_auth.append(request.headers.get("authorization"))
         return emu(request)
-    code = lr.main(argv(i, out, *AUTH), env={"OPENROUTER_API_KEY": FAKE_OR} if env is None else env, http_get=get,
+    code = lr.main(argv(i, out, *AUTH, *extra), env={"OPENROUTER_API_KEY": FAKE_OR} if env is None else env,
+                   http_get=get,
                    http_client=httpx2.Client(transport=httpx2.MockTransport(handler)))
     emu.sent_auth = sent_auth
     return code, out, emu
@@ -864,3 +865,289 @@ def test_paid_mode_refuses_a_redirect_before_any_model_request(inputs, capsys, m
     s = refused_before_any_model_request(code, out, emu)
     assert "https://other.example/collect" not in [u for u, _ in server.seen]
     assert FAKE_OR not in json.dumps(s) + io.out + io.err and FAKE_MGMT not in json.dumps(s) + io.out + io.err
+
+
+# ---- best-effort mode for an existing higher-limit key (explicit opt-in) ----
+
+HACKATHON = {"limit": 50.0, "limit_remaining": 49.0, "usage": 1.0, "limit_reset": None, "is_free_tier": False}
+BEST_EFFORT = ("--key-limit-mode", "best-effort", "--acknowledge-key-limit-usd", "50")
+
+
+def test_strict_mode_is_the_default_and_still_accepts_a_capped_key(inputs, monkeypatch, capsys, no_model):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata())
+    sp = r["spending"]
+    assert code == 0 and sp["authorization_mode"] == "strict" and sp["provider_key_limit_usd"] == 0.5
+    assert sp["acknowledged_key_limit_usd"] is None and sp["paid_run_authorized"] is False
+
+
+def test_a_fifty_dollar_key_is_refused_without_explicit_best_effort_mode(inputs, monkeypatch, capsys, no_model):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(HACKATHON))
+    assert code == 2 and any("above $0.50" in p and "best-effort" in p for p in r["problems"]) and no_model == []
+
+
+def test_a_fifty_dollar_key_is_accepted_with_its_limit_acknowledged(inputs, monkeypatch, capsys, no_model):
+    get = metadata(HACKATHON)
+    code, r, _ = preflight(inputs, monkeypatch, capsys, get, *BEST_EFFORT)
+    sp = r["spending"]
+    assert code == 0 and r["ready"] and no_model == []
+    assert (sp["authorization_mode"], sp["local_target_usd"], sp["provider_key_limit_usd"],
+            sp["provider_key_remaining_usd"], sp["acknowledged_key_limit_usd"]) == ("best_effort", 0.5, 50.0, 49.0, 50.0)
+    assert "NOT a spending ceiling" in sp["exposure"] and "$49.0 remaining" in sp["exposure"]
+    assert sp["paid_run_authorized"] is False and r["plan"]["target_usd"] == 0.5
+    assert [u for u, _ in get.calls] == [MODELS_URL, KEY_URL, ENDPOINTS_URL]           # metadata GETs only
+
+
+@pytest.mark.parametrize("key, ack, why", [
+    (HACKATHON, "49", "is not the key's verified limit"),
+    (HACKATHON, "0.5", "is not the key's verified limit"),
+    ({**HACKATHON, "limit": None, "limit_remaining": None}, "50", "unlimited"),
+    ({**HACKATHON, "limit": 60.0, "limit_remaining": 59.0}, "50", "above $50.00"),
+    ({**HACKATHON, "limit_reset": "monthly"}, "50", "resets automatically"),
+    ({**HACKATHON, "limit_remaining": 48.0}, "50", "inconsistent"),
+    ({**HACKATHON, "usage": 49.8, "limit_remaining": 0.2}, "50", "does not cover"),
+])
+def test_best_effort_still_refuses_wrong_acknowledgments_and_unsafe_keys(inputs, monkeypatch, capsys, no_model, key,
+                                                                         ack, why):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(key), "--key-limit-mode", "best-effort",
+                           "--acknowledge-key-limit-usd", ack)
+    assert code == 2 and any(why in p for p in r["problems"]) and no_model == []
+    assert r["spending"]["provider_key_limit_usd"] is None
+
+
+@pytest.mark.parametrize("flags", [("--key-limit-mode", "best-effort"),
+                                   ("--key-limit-mode", "best-effort", "--acknowledge-key-limit-usd", "60"),
+                                   ("--key-limit-mode", "best-effort", "--acknowledge-key-limit-usd", "nan"),
+                                   ("--key-limit-mode", "best-effort", "--acknowledge-key-limit-usd", "0"),
+                                   ("--acknowledge-key-limit-usd", "50")])
+def test_invalid_mode_options_are_refused_before_any_request(inputs, monkeypatch, capsys, no_model, flags):
+    get = metadata(HACKATHON)
+    code, r, err = preflight(inputs, monkeypatch, capsys, get, *flags)
+    assert code == 2 and r is None and "acknowledge-key-limit-usd" in err and get.calls == []
+
+
+@pytest.mark.parametrize("flags", [["--live"], ["--live", "--confirm-budget-usd", "0.50"],
+                                   ["--live", "--confirm-budget-usd", "0.50", "--authorize-paid-run", "yes"]])
+def test_best_effort_mode_never_authorizes_a_paid_run_by_itself(inputs, capsys, flags):
+    get, emu, out = metadata(HACKATHON), Emu(), inputs["tmp"] / "inv"
+    code = lr.main(argv(inputs, out, *flags, *BEST_EFFORT), env={"OPENROUTER_API_KEY": FAKE_OR}, http_get=get,
+                   http_client=httpx2.Client(transport=httpx2.MockTransport(emu)))
+    capsys.readouterr()
+    assert code == 2 and not out.exists() and get.calls == [] and emu.requests == []
+
+
+def best_effort_run(i, monkeypatch, capsys, **kw):
+    code, out, emu = live_run(i, monkeypatch, metadata(HACKATHON), extra=BEST_EFFORT, **kw)
+    io = capsys.readouterr()
+    assert FAKE_OR not in io.out + io.err
+    s, doc = outputs(out)
+    return code, out, emu, s, doc
+
+
+def test_the_local_target_is_enforced_best_effort_on_a_fifty_dollar_key(inputs, capsys, monkeypatch):
+    code, out, emu, s, doc = best_effort_run(inputs, monkeypatch, capsys, cost=0.25)
+    c = s["cost"]
+    assert len(emu.requests) == 2 and doc["trace"][-2]["reason"] == "provider_reported_budget"
+    assert (c["authorization_mode"], c["target_usd"], c["provider_key_limit_usd"], c["provider_key_remaining_usd"],
+            c["actual_spend_usd"], c["over_target"]) == ("best_effort", 0.5, 50.0, 49.0, 0.5, False)
+    assert "NOT a spending ceiling" in c["exposure"] and "ceiling_usd" not in c
+    assert s["key_policy"] == {"mode": "best_effort", "acknowledged_limit_usd": 50.0}
+    assert code == 1 and s["status"] == "incomplete" and s["publication"] == "not_authorized"
+    assert lr.verify_saved(out) == []
+
+
+def test_a_sixty_cent_overrun_on_a_fifty_dollar_key_is_recorded_truthfully(inputs, capsys, monkeypatch):
+    code, out, emu, s, _ = best_effort_run(inputs, monkeypatch, capsys, cost=0.3)
+    c = s["cost"]
+    assert len(emu.requests) == 2 and code == 1 and s["status"] == "over_target"
+    assert (c["actual_spend_usd"], c["over_target"], c["actual_spend_complete"], c["provider_key_limit_usd"]) == (
+        0.6, True, True, 50.0)
+    assert lr.verify_saved(out) == []
+
+
+def test_a_missing_cost_stops_a_best_effort_run(inputs, capsys, monkeypatch):
+    code, out, emu, s, doc = best_effort_run(inputs, monkeypatch, capsys, faults={2: "no_cost"})
+    assert len(emu.requests) == 2 and doc["trace"][-2]["reason"] == "provider_cost_unknown"
+    assert code == 1 and s["status"] == "incomplete" and not s["cost"]["actual_spend_complete"]
+    assert lr.verify_saved(out) == []
+
+
+def test_a_complete_best_effort_run_verifies(inputs, capsys, monkeypatch):
+    code, out, emu, s, doc = best_effort_run(inputs, monkeypatch, capsys)
+    assert code == 0 and s["status"] == "verified" and len(emu.requests) == 7 and doc["finished"]
+    assert s["preflight"]["key_policy"] == s["key_policy"] and lr.verify_saved(out) == []
+
+
+@pytest.mark.parametrize("tamper", ["policy_to_strict", "ack", "preflight_limit", "cost_mode", "exposure",
+                                    "key_status_limit", "remaining"])
+def test_tampered_best_effort_records_are_rejected(inputs, capsys, monkeypatch, tamper):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    if tamper == "policy_to_strict":
+        s["key_policy"] = {"mode": "strict", "acknowledged_limit_usd": None}
+    elif tamper == "ack":
+        s["key_policy"]["acknowledged_limit_usd"] = 40.0
+    elif tamper == "preflight_limit":
+        s["preflight"]["provider_key_limit_usd"] = 0.5
+    elif tamper == "cost_mode":
+        s["cost"]["authorization_mode"] = "strict"
+    elif tamper == "exposure":
+        s["cost"]["exposure"] = "strict: capped at $0.50"
+    elif tamper == "key_status_limit":
+        s["preflight"]["key_status"]["limit"] = 0.5
+    else:
+        s["cost"]["provider_key_remaining_usd"] = 0.5
+    (out / "run.json").write_text(json.dumps(s))
+    assert lr.verify_saved(out) != []
+
+
+# ---- saved authorization integrity: the key policy is bound to the preflight evidence ----
+
+def rewrite(out, s, policy=None, limit=None, remaining=None):
+    """Save an edited run.json with its editable summaries recomputed as a forger would: the cost summary from the
+    ledger and the given mode and limits, and every recorded output hash."""
+    plan = live.LivePlan(**s["plan"])
+    if policy is not None:
+        s["cost"] = lv1.cost_summary(s["cost"]["ledger"], plan, limit, policy, remaining)
+    s["outputs"] = {n: hashlib.sha256((out / n).read_bytes()).hexdigest() for n in s["outputs"]}
+    (out / "run.json").write_text(json.dumps(s))
+
+
+def strict_run(i, monkeypatch, capsys):
+    code, out, emu = live_run(i, monkeypatch, metadata(), name="strict")
+    capsys.readouterr()
+    assert code == 0
+    return out, outputs(out)[0]
+
+
+def test_codex_deleting_the_preflight_and_switching_to_strict_is_rejected(inputs, capsys, monkeypatch):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    del s["preflight"]
+    s["key_policy"] = {"mode": "strict", "acknowledged_limit_usd": None}
+    rewrite(out, s, lv1.STRICT, None, None)
+    problems = lr.verify_saved(out)
+    assert any("no preflight record" in p for p in problems)
+    assert lr.main(["--verify-saved", str(out)]) == 1
+    capsys.readouterr()
+
+
+def test_a_live_run_without_its_preflight_is_rejected_in_either_mode(inputs, capsys, monkeypatch):
+    out, s = strict_run(inputs, monkeypatch, capsys)
+    del s["preflight"]
+    rewrite(out, s, lv1.STRICT, None, None)
+    assert any("no preflight record" in p for p in lr.verify_saved(out))
+
+
+@pytest.mark.parametrize("field", ["key_status", "key_policy", "provider_key_limit_usd", "provider_key_remaining_usd",
+                                   "checks", "prices", "anthropic_endpoint", "request_configuration", "estimate_v1"])
+def test_incomplete_preflight_evidence_is_rejected(inputs, capsys, monkeypatch, field):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    del s["preflight"][field]
+    rewrite(out, s)
+    assert any("lacks" in p and field in p for p in lr.verify_saved(out))
+
+
+@pytest.mark.parametrize("edit", ["not_ready", "failed_check", "snapshot_prices", "request_sent", "no_endpoint",
+                                  "malformed_prices"])
+def test_contradictory_preflight_evidence_is_rejected(inputs, capsys, monkeypatch, edit):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    pre = s["preflight"]
+    if edit == "not_ready":
+        pre["ready_for_live"] = False
+    elif edit == "failed_check":
+        pre["checks"][0]["ok"] = False
+    elif edit == "snapshot_prices":
+        pre["prices_basis"] = "snapshot (offline)"
+    elif edit == "request_sent":
+        pre["request_configuration"]["requests_sent"] = 1
+    elif edit == "no_endpoint":
+        pre["anthropic_endpoint"] = None
+    else:
+        pre["prices"] = {"input_usd_mtok": 2.5}
+    rewrite(out, s)
+    assert lr.verify_saved(out) != []
+
+
+@pytest.mark.parametrize("edit", ["provider_limit", "remaining", "key_limit"])
+def test_altered_provider_limits_are_rejected_even_with_a_recomputed_summary(inputs, capsys, monkeypatch, edit):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    pre, be = s["preflight"], lv1.KeyPolicy("best_effort", 50.0)
+    if edit == "provider_limit":
+        pre["provider_key_limit_usd"] = 40.0
+        rewrite(out, s, be, 40.0, 49.0)
+    elif edit == "remaining":
+        pre["provider_key_remaining_usd"] = 0.5
+        rewrite(out, s, be, 50.0, 0.5)
+    else:
+        pre["key_status"]["limit"] = 0.5                                         # under the acknowledged $50
+        rewrite(out, s, be, 50.0, 49.0)
+    assert lr.verify_saved(out) != []
+
+
+def test_switching_best_effort_to_strict_with_the_evidence_kept_is_rejected(inputs, capsys, monkeypatch):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    s["key_policy"] = s["preflight"]["key_policy"] = {"mode": "strict", "acknowledged_limit_usd": None}
+    rewrite(out, s, lv1.STRICT, 50.0, 49.0)
+    assert any("not accepted in strict mode" in p for p in lr.verify_saved(out))
+
+
+def test_switching_strict_to_best_effort_is_rejected(inputs, capsys, monkeypatch):
+    out, s = strict_run(inputs, monkeypatch, capsys)
+    be = lv1.KeyPolicy("best_effort", 0.5)
+    s["key_policy"] = s["preflight"]["key_policy"] = {"mode": "best_effort", "acknowledged_limit_usd": 0.5}
+    rewrite(out, s, be, 0.5, 0.5)
+    assert any("within strict mode" in p for p in lr.verify_saved(out))
+
+
+def test_best_effort_mode_refuses_a_key_that_strict_mode_accepts(inputs, monkeypatch, capsys, no_model):
+    code, r, _ = preflight(inputs, monkeypatch, capsys, metadata(), "--key-limit-mode", "best-effort",
+                           "--acknowledge-key-limit-usd", "0.5")
+    assert code == 2 and any("within strict mode" in p for p in r["problems"]) and no_model == []
+
+
+@pytest.mark.parametrize("edit", ["mode_unknown", "live_with_label", "live_with_emulated_requests",
+                                  "live_without_language_model", "dry_relabel"])
+def test_the_recorded_execution_mode_must_be_consistent(inputs, capsys, monkeypatch, edit):
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys)
+    if edit == "mode_unknown":
+        s["mode"] = "something else"
+    elif edit == "live_with_label":
+        s["model"]["label"] = lr.EMULATED_LABEL
+    elif edit == "live_with_emulated_requests":
+        s["emulated_requests"] = []
+    elif edit == "live_without_language_model":
+        s["model"]["language_model"] = False
+    else:                                        # relabelled as a dry run but its preflight evidence kept
+        s["mode"], s["model"]["language_model"], s["model"]["label"] = lr.DRY_MODE, False, lr.EMULATED_LABEL
+    rewrite(out, s)
+    assert lr.verify_saved(out) != []
+
+
+@pytest.mark.parametrize("edit", ["with_preflight", "without_requests", "foreign_tool_ids"])
+def test_a_dry_run_must_be_recorded_as_one(inputs, capsys, edit):
+    _, out, _ = dry(inputs, capsys=capsys)
+    s, doc = outputs(out)
+    if edit == "with_preflight":
+        s["preflight"] = {}
+    elif edit == "without_requests":
+        del s["emulated_requests"]
+    else:
+        for t in doc["trace"]:
+            for c in t.get("tool_calls") or []:
+                c["id"] = "toolu_01RealLookingId"
+            if t.get("kind") in ("tool_call", "finish"):
+                t["tool_use_id"] = "toolu_01RealLookingId"
+        doc["fingerprint"] = av1._content_fingerprint(doc)                     # a recomputed fingerprint
+        (out / "investigation_report.json").write_text(json.dumps(doc))
+    rewrite(out, s)
+    assert lr.verify_saved(out) != []
+
+
+def test_legitimate_saved_reports_verify_in_every_recorded_mode(inputs, capsys, monkeypatch):
+    _, out, _ = dry(inputs, capsys=capsys)
+    assert lr.verify_saved(out) == []
+    _, out, _ = dry(inputs, *BEST_EFFORT, name="dry_best_effort", capsys=capsys)       # no key: mode recorded only
+    assert lr.verify_saved(out) == [] and outputs(out)[0]["cost"]["provider_key_limit_usd"] is None
+    out, _ = strict_run(inputs, monkeypatch, capsys)
+    assert lr.verify_saved(out) == [] and lr.main(["--verify-saved", str(out)]) == 0
+    _, out, _, s, _ = best_effort_run(inputs, monkeypatch, capsys, name="be")
+    assert lr.verify_saved(out) == [] and s["cost"]["authorization_mode"] == "best_effort"
+    capsys.readouterr()

@@ -37,6 +37,12 @@ none of them is a guaranteed maximum charge. A live run needs a DEDICATED, non-s
 limit of at most $0.50 and no reset: the code cannot know whether the key is used elsewhere, nor guarantee the
 provider's billing. Publication is "not_authorized". Exit 0 verified, 2 refused, 1 otherwise (incomplete, over target,
 failed). DIR must be new or empty and git-ignored (or outside the repository).
+
+Key-limit mode: --key-limit-mode strict (default) requires a non-resetting key limit of at most $0.50.
+--key-limit-mode best-effort --acknowledge-key-limit-usd L accepts an existing non-resetting key whose verified limit
+is exactly L (at most $50). The target stays at most $0.50 with every guard unchanged, but it is then best-effort
+only: spending can exceed it, potentially up to the key's available credit, subject to OpenRouter's enforcement.
+Neither mode authorizes a paid run; --live still needs --confirm-budget-usd and --authorize-paid-run.
 """
 
 from __future__ import annotations
@@ -67,6 +73,8 @@ vr, smoke = iv.vr, iv.smoke
 OUTPUT_NAMES = iv.OUTPUT_NAMES
 INVESTIGATION_ID = "investigation_v1_live"
 REFUSALS = iv.REFUSALS + (lv1.LiveRefused, live.AmbientEnvironmentError)
+LIVE_MODE = "LIVE: paid OpenRouter requests"
+DRY_MODE = "dry run (offline: emulated endpoint, no network, no model, no cost)"
 EMULATED_LABEL = ("EMULATED: no language model and no provider; Phase 3B.1's deterministic offline investigator "
                   "answered through an in-process OpenRouter emulation; tokens and costs are emulated, not spent")
 
@@ -149,6 +157,11 @@ def _write(path, data, secrets):
     smoke.create_exclusive(path, data)
 
 
+def make_policy(args):
+    """The key-limit mode (strict unless best-effort is chosen explicitly, with the key's limit acknowledged)."""
+    return lv1.KeyPolicy(args.key_limit_mode.replace("-", "_"), args.acknowledge_key_limit_usd)
+
+
 def make_plan(args):
     return lv1.plan_v1(model=args.model, question=args.question, target_usd=args.target_usd,
                        max_model_turns=args.max_model_turns, max_tool_calls=args.max_tool_calls,
@@ -159,8 +172,8 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
     """One investigation (see the module docstring). env, http_get and http_client are injected by tests; a live
     run without them uses the process environment, Stage 8's metadata GETs and the SDK's own HTTP client."""
     env = os.environ if env is None else env
-    plan = make_plan(args)
-    if args.live:
+    plan, policy = make_plan(args), make_policy(args)
+    if args.live:                                  # best-effort mode alone never authorizes a paid run
         lv1.authorize_live(plan, args.confirm_budget_usd, args.authorize_paid_run)  # before any request or file
     live.require_clean_environment(env)
     archive, cache, manifest = Path(args.archive).expanduser(), Path(args.cache_dir), Path(args.manifest)
@@ -173,15 +186,14 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
     out = iv.prepare(args.out)
     args.archive = archive
     key = _secrets(env)
-    summary = {"mode": "LIVE: paid OpenRouter requests" if args.live else
-               "dry run (offline: emulated endpoint, no network, no model, no cost)",
-               "steps": [], "plan": asdict(plan), "publication": av1.PUBLICATION,
+    summary = {"mode": LIVE_MODE if args.live else DRY_MODE,
+               "steps": [], "plan": asdict(plan), "key_policy": asdict(policy), "publication": av1.PUBLICATION,
                "model": {"provider": plan.provider, "model": plan.model_id, "language_model": bool(args.live),
                          "adapter": "investigation_agent.ClaudeInvestigationModel via investigation_live "
                                     "GuardedClient / ReportedCostGuard and investigation_live_v1.GuardedModelV1",
                          **({} if args.live else {"label": EMULATED_LABEL})},
                "test_split": "not read: validation member and validation cache only"}
-    status, ledger, key_limit = "verified", None, None
+    status, ledger, key_limit, key_remaining = "verified", None, None, None
     try:
         data, scores, pose = vr._step(summary, "inputs", lambda: iv.load_data(args, manifest, cache))
         synthetic = scores["synthetic"]
@@ -194,8 +206,9 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
                 args.validation_run, args.runs_dir, manifest, data, scores, synthetic))
         if args.live:
             pre = vr._step(summary, "preflight", lambda: lv1.preflight_v1(plan, manifest=manifest, env=env,
-                                                                          http_get=http_get))
+                                                                          http_get=http_get, policy=policy))
             summary["preflight"], key_limit = pre, pre["provider_key_limit_usd"]
+            key_remaining = pre["provider_key_remaining_usd"]
             # the adapter sees the capped inference key alone (never the management key)
             key_env = live.PROVIDERS[plan.provider].key_env
             prices, model_env = live.Prices(**pre["prices"]), {key_env: env.get(key_env, "")}
@@ -243,7 +256,7 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
     except Exception:
         status = "failed"
     if ledger is not None:
-        summary["cost"] = lv1.cost_summary(ledger.to_json(), plan, key_limit)
+        summary["cost"] = lv1.cost_summary(ledger.to_json(), plan, key_limit, policy, key_remaining)
         if summary["cost"]["over_target"] and status != "refused":
             status = "over_target"
     if emulator is not None:
@@ -253,6 +266,35 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
     _write(out / OUTPUT_NAMES[2], iv._json_bytes(summary), key)
     summary["output_dir"] = str(out)
     return summary
+
+
+def _execution_evidence(s, doc, plan, policy):
+    """(problems, prices, provider limit, remaining credit) from the run's explicitly recorded execution mode. A live
+    run needs its complete preflight record, re-checked by investigation_live_v1.saved_preflight_problems (the key
+    policy, acknowledgment and provider limit bound to the key metadata through the run-time validator); a dry run
+    must be labelled emulated, hold no preflight and record one emulated request per ledger attempt (its prices are
+    the offline snapshot). Anything else, or a mix, is a problem."""
+    model, n_attempts = s["model"], len(s["cost"]["ledger"]["requests"])
+    if s["mode"] == LIVE_MODE:
+        problems = []
+        if model.get("language_model") is not True or "label" in model or "emulated_requests" in s:
+            problems.append("a live run is recorded with emulated-run fields")
+        p, prices = lv1.saved_preflight_problems(s.get("preflight"), plan, policy)
+        pre = s.get("preflight") or {}
+        if isinstance(pre, dict) and pre.get("estimate_v1") != s.get("estimate"):
+            p.append("the run's estimate is not the preflight's")
+        return problems + p, prices, pre.get("provider_key_limit_usd"), pre.get("provider_key_remaining_usd")
+    if s["mode"] == DRY_MODE:
+        problems = []
+        reqs = s.get("emulated_requests")
+        if model.get("language_model") is not False or model.get("label") != EMULATED_LABEL or "preflight" in s or \
+                not isinstance(reqs, list) or len(reqs) != n_attempts:
+            problems.append("a dry run must be labelled emulated, hold no preflight and record every emulated request")
+        ids = [c.get("id") for t in doc["trace"] if t.get("kind") == "model_turn" for c in t.get("tool_calls") or []]
+        if not all(isinstance(i, str) and i.startswith("toolu_emu_") for i in ids):
+            problems.append("a dry run's trace holds tool calls the emulator did not issue")
+        return problems, live.snapshot_prices(plan.model_id), None, None
+    return ["the run records no known execution mode"], None, None, None
 
 
 def verify_saved(out):
@@ -276,9 +318,16 @@ def verify_saved(out):
             problems.append("publication is not 'not_authorized'")
         if json.loads(json.dumps(s["budget"])) != doc["budget"]:
             problems.append("the report's budget is not the run's")
-        plan = live.LivePlan(**s["plan"])
+        plan, policy = live.LivePlan(**s["plan"]), lv1.KeyPolicy(**s["key_policy"])
         problems += lv1.ledger_problems(doc, s["cost"]["ledger"], plan)
-        cost = lv1.cost_summary(s["cost"]["ledger"], plan, (s.get("preflight") or {}).get("provider_key_limit_usd"))
+        p, prices, limit, remaining = _execution_evidence(s, doc, plan, policy)
+        problems += p
+        if prices is not None:                       # the budget the run was bound by, re-derived from that evidence
+            budget, estimate = lv1.budget_v1(plan, prices)
+            if json.loads(json.dumps(asdict(budget))) != doc["budget"] or \
+                    json.loads(json.dumps(estimate)) != json.loads(json.dumps(s["estimate"])):
+                problems.append("the budget is not the one the recorded prices give")
+        cost = lv1.cost_summary(s["cost"]["ledger"], plan, limit, policy, remaining)
         if {k: s["cost"].get(k) for k in cost} != cost:
             problems.append("the recorded cost summary is not the ledger's")
     except (OSError, KeyError, TypeError, ValueError, AttributeError) as exc:
@@ -303,6 +352,12 @@ def parser():
     ap.add_argument("--target-usd", type=float, default=lv1.MAX_TARGET_USD)
     ap.add_argument("--max-model-turns", type=int, default=8)
     ap.add_argument("--max-tool-calls", type=int, default=8)
+    ap.add_argument("--key-limit-mode", choices=("strict", "best-effort"), default="strict",
+                    help="strict (default): the key's limit must be at most $0.50. best-effort: an existing "
+                         "non-resetting key limited to at most $50; the $0.50 target is then best-effort only and "
+                         "spending can exceed it, up to the key's available credit")
+    ap.add_argument("--acknowledge-key-limit-usd", type=float, default=None,
+                    help="with --key-limit-mode best-effort: the key's actual limit (must equal its metadata)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true", help="PAID: one bounded investigation (needs both below)")
     mode.add_argument("--verify-saved", default=None, metavar="DIR", help="re-verify a finished output directory")
@@ -316,7 +371,8 @@ def parser():
 def preflight_only(args, *, env=None, http_get=None):
     """(exit code, report text): the read-only preflight of the plan these arguments describe."""
     env = os.environ if env is None else env
-    report = lv1.readiness_v1(make_plan(args), manifest=args.manifest, env=env, http_get=http_get)
+    report = lv1.readiness_v1(make_plan(args), manifest=args.manifest, env=env, http_get=http_get,
+                              policy=make_policy(args))
     text = json.dumps(report, indent=2, sort_keys=True, default=str)
     if any(k in text for k in _secrets(env)):              # never print a credential
         raise RuntimeError("refusing to print the preflight: it contains an API key")

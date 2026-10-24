@@ -21,6 +21,35 @@ The preflight refuses an unlimited key, a limit above $0.50, any reset, remainin
 inconsistent values (remaining ≠ limit − usage) and missing fields. The key's limit is OpenRouter's to enforce. It is
 recorded as `provider_key_limit_usd`, and neither it nor the local target is a guaranteed maximum charge.
 
+### 1a. Alternative: an existing higher-limit key (best-effort mode, explicit opt-in)
+
+The default (`--key-limit-mode strict`) refuses any key whose limit is above $0.50. To use an existing key with a
+larger, non-resetting limit (for example the $50 hackathon key), add to the preflight and to the paid run:
+
+```zsh
+--key-limit-mode best-effort --acknowledge-key-limit-usd 50
+```
+
+The acknowledged value must equal the key's verified `limit` exactly. Best-effort mode still refuses:
+- an unlimited key;
+- a limit above $50;
+- any reset;
+- inconsistent metadata;
+- remaining credit below the target.
+
+The target stays at most $0.50 and every guard is unchanged: token budgets, the cost ledger, the stop once reported
+spending reaches the target, retries 0, the routing pin, no fallbacks, and fail-closed handling of missing costs and
+unexpected responses.
+
+**What changes is the exposure.** The $0.50 target is then a best-effort local target, not a spending ceiling.
+- If the local guards fail, or a request costs more than estimated, spending can exceed $0.50, potentially up to the
+  key's available credit (`provider_key_remaining_usd`), subject to OpenRouter's enforcement.
+- The provider-side limit no longer bounds spending near the target.
+
+Choosing this mode does not authorize a paid run; step 5's confirmation and authorization text are still required.
+The mode is recorded in `run.json` (`key_policy`, `cost.authorization_mode`, `cost.exposure`) and checked by
+`--verify-saved`.
+
 ### 1b. Only if the endpoint list needs it: a management key (read-only use)
 
 The preflight reads `GET /api/v1/models/{author}/{slug}/endpoints` with Bearer authentication. OpenRouter may refuse
@@ -65,6 +94,13 @@ It makes exactly three GETs:
 - `/api/v1/models/anthropic/claude-sonnet-5.5/endpoints` (Bearer: the management key if `OPENROUTER_MANAGEMENT_KEY`
   is set, else the inference key; `credentials.endpoint_metadata_get` names which).
 
+With the existing $50 key, add `--key-limit-mode best-effort --acknowledge-key-limit-usd 50` (step 1a):
+
+```zsh
+$PY scripts/investigation_v1_live.py --preflight-only --cache-dir data/raw/calms21_validation \
+    --key-limit-mode best-effort --acknowledge-key-limit-usd 50
+```
+
 If the third GET answers 403 without a management key, the report's `problems` says so: set the management key
 (step 1b) and rerun step 3.
 
@@ -84,6 +120,7 @@ In the printed report, confirm:
 | `confirmed_provider_metadata.anthropic_endpoint` | exactly one Anthropic endpoint for the model; `capacity`: `context_length` ≥ `planned_input_tokens` + `planned_output_tokens`, and `max_prompt_tokens` / `max_completion_tokens` (when stated) ≥ the planned input / output |
 | `estimate` | `estimated_worst_case_usd` ≤ 0.50; `typical_run_usd`; `stage6_cost_cap_usd` and `one_request_reserve_usd` |
 | `local_configuration.request` | `routing` {order: [anthropic], allow_fallbacks: false}; `sdk_max_retries` 0; `retries_when_re_requested` 0; `adapter_fallbacks` false; `beta_endpoint_closed` true; `requests_sent` 0; no `betas`, `fallbacks` or `thinking` in `sent_fields` |
+| `spending` | `authorization_mode` (strict / best_effort), `local_target_usd` 0.5, `provider_key_limit_usd`, `provider_key_remaining_usd`, `exposure` (read it: in best-effort mode spending can exceed the target), `paid_run_authorized` false |
 | `plan` | model `anthropic/claude-sonnet-5.5`, 8 turns, 8 tool calls, 4,000 output tokens per request |
 
 `requires_a_model_response` lists what no preflight can confirm. Each item is either guarded during the run (it stops
@@ -110,6 +147,8 @@ $PY scripts/investigation_v1_live.py ~/Downloads/igor_scores_validation_model_b_
     --live --confirm-budget-usd 0.50 \
     --authorize-paid-run "I authorize one paid Stage 9 v1 investigation"
 ```
+
+With the existing $50 key, add the same `--key-limit-mode best-effort --acknowledge-key-limit-usd 50` as in step 3.
 
 Before any request or file, the run refuses (exit 2):
 - without both the confirmed budget (equal to `--target-usd`) and the exact authorization text;
@@ -149,7 +188,8 @@ In `outputs/investigation_v1_live/live_run1/run.json`, read `cost`:
 - `provider_key_limit_usd`;
 - `actual_spend_usd`, the sum of provider-reported costs. When `actual_spend_complete` is false, some attempts
   reported no cost and the true spend may be higher.
-- `over_target`.
+- `over_target`;
+- `authorization_mode`, `provider_key_remaining_usd` and `exposure` (the key-limit mode and what it meant).
 
 If a management key was created in step 1b, delete it now (Settings → Management keys).
 

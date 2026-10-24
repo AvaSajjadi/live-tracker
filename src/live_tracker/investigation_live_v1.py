@@ -34,6 +34,16 @@ provider_key_limit_usd, never as a guaranteed maximum. Saved outputs state targe
 actual_spend_usd (the provider-reported total, complete or not) and over_target, truthfully even when the provider
 charges past the target or its own limit.
 
+Key-limit modes (KeyPolicy): "strict" (the default) requires the key limit above. "best_effort" must be chosen
+explicitly with the key's actual limit acknowledged (acknowledged_limit_usd, which must equal the verified
+metadata). It accepts only an existing, non-resetting key whose limit is above $0.50 (a key strict mode accepts must
+use strict mode, so the mode follows from the verified limit) and at most MAX_BEST_EFFORT_KEY_LIMIT_USD ($50), with
+every other key check unchanged (consistent metadata, remaining credit covering the target). The local target stays
+at most $0.50 and every guard stays as it is: token budgets, cost ledger, ReportedCostGuard, retries 0, routing pin,
+no fallbacks, fail-closed costs and responses. In best-effort mode, however, the provider-side limit no longer bounds
+spending near the target. Exposure can exceed $0.50, up to the key's remaining credit, subject to the provider's
+enforcement, and every report and cost summary says so. Neither mode authorizes a paid run (authorize_live does).
+
 Before any live run, configure a DEDICATED, non-shared OpenRouter key with such a limit. The code cannot know whether
 the key is used elsewhere at the same time, and cannot guarantee the provider's billing behaviour.
 
@@ -66,6 +76,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import dataclass
 import math
 import os
 import urllib.request
@@ -75,11 +86,13 @@ from . import investigation_agent as ia
 from . import investigation_agent_v1 as av1
 from . import investigation_live as live
 
-__all__ = ["MAX_TARGET_USD", "PAID_RUN_AUTHORIZATION", "GuardedModelV1", "LiveRefused", "authorize_live",
+__all__ = ["MAX_BEST_EFFORT_KEY_LIMIT_USD", "MAX_TARGET_USD", "PAID_RUN_AUTHORIZATION", "STRICT", "GuardedModelV1",
+           "KeyPolicy", "LiveRefused", "authorize_live",
            "budget_v1", "build_model_v1", "cost_summary", "key_limit_problems", "ledger_problems", "plan_v1",
            "preflight_v1", "readiness_v1"]
 
 MAX_TARGET_USD = 0.50
+MAX_BEST_EFFORT_KEY_LIMIT_USD = 50.0
 PAID_RUN_AUTHORIZATION = "I authorize one paid Stage 9 v1 investigation"
 KNOWN_STOP_REASONS = frozenset({"end_turn", "tool_use", "max_tokens", "stop_sequence", "refusal"})
 MANAGEMENT_KEY_ENV = "OPENROUTER_MANAGEMENT_KEY"
@@ -91,6 +104,40 @@ DROPPABLE = frozenset({"betas", "fallbacks", "output_config", "cache_control"})
 
 class LiveRefused(PermissionError):
     """A paid run is not authorized or not ready (nothing was sent)."""
+
+
+@dataclass(frozen=True)
+class KeyPolicy:
+    """Which provider key limits a run accepts. "strict" (default): at most MAX_TARGET_USD. "best_effort" (explicit):
+    at most MAX_BEST_EFFORT_KEY_LIMIT_USD, and only the key whose limit equals acknowledged_limit_usd."""
+    mode: str = "strict"
+    acknowledged_limit_usd: float | None = None
+
+    def __post_init__(self):
+        if self.mode not in ("strict", "best_effort"):
+            raise ValueError("key-limit mode must be 'strict' or 'best_effort'")
+        ack = self.acknowledged_limit_usd
+        if self.mode == "strict" and ack is not None:
+            raise ValueError("--acknowledge-key-limit-usd is only for --key-limit-mode best-effort")
+        if self.mode == "best_effort" and (not _usd(ack) or not 0 < ack <= MAX_BEST_EFFORT_KEY_LIMIT_USD):
+            raise ValueError("best-effort mode needs --acknowledge-key-limit-usd: the key's actual limit, a finite "
+                             f"positive number of at most {MAX_BEST_EFFORT_KEY_LIMIT_USD:.2f}")
+
+    @property
+    def max_key_limit_usd(self):
+        return MAX_TARGET_USD if self.mode == "strict" else MAX_BEST_EFFORT_KEY_LIMIT_USD
+
+    def exposure(self, target_usd, key_limit_usd=None, remaining_usd=None):
+        if self.mode == "strict":
+            return (f"strict: the key's provider-side limit (at most ${MAX_TARGET_USD:.2f}) is the provider's to "
+                    f"enforce; the ${target_usd:.2f} local target is best-effort and can be passed by one request")
+        avail = "" if remaining_usd is None else f" (${remaining_usd} remaining at preflight)"
+        limit = "" if key_limit_usd is None else f" ${key_limit_usd}"
+        return (f"best_effort: the ${target_usd:.2f} local target is NOT a spending ceiling. Spending can exceed it, "
+                f"potentially up to the available credit on the{limit} key{avail}, subject to provider enforcement")
+
+
+STRICT = KeyPolicy()
 
 
 def plan_v1(**kw):
@@ -176,9 +223,10 @@ def _usd(x):
     return not isinstance(x, bool) and isinstance(x, (int, float)) and math.isfinite(x)
 
 
-def key_limit_problems(raw, target_usd):
+def key_limit_problems(raw, target_usd, policy=STRICT):
     """(problems, limit): OpenRouter's key metadata (GET /api/v1/key, as received) must show a finite configured
-    credit limit of at most MAX_TARGET_USD that never resets automatically, remaining credit covering the target, and
+    credit limit within the policy (strict: at most MAX_TARGET_USD; best_effort: at most MAX_BEST_EFFORT_KEY_LIMIT_USD
+    and equal to the acknowledged limit) that never resets automatically, remaining credit covering the target, and
     consistent values (0 <= remaining = limit - usage). Every field must be present; nothing is assumed."""
     d = raw.get("data") if isinstance(raw, dict) else None
     if not isinstance(d, dict):
@@ -190,11 +238,19 @@ def key_limit_problems(raw, target_usd):
     problems = []
     if limit is None:
         problems.append("the key has no credit limit (unlimited): configure a limit of at most "
-                        f"${MAX_TARGET_USD:.2f}")
+                        f"${policy.max_key_limit_usd:.2f}")
     elif not _usd(limit) or limit <= 0:
         problems.append("the key's credit limit is not a positive number")
-    elif limit > MAX_TARGET_USD + KEY_TOLERANCE_USD:
-        problems.append(f"the key's credit limit ${limit} is above ${MAX_TARGET_USD:.2f}")
+    elif limit > policy.max_key_limit_usd + KEY_TOLERANCE_USD:
+        problems.append(f"the key's credit limit ${limit} is above ${policy.max_key_limit_usd:.2f}" + (
+            " (an existing higher-limit key needs --key-limit-mode best-effort with its limit acknowledged)"
+            if policy.mode == "strict" and limit <= MAX_BEST_EFFORT_KEY_LIMIT_USD + KEY_TOLERANCE_USD else ""))
+    elif policy.mode == "best_effort" and limit <= MAX_TARGET_USD + KEY_TOLERANCE_USD:
+        problems.append(f"the key's limit ${limit} is within strict mode: use the default --key-limit-mode strict "
+                        "(best-effort is only for an existing higher-limit key)")
+    elif policy.mode == "best_effort" and abs(limit - policy.acknowledged_limit_usd) > KEY_TOLERANCE_USD:
+        problems.append(f"the acknowledged key limit ${policy.acknowledged_limit_usd} is not the key's verified "
+                        f"limit ${limit}")
     if not _usd(remaining) or remaining < 0:
         problems.append("the key's remaining credit is not a non-negative number")
     if not _usd(usage) or usage < 0:
@@ -395,7 +451,7 @@ def request_configuration(plan, compat):
     return problems, record
 
 
-def _preflight_v1(plan, *, manifest, env=None, http_get=None):
+def _preflight_v1(plan, *, manifest, env=None, http_get=None, policy=STRICT):
     """(preflight record, problems). Never a model request: Stage 8's online preflight (free GETs: model list, key
     status), the key metadata exactly as received (key_limit_problems), the model's Anthropic endpoint
     (anthropic_endpoint_problems), the v1 budget estimate (budget_v1) and the request configuration
@@ -414,12 +470,15 @@ def _preflight_v1(plan, *, manifest, env=None, http_get=None):
     problems = [c["name"] for c in pre["checks"] if not c["ok"]]
     if not pre["ready_for_live"]:
         problems.append("ready_for_live")
-    pre["provider_key_limit_usd"] = None
+    pre["provider_key_limit_usd"] = pre["provider_key_remaining_usd"] = None
+    pre["key_policy"] = {"mode": policy.mode, "acknowledged_limit_usd": policy.acknowledged_limit_usd}
     if "key" not in received:
         problems.append("the key metadata was not received")
     else:
-        p, pre["provider_key_limit_usd"] = key_limit_problems(received["key"], plan.target_usd)
+        p, pre["provider_key_limit_usd"] = key_limit_problems(received["key"], plan.target_usd, policy)
         problems += p
+        if not p:
+            pre["provider_key_remaining_usd"] = float(received["key"]["data"]["limit_remaining"])
     env = os.environ if env is None else env
     prices = live.Prices(**pre["prices"]) if pre.get("prices_basis") == "fetched" else None
     estimate = None
@@ -451,10 +510,53 @@ def _preflight_v1(plan, *, manifest, env=None, http_get=None):
     return pre, problems
 
 
-def preflight_v1(plan, *, manifest, env=None, http_get=None):
+PREFLIGHT_EVIDENCE = ("online", "ready_for_live", "checks", "prices", "prices_basis", "key_status", "key_policy",
+                      "provider_key_limit_usd", "provider_key_remaining_usd", "anthropic_endpoint",
+                      "endpoint_metadata_credential", "estimate_v1", "request_configuration")
+PINNED_ROUTING = {"order": ["anthropic"], "allow_fallbacks": False}
+
+
+def saved_preflight_problems(pre, plan, policy):
+    """(problems, prices): a saved live run's preflight record (preflight_v1's return value) re-checked as evidence:
+    every field present; a passing online preflight with fetched prices, an Anthropic endpoint and a request
+    configuration that sent nothing; the key policy the run records; and the recorded key metadata accepted by the
+    same validator as at run time (key_limit_problems with that policy and target), giving exactly the recorded
+    provider limit and remaining credit. prices: the fetched prices (None when unusable)."""
+    if not isinstance(pre, dict):
+        return ["a live run has no preflight record"], None
+    missing = [k for k in PREFLIGHT_EVIDENCE if k not in pre]
+    if missing:
+        return [f"the live run's preflight record lacks {missing}"], None
+    problems = []
+    if pre["key_policy"] != {"mode": policy.mode, "acknowledged_limit_usd": policy.acknowledged_limit_usd}:
+        problems.append("the preflight's key policy is not the run's key policy")
+    checks = pre["checks"]
+    if pre["online"] is not True or pre["ready_for_live"] is not True or pre["prices_basis"] != "fetched" or \
+            not isinstance(checks, list) or not checks or not all(isinstance(c, dict) and c.get("ok") is True
+                                                                  for c in checks):
+        problems.append("the preflight record is not a passing online preflight with fetched prices")
+    rc = pre["request_configuration"]
+    if not isinstance(rc, dict) or rc.get("requests_sent") != 0 or rc.get("routing") != PINNED_ROUTING:
+        problems.append("the preflight's request configuration is not the pinned, unsent configuration")
+    if not isinstance(pre["anthropic_endpoint"], dict):
+        problems.append("the preflight record has no verified Anthropic endpoint")
+    key = pre["key_status"]
+    p, limit = key_limit_problems({"data": key}, plan.target_usd, policy)
+    problems += [f"the recorded key is not accepted in {policy.mode} mode: {x}" for x in p]
+    if not p and (limit, float(key["limit_remaining"])) != (pre["provider_key_limit_usd"],
+                                                            pre["provider_key_remaining_usd"]):
+        problems.append("the recorded provider limit or remaining credit is not the key metadata's")
+    try:
+        prices = live.Prices(**pre["prices"])
+    except TypeError:
+        return problems + ["the preflight's prices are malformed"], None
+    return problems, prices
+
+
+def preflight_v1(plan, *, manifest, env=None, http_get=None, policy=STRICT):
     """_preflight_v1 for a paid run: LiveRefused unless every check passes (before any paid request); the preflight
     record (with provider_key_limit_usd) when ready."""
-    pre, problems = _preflight_v1(plan, manifest=manifest, env=env, http_get=http_get)
+    pre, problems = _preflight_v1(plan, manifest=manifest, env=env, http_get=http_get, policy=policy)
     if problems:
         raise LiveRefused(f"preflight not ready: {problems}")
     return pre
@@ -473,17 +575,24 @@ REQUIRES_A_MODEL_RESPONSE = (
 )
 
 
-def readiness_v1(plan, *, manifest, env=None, http_get=None):
+def readiness_v1(plan, *, manifest, env=None, http_get=None, policy=STRICT):
     """The standalone, read-only preflight: _preflight_v1's checks as a report, never a model request and never a
     raise on a failed check. ready only when nothing failed. Confirmed provider metadata, locally confirmed
     configuration and assumptions only a model response can test are kept apart."""
-    pre, problems = _preflight_v1(plan, manifest=manifest, env=env, http_get=http_get)
+    pre, problems = _preflight_v1(plan, manifest=manifest, env=env, http_get=http_get, policy=policy)
     key = pre.get("key_status")
     return {"mode": "read-only preflight (free metadata GETs only; no model request, no investigation, no cost)",
             "ready": not problems, "problems": problems,
             "plan": {"provider": plan.provider, "model": plan.model_id, "target_usd": plan.target_usd,
                      "max_model_turns": plan.max_model_turns, "max_tool_calls": plan.max_tool_calls,
                      "per_request_max_tokens": plan.per_request_max_tokens, "effort": plan.effort},
+            "spending": {"authorization_mode": policy.mode, "local_target_usd": plan.target_usd,
+                         "acknowledged_key_limit_usd": policy.acknowledged_limit_usd,
+                         "provider_key_limit_usd": pre.get("provider_key_limit_usd"),
+                         "provider_key_remaining_usd": pre.get("provider_key_remaining_usd"),
+                         "exposure": policy.exposure(plan.target_usd, pre.get("provider_key_limit_usd"),
+                                                     pre.get("provider_key_remaining_usd")),
+                         "paid_run_authorized": False},
             "confirmed_provider_metadata": {
                 "model": pre.get("model_metadata"), "prices_basis": pre.get("prices_basis"),
                 "prices_usd_per_mtok": None if not pre.get("prices") else {
@@ -503,12 +612,16 @@ def readiness_v1(plan, *, manifest, env=None, http_get=None):
             "requires_a_model_response": list(REQUIRES_A_MODEL_RESPONSE)}
 
 
-def cost_summary(ledger_json, plan, provider_key_limit_usd=None):
+def cost_summary(ledger_json, plan, provider_key_limit_usd=None, policy=STRICT, provider_key_remaining_usd=None):
     """What was spent, stated apart from what was planned: target_usd is the local target (not a guaranteed maximum);
     provider_key_limit_usd the key's provider-side limit read at preflight (None: no provider, e.g. a dry run);
-    actual_spend_usd the provider-reported total, complete only when every attempt reported a cost."""
+    actual_spend_usd the provider-reported total, complete only when every attempt reported a cost;
+    authorization_mode and exposure the key-limit mode and what it means for spending."""
     spend = ledger_json["known_cost_usd"]
     return {"ledger": ledger_json, "target_usd": plan.target_usd, "provider_key_limit_usd": provider_key_limit_usd,
+            "provider_key_remaining_usd": provider_key_remaining_usd, "authorization_mode": policy.mode,
+            "acknowledged_key_limit_usd": policy.acknowledged_limit_usd,
+            "exposure": policy.exposure(plan.target_usd, provider_key_limit_usd, provider_key_remaining_usd),
             "actual_spend_usd": spend, "actual_spend_complete": ledger_json["complete"],
             "over_target": spend > plan.target_usd,
             "note": "actual_spend_usd is the sum of provider-reported costs (OpenRouter usage.cost); when incomplete, "

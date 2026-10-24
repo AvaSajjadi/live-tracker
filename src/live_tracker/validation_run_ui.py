@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from . import validation_run_view as vv
+from .ui_style import note
 
 MODE_KEY = "data_mode"                                   # shared by the two pages (plain state, not a widget)
 SYNTHETIC, REAL = "Synthetic demonstration", "Verified real validation run"
@@ -37,8 +38,8 @@ def choose_run(widget_key):
     root = vv.runs_dir()
     names = vv.list_runs(root)
     if not names:
-        st.error(f"No validation run found under {root.name}/. Produce one with scripts/validation_run_v1.py "
-                 "(see docs/validation_run_v1.md). Nothing is shown in its place.")
+        note("error", f"No validation run found under {root.name}/. Produce one with scripts/validation_run_v1.py.",
+             "See docs/validation_run_v1.md. Nothing is shown in its place.")
         return None
     current = st.session_state.get(RUN_KEY)
     name = st.selectbox("Validation run", names, index=names.index(current) if current in names else len(names) - 1,
@@ -52,10 +53,11 @@ def choose_run(widget_key):
     except (OSError, ValueError) as exc:
         st.error(f"Run {name!r} cannot be read ({type(exc).__name__}: {exc}). Nothing is substituted.")
         return None
-    st.success(f"Run {name!r}: the recorded execution is CONSISTENT (status 'verified'; file digests, journal, "
-               "snapshot, Contract v1 record and summary agree with each other and with the rules they claim).")
-    st.caption("Not independently authenticated: these are local files and no signature or registry binds them to "
-               "the run that executed. Recorded-only claims are labelled as such.")
+    note("success", f"Run {name!r}: the recorded execution is CONSISTENT (status 'verified').",
+         "File digests, journal, snapshot, Contract v1 record and summary agree with each other and with the "
+         "rules they claim.")
+    note("caption", "Not independently authenticated: these are local files.",
+         "No signature or registry binds them to the run that executed. Recorded-only claims are labelled as such.")
     return run
 
 
@@ -94,9 +96,10 @@ def _rule(run):
 
 def render_replay():
     """Replay, real mode: the recorded monitoring run (no new monitoring run, no approval)."""
-    st.info("REAL validation data: a COMPLETED monitoring run is browsed. Nothing is re-run; the model and the "
-            "monitor are not called. Starting a new monitoring run still requires an explicit researcher approval "
-            "(scripts/validation_run_v1.py --confirm); browsing is not one.")
+    note("info", "REAL validation data: a completed run is browsed and nothing is re-run. "
+                 "Starting a new run needs your approval; browsing is not one.",
+         "The model and the monitor are not called. A new monitoring run needs an explicit researcher "
+         "approval: scripts/validation_run_v1.py --confirm.")
     run = choose_run("replay_validation_run")
     if run is None:
         return
@@ -134,9 +137,10 @@ def render_replay():
 
 def render_investigation():
     """Investigation, real mode: the recorded Contract v1 tool run of the verified run."""
-    st.info("REAL validation data: the recorded Contract v1 tool run of a verified validation run. The calls were a "
-            "fixed, deterministic sequence chosen before any value was seen; no language model chose or "
-            "interpreted them, and nothing is re-run here.")
+    note("info", "REAL validation data: a recorded tool run; no language model chose or interpreted them. "
+                 "Nothing is re-run.",
+         "The Contract v1 calls were a fixed, deterministic sequence chosen before any value was seen, "
+         "for a verified validation run.")
     run = choose_run("investigation_validation_run")
     if run is None:
         return
@@ -162,9 +166,10 @@ def render_investigation():
                         f"fraction {quality['usable_fraction']:.3f}, {quality['n_usable_frames']} of "
                         f"{quality['n_frames']} frames; longest frozen / out-of-frame run "
                         f"{quality['longest_veto_run_s']:g} s); get_window_features {json.dumps(feats['summary'])}.")
-            st.caption("The verdict was re-decided from these recorded counts with Contract v1's own rule "
-                       "(quality_reasons) and the approved policy definition, and matches. The counts and flags "
-                       "themselves are recorded values: re-measuring them would need the pose data.")
+            note("caption", "The verdict was re-decided from these recorded counts, and matches.",
+                 "The verdict was re-decided from these recorded counts with Contract v1's own rule "
+                 "(quality_reasons) and the approved policy definition, and matches. The counts and flags "
+                 "themselves are recorded values: re-measuring them would need the pose data.")
     with tab_cmp:
         st.dataframe(pd.DataFrame(vv.comparison_rows(run)), hide_index=True, width="stretch")
         first = run.comparisons[0] if run.comparisons else None

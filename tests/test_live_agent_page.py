@@ -94,6 +94,12 @@ def page_text(at):
     return " ".join(parts)
 
 
+def table(at, *columns, last=False):
+    """The first (or last) table on the page with exactly these columns."""
+    found = [df.value for df in at.dataframe if list(df.value.columns) == list(columns)]
+    return found[-1 if last else 0]
+
+
 def button(at, label):
     return next(b for b in at.button if b.label == label)
 
@@ -142,7 +148,8 @@ def test_acceptance_question_preflight_paid_run_evidence_report_verification_dis
     assert "Verified autonomous investigation" in text and "insufficient_evidence" in text
     assert "Verdict: equivalent" in text and FAKE_OR not in text
     assert LR.verify_saved(synthetic["tmp"] / "live" / name) == []
-    tools = at.dataframe[1].value["tool"].tolist()                             # the tool sequence tab
+    tools = table(at, *runs.trace_rows(json.loads((synthetic["tmp"] / "live" / name / "investigation_report.json")
+                                           .read_text()))[0])["tool"].tolist()  # the tool sequence tab
     assert "query_events" in tools and "compare_windows" in tools and "finish_investigation" in tools
 
 
@@ -366,9 +373,10 @@ def test_switching_saved_runs_shows_exactly_the_selected_run(synthetic):
         at = run(at)
         assert showing(at) == (name, name) and displayed_question(at).startswith(question)
         doc = json.loads((synthetic["tmp"] / "live" / name / "investigation_report.json").read_text())
-        obs = at.dataframe[0].value                                            # the Finding tab's observations
+        obs = table(at, "evidence_id", "field", "value")                       # the Finding tab's observations
         assert obs["evidence_id"].tolist() == [o["evidence_id"] for o in doc["observations"]]
-        prov = dict(zip(at.dataframe[-1].value["field"], at.dataframe[-1].value["value"]))
+        prov = table(at, "field", "value", last=True)                          # the provenance tab
+        prov = dict(zip(prov["field"], prov["value"]))
         assert prov["directory"] == name and prov["report fingerprint"] == doc["fingerprint"]
 
 

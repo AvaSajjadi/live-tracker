@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import secrets
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -374,6 +375,191 @@ def render_compared(ov):
             st.markdown(f"- **Effect definition:** {c['mean_diff_definition']}.")
 
 
+# ---- UI-2: scientific evidence (charts of one accepted comparison's recorded evidence) ----
+
+EVIDENCE_KEY = "live_agent_comparison_"           # + the saved investigation's name: its selected comparison
+SIGN_COLORS = {"lower before the bout": "#4c78a8", "higher before the bout": "#f58518", "no difference": "#9d9d9d"}
+VERDICT_BADGES = {"met": ":green-badge[met]", "not met": ":red-badge[not met]",
+                  "not evaluated": ":gray-badge[not evaluated]", "not recorded": ":gray-badge[not recorded]"}
+
+
+def _height(n, legend_rows=0):
+    """The whole chart's height (Streamlit fits the axis title and the legend inside it): room for every row's
+    label, so none is dropped as overlapping, plus the legend's rows."""
+    return max(120, 32 * n + 60 + 22 * legend_rows)
+
+
+def render_evidence(saved):
+    """Charts of the recorded evidence of a VERIFIED investigation: one accepted comparison at a time (the primary
+    one by default) with the query evidence whose bouts it used. Every value is read from the report
+    (runs.evidence_view); nothing is recomputed and no interval or significance test is shown."""
+    d = saved.doc
+    st.markdown("#### Scientific evidence")
+    st.caption("The recorded evidence behind the finding, read from the verified report: one accepted comparison at a "
+               "time, with the predicted bouts it used. Nothing is recomputed; no interval or significance test is "
+               "shown.")
+    choices = runs.comparison_choices(d)
+    if not choices:
+        st.info("This investigation recorded no accepted comparison, so there is no comparison evidence to chart.")
+        queries = [e for e in d["evidence"] if e["tool"] == "query_events"]
+        if queries:
+            st.caption("The predicted bouts of its last accepted query (no comparison used them):")
+            render_bouts(runs.bout_view(queries[-1]))
+        return
+    ids = [c["evidence_id"] for c in choices]
+    labels = {c["evidence_id"]: c["label"] for c in choices}
+    key = EVIDENCE_KEY + saved.name
+    if st.session_state.get(key) not in ids:                    # first view: the primary comparison, else the last
+        st.session_state[key] = next((c["evidence_id"] for c in choices if c["primary"]), ids[-1])
+    selected = st.selectbox("Comparison", ids, format_func=labels.__getitem__, key=key,
+                            help="Each accepted compare_windows call separately; results are never combined.")
+    v = runs.evidence_view(d, selected)
+    tabs = st.tabs(["Session comparison", "Predicted bouts", "Exclusions", "Evidence gate"])
+    with tabs[0]:
+        render_sessions(v)
+    with tabs[1]:
+        if v["query"] is None:
+            st.warning(f"The bouts of this comparison cannot be shown: {v['query_basis']}.")
+        else:
+            st.caption(f"Bouts of query evidence `{v['query']['evidence_id']}` ({v['query_basis']}); this "
+                       f"comparison took {_num(v['n_input'])} of them as input.")
+            render_bouts(v["query"])
+    with tabs[2]:
+        render_exclusions(v)
+    with tabs[3]:
+        render_gate(v)
+
+
+def render_sessions(v):
+    if v["status"] != "ok" or not v["sessions"]:
+        why = f" ({v['reason']}: {v['reason_text']})" if v.get("reason") else ""
+        st.info(f"No session-level effect is shown: this comparison's status is `{v['status']}`{why}. Contract v1 "
+                "records per-session differences only for a comparison that meets the evidence gate, so there is "
+                "nothing to plot.")
+        return
+    unit = v["unit"]
+    m = st.columns(2)
+    m[0].metric("Contributing sessions", _num(v["n_sessions"]))
+    m[1].metric("Reported mean_diff (median across sessions)", f"{_num(v['mean_diff'])} {unit}".strip())
+    df = pd.DataFrame(v["sessions"])
+    df["direction"] = ["lower before the bout" if x < 0 else "higher before the bout" if x > 0 else "no difference"
+                       for x in df["paired_diff"]]
+    title = f"{v['feature']}: pre − baseline" + (f" ({unit})" if unit else "")
+    bars = alt.Chart(df).mark_bar().encode(
+        x=alt.X("paired_diff:Q", title=title),
+        y=alt.Y("session:N", sort=None, title=None, axis=alt.Axis(labelLimit=170, labelOverlap=False)),
+        color=alt.Color("direction:N", title=None, scale=alt.Scale(domain=list(SIGN_COLORS),
+                                                                   range=list(SIGN_COLORS.values())),
+                        legend=alt.Legend(orient="bottom", direction="vertical")),
+        tooltip=[alt.Tooltip("full_session:N", title="session"), alt.Tooltip("n_bouts:Q", title="used bouts"),
+                 alt.Tooltip("paired_diff:Q", title="session mean of pre − baseline", format=".4g")])
+    zero = alt.Chart(pd.DataFrame({"zero": [0.0]})).mark_rule(color="#666666", strokeWidth=1.5).encode(x="zero:Q")
+    median = alt.Chart(pd.DataFrame({"mean_diff": [v["mean_diff"]]})).mark_rule(
+        color="#222222", strokeDash=[6, 4], strokeWidth=2).encode(
+        x="mean_diff:Q", tooltip=[alt.Tooltip("mean_diff:Q", title="mean_diff (median across sessions)",
+                                              format=".4g")])
+    st.altair_chart((bars + zero + median).properties(height=_height(len(df), len(SIGN_COLORS))), width="stretch")
+    st.caption(f"Each bar is one session: the mean, over that session's used bouts, of the pre-bout window value "
+               f"minus the baseline window value of `{v['feature']}` ({v['feature_meaning']}). The dashed line is "
+               "the reported mean_diff, the median of these session values; the solid line is zero (no "
+               "difference). Colour shows only the sign. Association only: no confidence interval or significance "
+               "test.")
+    with st.expander("Plotted values"):
+        st.dataframe(df[["full_session", "n_bouts", "paired_diff"]].rename(columns={
+            "full_session": "session", "n_bouts": "used bouts", "paired_diff": f"pre − baseline ({unit})"}),
+            hide_index=True, width="stretch")
+
+
+def render_bouts(q):
+    st.caption(f"Classifier-predicted `{q['behavior']}` bouts: threshold crossings of the {q['data_source']} "
+               "scores, not annotated behavior.")
+    m = st.columns(4)
+    m[0].metric("Predicted bouts", _num(q["n_bouts"]))
+    m[1].metric("Sessions with bouts", f"{_num(q['n_sessions'])} of {_num(q['n_sessions_searched'])}")
+    m[2].metric("Applied threshold", _num(q["threshold"]),
+                help=None if q["threshold_sent"] else "Not set by the investigation: Contract v1's default applied.")
+    m[3].metric("Minimum duration", _seconds(q["min_duration_s"]))
+    per = pd.DataFrame(q["per_session"])
+    if not per.empty:
+        st.altair_chart(alt.Chart(per).mark_bar(color="#4c78a8").encode(
+            x=alt.X("bouts:Q", title="predicted bouts", axis=alt.Axis(tickMinStep=1)),
+            y=alt.Y("session:N", sort=None, title=None, axis=alt.Axis(labelLimit=170, labelOverlap=False)),
+            tooltip=["session:N", "bouts:Q"]).properties(height=_height(len(per))), width="stretch")
+    rows = pd.DataFrame(q["bouts"])
+    if q["durations_recorded"]:
+        durations = rows.dropna(subset=["duration_s"])
+        hist = alt.Chart(durations).mark_bar(color="#72b7b2").encode(
+            x=alt.X("duration_s:Q", bin=alt.Bin(maxbins=20), title="bout duration, end_s − start_s (s)"),
+            y=alt.Y("count():Q", title="predicted bouts"))
+        floor = alt.Chart(pd.DataFrame({"min_duration_s": [q["min_duration_s"]]})).mark_rule(
+            color="#222222", strokeDash=[6, 4]).encode(x="min_duration_s:Q")
+        st.altair_chart((hist + floor).properties(height=200), width="stretch")
+        st.caption(f"Durations of the {q['durations_recorded']} bouts with a recorded end_s; the dashed line is the "
+                   "minimum duration.")
+    elif not rows.empty:
+        st.info("No bout has a recorded end_s, so their durations are not available.")
+    st.caption(f"{q['start_meaning']}. {q['fired_meaning']}")
+    if not rows.empty:
+        with st.expander(f"All {len(rows)} predicted bouts"):
+            st.dataframe(rows, hide_index=True, width="stretch")
+
+
+def render_exclusions(v):
+    m = st.columns(3)
+    m[0].metric("Input bouts", _num(v["n_input"]))
+    m[1].metric("Used", _num(v["n_used"]))
+    m[2].metric("Excluded", _num(v["n_excluded"]))
+    if not v["exclusions_consistent"]:
+        st.warning("The recorded exclusion counts do not add up; they are shown exactly as recorded.")
+    rows = [{"category": "Used in the comparison", "bouts": v["n_used"], "kind": "used", "order": 0}]
+    rows += [{"category": x["label"], "bouts": x["bouts"], "kind": "excluded", "order": i}
+             for i, x in enumerate(v["exclusions"], 1) if x["bouts"]]
+    df = pd.DataFrame(rows)
+    st.altair_chart(alt.Chart(df).mark_bar().encode(
+        x=alt.X("bouts:Q", title="bouts", axis=alt.Axis(tickMinStep=1)),
+        y=alt.Y("category:N", sort=alt.EncodingSortField("order"), title=None,
+                axis=alt.Axis(labelLimit=200, labelOverlap=False)),
+        color=alt.Color("kind:N", title=None, scale=alt.Scale(domain=["used", "excluded"],
+                                                              range=["#4c78a8", "#bab0ac"]), legend=None),
+        tooltip=["category:N", "bouts:Q"]).properties(height=_height(len(df))), width="stretch")
+    st.caption("The blue bar is the bouts the comparison used; each grey bar is one recorded exclusion reason. Each "
+               "excluded bout is counted once, under the first reason Contract v1 checks, in this order:")
+    st.dataframe(pd.DataFrame(v["exclusions"])[["reason", "description", "bouts"]].rename(
+                 columns={"reason": "recorded reason (why)", "description": "meaning"}),
+                 hide_index=True, width="stretch")
+
+
+def render_gate(v):
+    g = v["gate"]
+    if v["status"] == "ok":
+        st.success(f"Evidence gate met: {_num(v['n_windows'])} valid windows in {_num(v['n_sessions'])} sessions.")
+    elif v["status"] == "insufficient_evidence":
+        st.info(f"Evidence gate not met (`{v['failed_gate']}`; {v['reason']}: {v['reason_text']}). No effect is "
+                "reported for this comparison.")
+    if g["overridden"]:
+        st.warning(f"Gate overridden: lowered from the Contract v1 defaults (≥ {g['default_min_n_windows']} windows, "
+                   f"≥ {g['default_min_n_sessions']} sessions) to ≥ {g['min_n_windows']} windows and ≥ "
+                   f"{g['min_n_sessions']} sessions. Recorded reason: “{g['override_reason']}”.")
+    else:
+        st.caption(f"The Contract v1 default gate, not overridden: ≥ {g['min_n_windows']} windows in ≥ "
+                   f"{g['min_n_sessions']} sessions.")
+    for row in v["gates"]:
+        extra = (f" (recorded: {_num(row['n_available'])} available, {_num(row['n_required'])} required)"
+                 if row["verdict"] == "not met" else
+                 " (Contract v1 stops at the first failed gate)" if row["verdict"] == "not evaluated" else "")
+        st.markdown(f"**{row['gate']}** (`{row['field']}`): observed {_num(row['observed'])}, required ≥ "
+                    f"{_num(row['required'])} {VERDICT_BADGES[row['verdict']]}{extra}")
+    df = pd.DataFrame(v["gates"])
+    if df[["observed", "required"]].notna().all().all():
+        base = alt.Chart(df).encode(y=alt.Y("gate:N", sort=None, title=None,
+                                            axis=alt.Axis(labelLimit=170, labelOverlap=False)))
+        observed = base.mark_bar(color="#4c78a8").encode(x=alt.X("observed:Q", title="count"),
+                                                         tooltip=["gate:N", "observed:Q", "required:Q", "verdict:N"])
+        required = base.mark_tick(color="#222222", thickness=3, size=30).encode(x="required:Q")
+        st.altair_chart((observed + required).properties(height=_height(len(df))), width="stretch")
+        st.caption("Bars: the recorded counts; black ticks: the required minimums.")
+
+
 def render_timeline(steps, who):
     st.markdown("#### Recorded investigation activity")
     st.caption(f"{who['label'].capitalize()}. The saved trace, in order (a record of a finished run, not a live "
@@ -412,6 +598,7 @@ def render_saved(saved):
     st.markdown(READABLE, unsafe_allow_html=True)
     ref, who = runs.reference_check(saved), runs.attribution(saved)
     render_overview(saved, runs.overview(saved, ref))
+    render_evidence(saved)
     render_timeline(runs.timeline(d, who["replies"]), who)
     st.markdown("#### Technical details")
     tabs = st.tabs(["Finding", "Tool sequence", "Evidence", "Cost ledger", "Reference check (run5)",

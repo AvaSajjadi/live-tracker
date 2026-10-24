@@ -4,6 +4,9 @@ Class-weighted logistic regression on per-frame features:
 - train on manifest["train"] sessions only
 - choose C on manifest["validation"] only (frame macro F1 of attack,
   investigation, mount)
+- calibrate the scores on manifest["validation"] (sigmoid, classifier frozen), so a
+  score of 0.8 is close to an 80 % chance. Validation numbers are then slightly
+  optimistic: the same sessions fit the calibration and report the result.
 - output probabilities for attack, investigation, mount (INTERFACES.md §2)
 
 Consecutive frames are nearly identical, so training uses every
@@ -34,6 +37,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
@@ -56,6 +61,7 @@ class FitParams:
     C_grid: tuple = (0.01, 0.1, 1.0)
     train_stride: int = 3
     max_iter: int = 300
+    calibrate: str | None = "sigmoid"   # fitted on validation after C is chosen; None = raw scores
     extra: dict = field(default_factory=dict)
 
 
@@ -114,12 +120,17 @@ def fit_model(features, labels, manifest, seed=0, params=None, log=print):
         log(f"  C={C:g}: validation frame macro F1 = {macro:.3f}")
         if best is None or macro > best[1]:
             best = (m, macro, C)
+    model = best[0]
+    if p.calibrate:
+        # the classifier stays frozen; only a per-class sigmoid is fitted, on validation sessions
+        model = CalibratedClassifierCV(FrozenEstimator(model), method=p.calibrate).fit(x_va, y_va)
     info = {"seed": seed, "C": best[2], "val_macro_f1": best[1], "search": tried,
+            "calibration": p.calibrate and f"{p.calibrate}, fitted on validation sessions",
             "n_train_rows": int(len(y_tr)), "n_features": int(x_tr.shape[1]),
             "feature_columns": feature_columns(features), "fit_params": asdict(p),
             "train_sessions": len(manifest["train"]),
             "validation_sessions": len(manifest["validation"])}
-    return best[0], info
+    return model, info
 
 
 def fit_scores(features, labels, manifest, split, seed=0):

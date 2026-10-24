@@ -373,14 +373,18 @@ def new_run_name():
 
 # test seam: a factory of the httpx client the paid run uses (None: the SDK's own client)
 HTTP_CLIENT_FACTORY = None
+# test / demo seam: a factory of the emulated endpoint a FREE REHEARSAL uses (None: the CLI's own emulator). It is
+# never used for a paid run (tests/live_agent_progress_demo.py sets a slowed emulator for watching live progress).
+REHEARSAL_EMULATOR_FACTORY = None
 
 
 def execute(config, inputs, *, confirm_budget_usd, authorization, paid=True, root=None, env=None, http_get=None,
-            emulator=None):
+            emulator=None, progress=None):
     """One investigation through the CLI's run() under the lock, into a new protected directory. paid=True needs the
     confirmed budget and the exact authorization text (refused by authorize_live before any request or file);
     paid=False is the free rehearsal over the emulated endpoint. Returns (run name, summary); raises the CLI's
-    refusals (LiveRefused, RunRefused, ValueError, ...) or RunBusy."""
+    refusals (LiveRefused, RunRefused, ValueError, ...) or RunBusy. progress: an optional, presentation-only
+    callback for the live view (the CLI's progress events, plus the lock); it never changes the run."""
     lr = script("investigation_v1_live")
     root = Path(root or live_dir())
     name = new_run_name()
@@ -392,9 +396,14 @@ def execute(config, inputs, *, confirm_budget_usd, authorization, paid=True, roo
     args = lr.parser().parse_args(argv + (["--live"] if paid else []))
     # passed as given: the CLI's authorize_live decides on them (a missing or wrong value is refused there)
     args.confirm_budget_usd, args.authorize_paid_run = (confirm_budget_usd, authorization) if paid else (None, None)
+    if not paid and emulator is None and REHEARSAL_EMULATOR_FACTORY is not None:
+        emulator = REHEARSAL_EMULATOR_FACTORY()
+    sink = lr._Progress(progress)
     with RunLock(root):
+        sink({"type": "stage", "stage": "lock", "state": "completed", "run": name})
         client = HTTP_CLIENT_FACTORY() if (paid and HTTP_CLIENT_FACTORY) else None
-        summary = lr.run(args, env=env, http_get=http_get, http_client=client, emulator=emulator)
+        summary = lr.run(args, env=env, http_get=http_get, http_client=client, emulator=emulator,
+                         progress=sink if sink.sink is not None else None)
     return name, summary
 
 
@@ -906,3 +915,150 @@ def timeline(doc, replies="Model"):
                                           "value": o["value"], "evidence_id": o["evidence_id"]}
                                          for o in doc["observations"]], "trace_step": t["step"]})
     return steps
+
+
+# ---- UI-2: the recorded scientific evidence, as chart data (read from the report only) ----
+
+EXCLUSION_TEXT = {
+    "pre_window_overlaps_bout": "The pre-bout window overlaps another predicted bout of the same query",
+    "window_before_session_start": "The baseline window would begin before the recording starts (before 0 s)",
+    "pre_window_unreliable": "The pre-bout window failed the tracking-quality policy",
+    "baseline_window_unreliable": "The baseline window failed the tracking-quality policy",
+    "baseline_window_overlaps_bout": "The baseline window overlaps another predicted bout of the same query",
+    "no_feature_values": "A window had no usable value of the feature",
+}
+EXCLUSION_LABELS = {                                    # short chart labels; EXCLUSION_TEXT is the meaning
+    "pre_window_overlaps_bout": "Pre-bout window overlaps a bout",
+    "window_before_session_start": "Baseline before recording start",
+    "pre_window_unreliable": "Pre-bout window: poor tracking",
+    "baseline_window_unreliable": "Baseline window: poor tracking",
+    "baseline_window_overlaps_bout": "Baseline window overlaps a bout",
+    "no_feature_values": "No feature values",
+}
+GATE_ORDER = (("min_n_windows", "n_windows", "Valid comparison windows"),
+              ("min_n_sessions", "n_sessions", "Contributing sessions"))
+GATE_REASONS = {"too_few_bouts": "fewer input bouts than the minimum number of windows (checked before measuring)",
+                "too_few_usable_windows": "too few usable windows or sessions after the exclusions"}
+FIRED_MEANING = ("fired_s is when the monitor fired: the bout had then lasted the minimum duration. It is recorded "
+                 "but never used as the anchor.")
+
+
+def _session_labels(sessions):
+    """Short labels (the last path part) unless two sessions would share one."""
+    short = {s: str(s).rsplit("/", 1)[-1] for s in sessions}
+    return short if len(set(short.values())) == len(short) else {s: str(s) for s in sessions}
+
+
+def comparison_choices(doc):
+    """The accepted compare_windows evidence in recorded order: [{evidence_id, label, primary}]. Each is one call's
+    result; none is merged with another."""
+    comps = [e for e in doc["evidence"] if e["tool"] == "compare_windows"]
+    out = []
+    for i, e in enumerate(comps, 1):
+        r, primary = e["result"], e["evidence_id"] == doc["primary_evidence_id"]
+        out.append({"evidence_id": e["evidence_id"], "primary": primary,
+                    "label": f"Comparison {i} of {len(comps)} (tool call {e['provenance'].get('call')}): "
+                             f"{r.get('feature')}, pre_s {_fmt(r.get('pre_s'))} s, baseline_s "
+                             f"{_fmt(r.get('baseline_s'))} s, gap {_fmt(r.get('baseline_gap_s'))} s: {r.get('status')}"
+                             + (" (primary evidence)" if primary else "")})
+    return out
+
+
+def query_for(doc, comparison):
+    """(query evidence, basis) of the bouts a comparison used: the query evidence its recorded call cited
+    (query_from), accepted only if its query_run_id is the comparison's; otherwise the latest earlier query evidence
+    with the comparison's query_run_id and query. (None, reason) when no recorded query matches."""
+    ev, req = _evidence(doc), comparison["request"]
+    call = next((t for t in doc["trace"] if t.get("kind") == "tool_call"
+                 and t.get("evidence_id") == comparison["evidence_id"]), None)
+    cited = ((call or {}).get("arguments") or {}).get("query_from") or {}
+    q = ev.get(cited.get("evidence_id")) if isinstance(cited, dict) else None
+    if q is not None and q["tool"] == "query_events" and q["result"].get("query_run_id") == req.get("query_run_id"):
+        return q, "the query evidence this comparison's call cited"
+    order = [e["evidence_id"] for e in doc["evidence"]]
+    before = order[:order.index(comparison["evidence_id"])]
+    matches = [ev[i] for i in before if ev[i]["tool"] == "query_events"
+               and ev[i]["result"].get("query_run_id") == req.get("query_run_id")
+               and ev[i]["result"].get("query") == req.get("query")]
+    if matches:
+        return matches[-1], "the earlier query evidence with this comparison's query_run_id and query"
+    return None, "no recorded query evidence has this comparison's query_run_id"
+
+
+def bout_view(query_ev):
+    """The predicted bouts of one accepted query_events result, as recorded (duration = end_s - start_s, only where
+    both are recorded numbers)."""
+    r = query_ev["result"]
+    bouts = r.get("bouts") or []
+    searched = list((r.get("query") or {}).get("session") or [])
+    labels = _session_labels(dict.fromkeys(searched + [b["session"] for b in bouts]))
+    rows = []
+    for b in bouts:
+        s, e = b.get("start_s"), b.get("end_s")
+        dur = e - s if isinstance(s, (int, float)) and isinstance(e, (int, float)) else None
+        rows.append({"session": labels[b["session"]], "start_s": s, "fired_s": b.get("fired_s"), "end_s": e,
+                     "duration_s": dur, "end_reason": b.get("end_reason"), "event_id": b.get("event_id")})
+    per = {labels[s]: 0 for s in searched}
+    for b in bouts:
+        per[labels[b["session"]]] = per.get(labels[b["session"]], 0) + 1
+    return {"evidence_id": query_ev["evidence_id"], "behavior": r.get("behavior"), "threshold": r.get("threshold"),
+            "threshold_sent": "threshold" in query_ev["request"], "min_duration_s": r.get("min_duration_s"),
+            "n_bouts": r.get("n_bouts"), "n_sessions": r.get("n_sessions"),
+            "n_sessions_searched": r.get("n_sessions_searched"), "data_source": r.get("data_source"),
+            "start_meaning": r.get("start_meaning"), "fired_meaning": FIRED_MEANING,
+            "bouts": rows, "per_session": [{"session": s, "bouts": n} for s, n in per.items()],
+            "durations_recorded": sum(x["duration_s"] is not None for x in rows)}
+
+
+def evidence_view(doc, evidence_id):
+    """Chart data for ONE accepted compare_windows result and the query evidence it used, read from the verified
+    report only (nothing is recomputed: counts are tallies of the recorded lists, gate verdicts follow the recorded
+    status and failed_gate in Contract v1's checking order)."""
+    e = _evidence(doc)[evidence_id]
+    if e["tool"] != "compare_windows":
+        raise ValueError(f"{evidence_id} is not compare_windows evidence")
+    r = e["result"]
+    feature, ok = r.get("feature"), r.get("status") == "ok"
+    per = (r.get("per_session") or []) if ok else []                # recorded only for an ok comparison
+    labels = _session_labels([p["session"] for p in per])
+    sessions = [{"session": labels[p["session"]], "full_session": p["session"], "n_bouts": p["n_bouts"],
+                 "paired_diff": p["paired_diff"]} for p in per]
+    order = list(r.get("exclusion_order") or v1.EXCLUSION_REASONS)
+    excluded = r.get("excluded") or []
+    tally = {}
+    for x in excluded:
+        tally[x["why"]] = tally.get(x["why"], 0) + 1
+    order += [w for w in tally if w not in order]                  # (a reason outside the order: listed last)
+    exclusions = [{"reason": w, "label": EXCLUSION_LABELS.get(w, w), "description": EXCLUSION_TEXT.get(w, w),
+                   "bouts": tally.get(w, 0)} for w in order]
+    gate, failed = r.get("evidence_gate") or {}, r.get("failed_gate")
+    names = [g for g, _, _ in GATE_ORDER]
+    gates = []
+    for name, observed, label in GATE_ORDER:
+        if ok:
+            verdict = "met"
+        elif r.get("status") == "insufficient_evidence" and failed in names:
+            i, j = names.index(name), names.index(failed)
+            verdict = "met" if i < j else "not met" if i == j else "not evaluated"
+        else:
+            verdict = "not recorded"
+        row = {"gate": label, "field": name, "required": gate.get(name), "observed": r.get(observed),
+               "verdict": verdict}
+        if verdict == "not met":
+            row.update(n_available=r.get("n_available"), n_required=r.get("n_required"))
+        gates.append(row)
+    query, basis = query_for(doc, e)
+    return {"evidence_id": evidence_id, "status": r.get("status"), "primary": evidence_id == doc["primary_evidence_id"],
+            "feature": feature, "unit": _unit(feature), "feature_meaning": FEATURE_MEANINGS.get(feature, ""),
+            "pre_s": r.get("pre_s"), "baseline_s": r.get("baseline_s"), "baseline_gap_s": r.get("baseline_gap_s"),
+            "mean_diff": r.get("mean_diff") if ok else None, "n_sessions": r.get("n_sessions"),
+            "n_windows": r.get("n_windows"), "sessions": sessions,
+            "n_input": r.get("n_input"), "n_used": r.get("n_used"), "n_excluded": r.get("n_excluded"),
+            "exclusions": exclusions, "exclusions_consistent": sum(tally.values()) == r.get("n_excluded")
+            and (r.get("n_used") or 0) + (r.get("n_excluded") or 0) == r.get("n_input"),
+            "gate": {"min_n_windows": gate.get("min_n_windows"), "min_n_sessions": gate.get("min_n_sessions"),
+                     "overridden": bool(gate.get("overridden")), "override_reason": gate.get("override_reason"),
+                     "default_min_n_windows": v1.DEFAULT_MIN_N_WINDOWS,
+                     "default_min_n_sessions": v1.DEFAULT_MIN_N_SESSIONS},
+            "gates": gates, "reason": r.get("reason"), "reason_text": GATE_REASONS.get(r.get("reason")),
+            "failed_gate": failed, "query": bout_view(query) if query else None, "query_basis": basis}

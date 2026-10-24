@@ -14,8 +14,11 @@ does not verify shows only why. Reopening never calls the network or the model.
 from __future__ import annotations
 
 import json
+import queue
 import secrets
+import threading
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -107,23 +110,408 @@ def show_preflight(report):
                                             "local_configuration")}, expanded=False)
 
 
-def _run(config, inputs, paid, **kw):
+# ---- UI-3: live progress of a run in the tab that started it (presentation only) ----
+
+try:                                              # a rerun / stop request is raised from inside st.* calls
+    from streamlit.runtime.scriptrunner_utils.exceptions import ScriptControlException
+except ImportError:  # pragma: no cover - another Streamlit: no live updates during a run (as before UI-3)
+    ScriptControlException = None
+
+PROGRESS_KEY = "live_agent_last_progress"         # the last run's progress record in this browser tab
+MAX_PROGRESS_EVENTS = 400                         # a run has at most 12 turns and 12 tool calls: ample
+STAGE_LABELS = {"lock": "Investigation lock acquired (one investigation at a time)",
+                "inputs": "Loading the verified validation inputs",
+                "validation_run": "Checking the recorded reference run",
+                "preflight": "Provider preflight (metadata only, no model request)",
+                "budget": "Setting the budget",
+                "investigate": "Investigation (model turns and Contract v1 tools)",
+                "verify": "Checking the saved report",
+                "cost_ledger": "Checking the cost ledger against the report",
+                "compatibility": "Reference compatibility check"}
+
+
+class ProgressQueue:
+    """The bridge from the investigation (worker thread) to the page (Streamlit script thread): bounded and
+    thread-safe. put() never blocks and never raises: when the queue is full the event is dropped and counted, so
+    the view can say it is incomplete instead of pretending otherwise."""
+
+    def __init__(self, maxsize=MAX_PROGRESS_EVENTS):
+        self._q, self._lock, self.dropped = queue.Queue(maxsize), threading.Lock(), 0
+
+    def put(self, event):
+        try:
+            self._q.put_nowait(event)
+        except queue.Full:
+            with self._lock:
+                self.dropped += 1
+
+    def drain(self, timeout):
+        """Every queued event, waiting up to `timeout` seconds for the first one."""
+        out = []
+        try:
+            out.append(self._q.get(timeout=timeout) if timeout else self._q.get_nowait())
+            while True:
+                out.append(self._q.get_nowait())
+        except queue.Empty:
+            pass
+        return out
+
+
+def _add_note(error, text):
+    """Attach a diagnostic note (a type name, never a message) without ever raising: add_note() on Python 3.11+,
+    else the same __notes__ list by hand (Python 3.10 keeps it, its traceback just does not print it)."""
     try:
-        with st.spinner("Investigating (the agent chooses each Contract v1 call)..."):
-            name, summary = runs.execute(config, inputs, paid=paid, **kw)
-    except runs.RunBusy as exc:
-        st.session_state[MESSAGE_KEY] = ("error", f"Not started: {exc}.")
-        return
-    except Exception as exc:                       # the CLI's refusals: before any request or file
-        st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}")
-        return
-    # select the new run through the Session State API (sent to the browser), never by dropping the widget's
-    # state: a dropped state falls back to a default the browser is not told about, so the selector would keep
-    # showing the previous run above the new run's results
-    st.session_state[OPEN_KEY] = str(runs.live_dir() / name)
-    st.session_state[MESSAGE_KEY] = ("info", f"Investigation {name} finished with recorded status "
-                                              f"`{summary.get('status')}`. Open the Saved investigations tab: the "
-                                              "report is reloaded from disk and re-verified before it is shown.")
+        add = getattr(error, "add_note", None)
+        if callable(add):
+            add(text)
+        else:
+            notes = getattr(error, "__notes__", None)
+            error.__notes__ = (list(notes) if isinstance(notes, list) else []) + [text]
+    except Exception:
+        pass                                      # a note is optional: the error itself is what matters
+
+
+def _is_control(exc):
+    return ScriptControlException is not None and isinstance(exc, ScriptControlException)
+
+
+def _report_unexpected(view, exc):
+    """Best effort while an unexpected failure is leaving _run: close the view and leave a message. Streamlit may
+    refuse (a pending stop or rerun is raised from session-state access and page updates) or fail; either is
+    swallowed HERE ONLY, so the original failure stays the one that propagates. Interrupts are not swallowed."""
+    try:
+        view.close("error", "Stopped by an unexpected error")
+        st.session_state[MESSAGE_KEY] = (
+            "error", f"The investigation stopped with an unexpected error ({type(exc).__name__}). Nothing from it "
+            "is shown as verified and it is not repeated; open Saved investigations to see whether a report was "
+            "saved and whether it verifies.")
+    except Exception:
+        pass
+    except BaseException as secondary:
+        if not _is_control(secondary):
+            raise
+
+
+def run_with_live_view(work, view, poll_s=0.1):
+    """work(progress) runs on ONE worker thread (the investigation: runs.execute, unchanged); its progress events
+    cross a ProgressQueue and are rendered here, on the Streamlit script thread, in batches. The worker never waits
+    for rendering, and never calls Streamlit. Returns work's result, or re-raises its exception on this thread after
+    the worker has ended (it is always joined: no investigation outlives this call, and none is started twice)."""
+    events, outcome = ProgressQueue(), {}
+
+    def worker():
+        try:
+            outcome["result"] = work(events.put)
+        except BaseException as exc:              # handed to the script thread
+            outcome["error"] = exc
+    thread = threading.Thread(target=worker, name="live-agent-investigation", daemon=False)
+    thread.start()
+    render_error = None
+    try:
+        while thread.is_alive():
+            view.show(events.drain(poll_s), events.dropped)
+        view.show(events.drain(0), events.dropped)
+    except BaseException as exc:                  # the display failed: the run is still waited for and inspected
+        render_error = exc
+        view.live = False
+    finally:
+        thread.join()                             # even if this thread is interrupted, the run completes first
+    # precedence: (1) the investigation's own failure, with the display failure noted by type only; (2) a display
+    # failure that is not an ordinary Exception (e.g. KeyboardInterrupt); (3) the investigation's result (an
+    # ordinary display failure never discards a run that completed; the view then says it stopped updating)
+    if "error" in outcome:
+        error = outcome["error"]
+        if render_error is not None:
+            _add_note(error, f"(the live progress view also failed: {type(render_error).__name__})")
+        raise error
+    if render_error is not None:
+        if not isinstance(render_error, Exception):
+            raise render_error
+        view.render_failure = type(render_error).__name__
+    return outcome["result"]
+
+
+class LiveProgress:
+    """The live view of one run in the tab that started it: the CLI's progress events (runs.execute(progress=)),
+    rendered into an st.status box on the Streamlit script thread (run_with_live_view), never on the investigation's
+    thread, so rendering takes no time from the investigation. Presentation only. Rendering is where Streamlit raises
+    a pending rerun or stop request (a click, the Stop button, a closed tab): such a request is HELD and re-raised by
+    release() after the run has finished and been saved, so the investigation is never interrupted (as with the
+    former blocking spinner). Any other display error just ends the live updates."""
+
+    def __init__(self, paid, max_turns):
+        self.paid, self.max_turns = paid, max_turns
+        self.events, self.lines = [], []
+        self.turns, self.accepted, self.refused = 0, [], []
+        self.stage = self.failed = self.spending = self.stop = self.status = None
+        self.waiting, self.deferred, self.live = False, None, ScriptControlException is not None
+        self.queue_dropped = 0                    # events the bounded queue could not take (the producer's total)
+        self.view_omitted = 0                     # events past the view's own cap (MAX_PROGRESS_EVENTS)
+        self.render_failure = None                # the type of a display failure, if the live view stopped
+        self.box = st.status("Starting the investigation...", expanded=True)
+        # placeholders created on the box itself: leaving a `with st.status(...)` block would mark it complete
+        self.now, self.counts, self.log = self.box.empty(), self.box.empty(), self.box.empty()
+
+    # -- state from the events --
+
+    @property
+    def dropped(self):
+        """Every event this view did not get or did not keep: never decreases."""
+        return self.queue_dropped + self.view_omitted
+
+    def __call__(self, event):
+        self.show([event], self.queue_dropped)
+
+    def show(self, batch, queue_dropped=0):
+        """Apply a batch of events, then draw once. queue_dropped is the queue's running total (it only grows)."""
+        before = self.dropped
+        self.queue_dropped = max(self.queue_dropped, queue_dropped)
+        for event in batch:
+            if len(self.events) >= MAX_PROGRESS_EVENTS:
+                self.view_omitted += 1
+                continue
+            self.events.append(event)
+            self.apply(event)
+        if batch or self.dropped != before:
+            self.render()
+
+    def started(self):
+        """True once anything beyond taking the lock was reported (the investigation's own stages began)."""
+        return any(not (e.get("type") == "stage" and e.get("stage") == "lock") for e in self.events)
+
+    def apply(self, e):
+        kind = e.get("type")
+        if kind == "stage":
+            label = STAGE_LABELS.get(e["stage"], e["stage"])
+            if e["state"] == "failed":
+                self.failed = e["stage"]
+                self.lines.append(f":red-badge[failed] {label} ({e.get('error')})")
+            elif e["state"] == "started":
+                self.stage = e["stage"]
+                self.lines.append(f":blue-badge[started] {label}")
+            else:
+                self.stage = None if self.stage == e["stage"] else self.stage
+                self.lines.append(f":green-badge[done] {label}")
+        elif kind == "model_request":
+            self.waiting = True
+            self.lines.append(f":gray-badge[waiting] Request sent for model turn {self.turns + 1} of "
+                              f"{self.max_turns}" + ("" if self.paid else " (emulated endpoint)"))
+        elif kind == "trace":
+            self.trace(e)
+        elif kind == "spending":
+            self.spending = e
+        elif kind == "saved":
+            self.lines.append(f":green-badge[saved] `{e['file']}` written")
+        elif kind == "finished":
+            self.status = e.get("status")
+            self.stop = e.get("stopping_reason") or self.stop
+            self.lines.append(f":green-badge[finished] Run finished with recorded status `{self.status}`")
+
+    def trace(self, e):
+        k = e.get("kind")
+        if k == "model_turn":
+            self.turns += 1
+            self.waiting = False
+            if e.get("outcome"):
+                self.lines.append(f":red-badge[not used] Model reply {self.turns}: {e['outcome']}")
+            else:
+                asked = ", ".join(f"`{n}`" for n in e.get("tool_names") or []) or "no tool"
+                self.lines.append(f":violet-badge[reply] Model reply {self.turns} of {self.max_turns}: asked for "
+                                  f"{asked}")
+        elif k == "model_error":
+            self.waiting = False
+            self.lines.append(f":red-badge[provider] Model request failed ({e.get('reason')}): no reply was used")
+        elif k in ("tool_call", "finish"):
+            tool = f"`{e.get('tool')}`"
+            if e.get("outcome") == "refused":
+                self.refused.append(e.get("tool"))
+                self.lines.append(f":red-badge[refused] {tool}: {e.get('refused')} (not executed as evidence)")
+            elif k == "finish":
+                self.accepted.append(e.get("tool"))
+                self.lines.append(f":green-badge[finding submitted] {tool}: accepted by the loop; the finding is "
+                                  "shown only from the saved report once it verifies")
+            else:
+                self.accepted.append(e.get("tool"))
+                self.lines.append(f":green-badge[executed] {tool}: accepted (result shown after verification)")
+        elif k == "budget_exceeded":
+            self.lines.append(f":orange-badge[budget] Limit reached: {e.get('stopping_reason')}")
+        elif k == "stop":
+            self.stop = e.get("stopping_reason")
+            self.lines.append(f":orange-badge[stopped] The investigation loop stopped: `{self.stop}`")
+
+    # -- the page --
+
+    def render(self):
+        if not self.live:
+            return
+        try:
+            self.draw()
+        except Exception:                         # a display problem: no more live updates, the run goes on
+            self.live = False
+        except BaseException as exc:
+            if ScriptControlException is None or not isinstance(exc, ScriptControlException):
+                raise
+            self.deferred = self.deferred or exc  # held until the run is over (release())
+
+    def draw(self):
+        if self.failed:
+            self.now.error(f"Stage failed: {STAGE_LABELS.get(self.failed, self.failed)}. The run stops; its "
+                           "recorded status will say why.")
+        elif self.waiting:
+            who = "the provider (OpenRouter)" if self.paid else "the emulated endpoint"
+            self.now.info(f"Waiting for {who} to reply to model turn {self.turns + 1} of {self.max_turns}. "
+                          "Nothing is known about this reply until it arrives.")
+        elif self.stage:
+            self.now.info(f"In progress: {STAGE_LABELS.get(self.stage, self.stage)}")
+        elif self.stop:
+            self.now.info(f"The investigation loop stopped (`{self.stop}`); saving and checking the report.")
+        with self.counts.container():
+            c = st.columns(4)
+            c[0].metric("Model turns", f"{self.turns} of {self.max_turns}")
+            c[1].metric("Tool calls executed", len([t for t in self.accepted if t != av1.FINISH]))
+            c[2].metric("Tool calls refused", len(self.refused))
+            c[3].metric(*self.spent())
+        self.log.markdown("  \n".join(self.lines[-40:]) + self.incomplete())
+        self.box.update(label=self.label(), expanded=True)
+
+    def incomplete(self):
+        out = ""
+        if self.dropped:
+            out += (f"  \n:orange-badge[incomplete] {self.dropped} progress events could not be shown "
+                    f"({self.queue_dropped} not queued, {self.view_omitted} past the view's limit), so this is not "
+                    "a complete timeline (the saved report is not affected)")
+        if self.render_failure:
+            out += (f"  \n:orange-badge[incomplete] The live view stopped updating ({self.render_failure}); the "
+                    "saved report is not affected")
+        return out
+
+    def spent(self):
+        s = self.spending
+        if s is None:
+            return ("Provider-reported spending" if self.paid else "Simulated cost (not spent)"), "none reported yet"
+        value = f"${s['known_cost_usd']:.5f}" + (f" + {s['unknown_cost_attempts']} unreported"
+                                                 if s["unknown_cost_attempts"] else "")
+        return ("Provider-reported spending" if s["basis"] == "provider-reported" else
+                "Simulated cost (not spent)"), value
+
+    def label(self):
+        if self.failed:
+            return "Stopped: a stage failed"
+        if self.waiting:
+            return f"Waiting for the {'provider' if self.paid else 'emulated endpoint'} (turn {self.turns + 1})..."
+        if self.stage:
+            return STAGE_LABELS.get(self.stage, self.stage) + "..."
+        return "Investigating..."
+
+    def close(self, state, label, line=None):
+        if line:
+            self.lines.append(line)
+        if not self.live:
+            return
+        try:
+            self.now.empty()
+            self.log.markdown("  \n".join(self.lines[-40:]) + self.incomplete())
+            self.box.update(label=label, state=state, expanded=True)
+        except Exception:
+            self.live = False
+        except BaseException as exc:
+            if ScriptControlException is None or not isinstance(exc, ScriptControlException):
+                raise
+            self.deferred = self.deferred or exc
+
+    def record(self, name, verdict):
+        """What the tab keeps after the run (projected events only: no text, arguments or findings)."""
+        missing = self.incomplete().strip()
+        return {"run": name, "paid": self.paid, "lines": list(self.lines) + ([missing] if missing else []),
+                "dropped": self.dropped, "queue_dropped": self.queue_dropped, "view_omitted": self.view_omitted,
+                "render_failure": self.render_failure, "turns": self.turns,
+                "max_turns": self.max_turns, "executed": len([t for t in self.accepted if t != av1.FINISH]),
+                "refused": len(self.refused), "stop": self.stop, "status": self.status, "verdict": verdict,
+                "spending": self.spent()}
+
+    def release(self):
+        """Re-raise a rerun / stop request held during the run."""
+        if self.deferred is not None:
+            raise self.deferred
+
+
+def verdict_of(saved):
+    """(state, text) of the saved report's re-verification (load_saved), for the end of a run."""
+    if not saved.verified:
+        return "error", ("the saved investigation does NOT verify, so none of its results are shown: "
+                         + "; ".join(map(str, saved.problems[:2])))
+    kind, _ = runs.autonomous_status(saved)
+    return ("complete", "verified") if kind == "verified" else ("complete", "verified, incomplete (no finding)")
+
+
+def render_progress_record(rec):
+    with st.expander(f"Live progress of the last run started in this tab ({rec['run']})", expanded=False):
+        st.caption("Recorded as the run happened, in this browser tab only (not a monitor of other tabs or "
+                   "sessions). Results are shown only from the saved, re-verified report.")
+        c = st.columns(4)
+        c[0].metric("Model turns", f"{rec['turns']} of {rec['max_turns']}")
+        c[1].metric("Tool calls executed", rec["executed"])
+        c[2].metric("Tool calls refused", rec["refused"])
+        c[3].metric(*rec["spending"])
+        st.markdown("  \n".join(rec["lines"]))
+
+
+# a run that is refused before it starts (documented: authorization, environment, inputs, configuration); anything
+# else from runs.execute is an unexpected failure and stays the primary one
+EXPECTED_REFUSALS = runs.script("investigation_v1_live").REFUSALS + (ValueError,)
+
+
+def _run(config, inputs, paid, **kw):
+    """One run with its live view. Every exit settles the view: a rerun / stop request held during the run is
+    re-raised at the end, unless another failure is already leaving this function, which stays the primary one (the
+    held request is then dropped). The run itself is never repeated here."""
+    view = LiveProgress(paid, config.max_model_turns)
+    failure = None
+    try:
+        try:
+            name, summary = run_with_live_view(
+                lambda progress: runs.execute(config, inputs, paid=paid, progress=progress, **kw), view)
+        except runs.RunBusy as exc:
+            view.close("error", "Not started")
+            st.session_state[MESSAGE_KEY] = ("error", f"Not started: {exc}.")
+            return
+        except EXPECTED_REFUSALS as exc:
+            if view.started():                     # (never "not started" once the investigation's stages began)
+                raise
+            view.close("error", "Not started")     # the CLI's refusals: before any request or file
+            st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}")
+            return
+        view.close("running", "Re-verifying the saved report from disk...",
+                   ":blue-badge[started] Re-verifying the saved report from disk")
+        try:
+            state, verdict = verdict_of(runs.load_saved(runs.live_dir() / name))
+        except Exception as exc:                   # never "verified" when the check itself failed
+            state, verdict = "error", (f"the saved report could not be loaded or checked ({type(exc).__name__}), "
+                                       "so none of its results are shown")
+        view.close(state, f"Run {name}: recorded status {summary.get('status')}; saved report "
+                          f"{verdict.split(':')[0].split(' (')[0]}",
+                   (":green-badge[verified]" if state == "complete" else ":red-badge[not verified]") +
+                   f" Saved report re-verified: {verdict}")
+        st.session_state[PROGRESS_KEY] = view.record(name, verdict)
+        # select the new run through the Session State API (sent to the browser), never by dropping the widget's
+        # state: a dropped state falls back to a default the browser is not told about, so the selector would keep
+        # showing the previous run above the new run's results
+        st.session_state[OPEN_KEY] = str(runs.live_dir() / name)
+        st.session_state[MESSAGE_KEY] = (
+            ("info" if state == "complete" else "error"),
+            f"Investigation {name} finished with recorded status `{summary.get('status')}`; the saved report was "
+            f"reloaded from disk and re-verified: {verdict}. Open the Saved investigations tab for its overview, "
+            "evidence and activity.")
+    except BaseException as exc:
+        failure = exc
+        if not _is_control(exc):                   # an unexpected failure: reporting it is secondary
+            _report_unexpected(view, exc)
+        raise                                      # the original exception, type and traceback
+    finally:
+        if failure is None:
+            view.release()                         # the held rerun / stop request, now that the run is settled
+        else:
+            view.deferred = None                   # the original failure stays the primary one
 
 
 def render_new():
@@ -167,6 +555,8 @@ def render_new():
         st.session_state[GEN_KEY] = gen + 1
         _run(config, inputs, False, confirm_budget_usd=None, authorization=None)
         st.rerun()
+    if st.session_state.get(PROGRESS_KEY):
+        render_progress_record(st.session_state[PROGRESS_KEY])
 
 
 # ---- a saved investigation ----
@@ -374,6 +764,191 @@ def render_compared(ov):
             st.markdown(f"- **Effect definition:** {c['mean_diff_definition']}.")
 
 
+# ---- UI-2: scientific evidence (charts of one accepted comparison's recorded evidence) ----
+
+EVIDENCE_KEY = "live_agent_comparison_"           # + the saved investigation's name: its selected comparison
+SIGN_COLORS = {"lower before the bout": "#4c78a8", "higher before the bout": "#f58518", "no difference": "#9d9d9d"}
+VERDICT_BADGES = {"met": ":green-badge[met]", "not met": ":red-badge[not met]",
+                  "not evaluated": ":gray-badge[not evaluated]", "not recorded": ":gray-badge[not recorded]"}
+
+
+def _height(n, legend_rows=0):
+    """The whole chart's height (Streamlit fits the axis title and the legend inside it): room for every row's
+    label, so none is dropped as overlapping, plus the legend's rows."""
+    return max(120, 32 * n + 60 + 22 * legend_rows)
+
+
+def render_evidence(saved):
+    """Charts of the recorded evidence of a VERIFIED investigation: one accepted comparison at a time (the primary
+    one by default) with the query evidence whose bouts it used. Every value is read from the report
+    (runs.evidence_view); nothing is recomputed and no interval or significance test is shown."""
+    d = saved.doc
+    st.markdown("#### Scientific evidence")
+    st.caption("The recorded evidence behind the finding, read from the verified report: one accepted comparison at a "
+               "time, with the predicted bouts it used. Nothing is recomputed; no interval or significance test is "
+               "shown.")
+    choices = runs.comparison_choices(d)
+    if not choices:
+        st.info("This investigation recorded no accepted comparison, so there is no comparison evidence to chart.")
+        queries = [e for e in d["evidence"] if e["tool"] == "query_events"]
+        if queries:
+            st.caption("The predicted bouts of its last accepted query (no comparison used them):")
+            render_bouts(runs.bout_view(queries[-1]))
+        return
+    ids = [c["evidence_id"] for c in choices]
+    labels = {c["evidence_id"]: c["label"] for c in choices}
+    key = EVIDENCE_KEY + saved.name
+    if st.session_state.get(key) not in ids:                    # first view: the primary comparison, else the last
+        st.session_state[key] = next((c["evidence_id"] for c in choices if c["primary"]), ids[-1])
+    selected = st.selectbox("Comparison", ids, format_func=labels.__getitem__, key=key,
+                            help="Each accepted compare_windows call separately; results are never combined.")
+    v = runs.evidence_view(d, selected)
+    tabs = st.tabs(["Session comparison", "Predicted bouts", "Exclusions", "Evidence gate"])
+    with tabs[0]:
+        render_sessions(v)
+    with tabs[1]:
+        if v["query"] is None:
+            st.warning(f"The bouts of this comparison cannot be shown: {v['query_basis']}.")
+        else:
+            st.caption(f"Bouts of query evidence `{v['query']['evidence_id']}` ({v['query_basis']}); this "
+                       f"comparison took {_num(v['n_input'])} of them as input.")
+            render_bouts(v["query"])
+    with tabs[2]:
+        render_exclusions(v)
+    with tabs[3]:
+        render_gate(v)
+
+
+def render_sessions(v):
+    if v["status"] != "ok" or not v["sessions"]:
+        why = f" ({v['reason']}: {v['reason_text']})" if v.get("reason") else ""
+        st.info(f"No session-level effect is shown: this comparison's status is `{v['status']}`{why}. Contract v1 "
+                "records per-session differences only for a comparison that meets the evidence gate, so there is "
+                "nothing to plot.")
+        return
+    unit = v["unit"]
+    m = st.columns(2)
+    m[0].metric("Contributing sessions", _num(v["n_sessions"]))
+    m[1].metric("Reported mean_diff (median across sessions)", f"{_num(v['mean_diff'])} {unit}".strip())
+    df = pd.DataFrame(v["sessions"])
+    df["direction"] = ["lower before the bout" if x < 0 else "higher before the bout" if x > 0 else "no difference"
+                       for x in df["paired_diff"]]
+    title = f"{v['feature']}: pre − baseline" + (f" ({unit})" if unit else "")
+    bars = alt.Chart(df).mark_bar().encode(
+        x=alt.X("paired_diff:Q", title=title),
+        y=alt.Y("session:N", sort=None, title=None, axis=alt.Axis(labelLimit=170, labelOverlap=False)),
+        color=alt.Color("direction:N", title=None, scale=alt.Scale(domain=list(SIGN_COLORS),
+                                                                   range=list(SIGN_COLORS.values())),
+                        legend=alt.Legend(orient="bottom", direction="vertical")),
+        tooltip=[alt.Tooltip("full_session:N", title="session"), alt.Tooltip("n_bouts:Q", title="used bouts"),
+                 alt.Tooltip("paired_diff:Q", title="session mean of pre − baseline", format=".4g")])
+    zero = alt.Chart(pd.DataFrame({"zero": [0.0]})).mark_rule(color="#666666", strokeWidth=1.5).encode(x="zero:Q")
+    median = alt.Chart(pd.DataFrame({"mean_diff": [v["mean_diff"]]})).mark_rule(
+        color="#222222", strokeDash=[6, 4], strokeWidth=2).encode(
+        x="mean_diff:Q", tooltip=[alt.Tooltip("mean_diff:Q", title="mean_diff (median across sessions)",
+                                              format=".4g")])
+    st.altair_chart((bars + zero + median).properties(height=_height(len(df), len(SIGN_COLORS))), width="stretch")
+    st.caption(f"Each bar is one session: the mean, over that session's used bouts, of the pre-bout window value "
+               f"minus the baseline window value of `{v['feature']}` ({v['feature_meaning']}). The dashed line is "
+               "the reported mean_diff, the median of these session values; the solid line is zero (no "
+               "difference). Colour shows only the sign. Association only: no confidence interval or significance "
+               "test.")
+    with st.expander("Plotted values"):
+        st.dataframe(df[["full_session", "n_bouts", "paired_diff"]].rename(columns={
+            "full_session": "session", "n_bouts": "used bouts", "paired_diff": f"pre − baseline ({unit})"}),
+            hide_index=True, width="stretch")
+
+
+def render_bouts(q):
+    st.caption(f"Classifier-predicted `{q['behavior']}` bouts: threshold crossings of the {q['data_source']} "
+               "scores, not annotated behavior.")
+    m = st.columns(4)
+    m[0].metric("Predicted bouts", _num(q["n_bouts"]))
+    m[1].metric("Sessions with bouts", f"{_num(q['n_sessions'])} of {_num(q['n_sessions_searched'])}")
+    m[2].metric("Applied threshold", _num(q["threshold"]),
+                help=None if q["threshold_sent"] else "Not set by the investigation: Contract v1's default applied.")
+    m[3].metric("Minimum duration", _seconds(q["min_duration_s"]))
+    per = pd.DataFrame(q["per_session"])
+    if not per.empty:
+        st.altair_chart(alt.Chart(per).mark_bar(color="#4c78a8").encode(
+            x=alt.X("bouts:Q", title="predicted bouts", axis=alt.Axis(tickMinStep=1)),
+            y=alt.Y("session:N", sort=None, title=None, axis=alt.Axis(labelLimit=170, labelOverlap=False)),
+            tooltip=["session:N", "bouts:Q"]).properties(height=_height(len(per))), width="stretch")
+    rows = pd.DataFrame(q["bouts"])
+    if q["durations_recorded"]:
+        durations = rows.dropna(subset=["duration_s"])
+        hist = alt.Chart(durations).mark_bar(color="#72b7b2").encode(
+            x=alt.X("duration_s:Q", bin=alt.Bin(maxbins=20), title="bout duration, end_s − start_s (s)"),
+            y=alt.Y("count():Q", title="predicted bouts"))
+        floor = alt.Chart(pd.DataFrame({"min_duration_s": [q["min_duration_s"]]})).mark_rule(
+            color="#222222", strokeDash=[6, 4]).encode(x="min_duration_s:Q")
+        st.altair_chart((hist + floor).properties(height=200), width="stretch")
+        st.caption(f"Durations of the {q['durations_recorded']} bouts with a recorded end_s; the dashed line is the "
+                   "minimum duration.")
+    elif not rows.empty:
+        st.info("No bout has a recorded end_s, so their durations are not available.")
+    st.caption(f"{q['start_meaning']}. {q['fired_meaning']}")
+    if not rows.empty:
+        with st.expander(f"All {len(rows)} predicted bouts"):
+            st.dataframe(rows, hide_index=True, width="stretch")
+
+
+def render_exclusions(v):
+    m = st.columns(3)
+    m[0].metric("Input bouts", _num(v["n_input"]))
+    m[1].metric("Used", _num(v["n_used"]))
+    m[2].metric("Excluded", _num(v["n_excluded"]))
+    if not v["exclusions_consistent"]:
+        st.warning("The recorded exclusion counts do not add up; they are shown exactly as recorded.")
+    rows = [{"category": "Used in the comparison", "bouts": v["n_used"], "kind": "used", "order": 0}]
+    rows += [{"category": x["label"], "bouts": x["bouts"], "kind": "excluded", "order": i}
+             for i, x in enumerate(v["exclusions"], 1) if x["bouts"]]
+    df = pd.DataFrame(rows)
+    st.altair_chart(alt.Chart(df).mark_bar().encode(
+        x=alt.X("bouts:Q", title="bouts", axis=alt.Axis(tickMinStep=1)),
+        y=alt.Y("category:N", sort=alt.EncodingSortField("order"), title=None,
+                axis=alt.Axis(labelLimit=200, labelOverlap=False)),
+        color=alt.Color("kind:N", title=None, scale=alt.Scale(domain=["used", "excluded"],
+                                                              range=["#4c78a8", "#bab0ac"]), legend=None),
+        tooltip=["category:N", "bouts:Q"]).properties(height=_height(len(df))), width="stretch")
+    st.caption("The blue bar is the bouts the comparison used; each grey bar is one recorded exclusion reason. Each "
+               "excluded bout is counted once, under the first reason Contract v1 checks, in this order:")
+    st.dataframe(pd.DataFrame(v["exclusions"])[["reason", "description", "bouts"]].rename(
+                 columns={"reason": "recorded reason (why)", "description": "meaning"}),
+                 hide_index=True, width="stretch")
+
+
+def render_gate(v):
+    g = v["gate"]
+    if v["status"] == "ok":
+        st.success(f"Evidence gate met: {_num(v['n_windows'])} valid windows in {_num(v['n_sessions'])} sessions.")
+    elif v["status"] == "insufficient_evidence":
+        st.info(f"Evidence gate not met (`{v['failed_gate']}`; {v['reason']}: {v['reason_text']}). No effect is "
+                "reported for this comparison.")
+    if g["overridden"]:
+        st.warning(f"Gate overridden: lowered from the Contract v1 defaults (≥ {g['default_min_n_windows']} windows, "
+                   f"≥ {g['default_min_n_sessions']} sessions) to ≥ {g['min_n_windows']} windows and ≥ "
+                   f"{g['min_n_sessions']} sessions. Recorded reason: “{g['override_reason']}”.")
+    else:
+        st.caption(f"The Contract v1 default gate, not overridden: ≥ {g['min_n_windows']} windows in ≥ "
+                   f"{g['min_n_sessions']} sessions.")
+    for row in v["gates"]:
+        extra = (f" (recorded: {_num(row['n_available'])} available, {_num(row['n_required'])} required)"
+                 if row["verdict"] == "not met" else
+                 " (Contract v1 stops at the first failed gate)" if row["verdict"] == "not evaluated" else "")
+        st.markdown(f"**{row['gate']}** (`{row['field']}`): observed {_num(row['observed'])}, required ≥ "
+                    f"{_num(row['required'])} {VERDICT_BADGES[row['verdict']]}{extra}")
+    df = pd.DataFrame(v["gates"])
+    if df[["observed", "required"]].notna().all().all():
+        base = alt.Chart(df).encode(y=alt.Y("gate:N", sort=None, title=None,
+                                            axis=alt.Axis(labelLimit=170, labelOverlap=False)))
+        observed = base.mark_bar(color="#4c78a8").encode(x=alt.X("observed:Q", title="count"),
+                                                         tooltip=["gate:N", "observed:Q", "required:Q", "verdict:N"])
+        required = base.mark_tick(color="#222222", thickness=3, size=30).encode(x="required:Q")
+        st.altair_chart((observed + required).properties(height=_height(len(df))), width="stretch")
+        st.caption("Bars: the recorded counts; black ticks: the required minimums.")
+
+
 def render_timeline(steps, who):
     st.markdown("#### Recorded investigation activity")
     st.caption(f"{who['label'].capitalize()}. The saved trace, in order (a record of a finished run, not a live "
@@ -412,6 +987,7 @@ def render_saved(saved):
     st.markdown(READABLE, unsafe_allow_html=True)
     ref, who = runs.reference_check(saved), runs.attribution(saved)
     render_overview(saved, runs.overview(saved, ref))
+    render_evidence(saved)
     render_timeline(runs.timeline(d, who["replies"]), who)
     st.markdown("#### Technical details")
     tabs = st.tabs(["Finding", "Tool sequence", "Evidence", "Cost ledger", "Reference check (run5)",

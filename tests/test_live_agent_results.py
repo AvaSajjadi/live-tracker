@@ -27,8 +27,10 @@ GENUINE = {"live_run1": ROOT / "outputs" / "investigation_v1_live" / "live_run1"
 
 
 def headers(at):
-    """The timeline's step headers, in order (each carries a status badge)."""
-    return [m.value for m in at.markdown if "-badge[" in m.value]
+    """The timeline's step headers, in order (each carries a status badge; the timeline follows its heading)."""
+    md = [m.value for m in at.markdown]
+    start = md.index("#### Recorded investigation activity")
+    return [m for m in md[start:] if "-badge[" in m]
 
 
 def title(header):

@@ -43,15 +43,24 @@ indicators, or synthetic numbers. Held-out test sessions are never loaded:
 the real constructors go through the Stage 9 EvidencePolicy and the verified
 cache, which only serve the validation split.
 
-What this module does NOT decide (still open; see docs/contract_v1_integration.md)
------------------------------------------------------------------------------------
+Finalized (approved by Ava): the overlap policy overlap_v1
+------------------------------------------------------------
+"Another bout" means another FIRED bout of the cited query: a monitor event
+of the same session and behavior that lasted at least min_duration_s. A
+threshold crossing that never fired (too short or sub-threshold) is not a
+bout. The bouts are the complete, unchanged, provenance-verified result of
+the cited query (_verified_bouts). Both windows are checked: a pre window
+that intersects another fired bout is excluded (pre_window_overlaps_bout),
+and so is a baseline window that intersects one
+(baseline_window_overlaps_bout). The policy is named and versioned
+(OVERLAP_POLICIES), and every compare_windows result carries its name and
+definition, as with the quality policy.
+
+Still open (see docs/contract_v1_integration.md)
+------------------------------------------------
 - event threshold, minimum duration and the score-to-event latency gap: the
   caller supplies threshold and min_duration_s; no latency gap is applied,
-  so start_s is a classifier threshold crossing, not a behavior onset;
-- whether "overlaps another bout" means fired events only (implemented: the
-  bouts given to compare_windows) or every sub-threshold run;
-- the overlap rule covers the pre window only (contract wording); a baseline
-  window that contains a bout is not excluded.
+  so start_s is a classifier threshold crossing, not a behavior onset.
 """
 
 from __future__ import annotations
@@ -76,9 +85,9 @@ from .features import DYADIC_COLS, FEATURE_COLS
 from .monitor import run_monitor
 from .rules import CLASSIFIER_BEHAVIORS, Rule
 
-__all__ = ["CONTRACT_VERSION", "ERROR_CODES", "InvestigationData", "InvestigationRunner", "QUALITY_POLICIES",
-           "QualityPolicy", "TOOLS", "check_tracking_quality", "compare_windows", "get_window_features",
-           "query_events"]
+__all__ = ["CONTRACT_VERSION", "ERROR_CODES", "evidence_id", "InvestigationData", "InvestigationRunner",
+           "OVERLAP_POLICIES", "OverlapPolicy", "QUALITY_POLICIES", "QualityPolicy", "TOOLS", "check_tracking_quality",
+           "compare_windows", "comparison_problems", "FollowUps", "get_window_features", "query_events"]
 
 CONTRACT_VERSION = "investigate-tool-contracts/v1"
 TOOLS = ("query_events", "get_window_features", "check_tracking_quality", "compare_windows")
@@ -91,8 +100,11 @@ ERROR_CODES = ("unknown_session", "bad_window", "unknown_feature", "unknown_beha
 # that are not exactly the bouts of the cited query on this data source)
 EXTENSION_ERROR_CODES = ("invalid_request", "unverified_bouts")
 INSUFFICIENT_REASONS = ("too_few_bouts", "too_few_usable_windows", "window_unreliable")
+# the order in which they are checked (the order of Ava's approved dry run, scripts/dryrun_contract_options.py):
+# a bout is excluded for the FIRST reason that applies. The order changes which reason is reported, never which
+# bouts are used
 EXCLUSION_REASONS = ("pre_window_overlaps_bout", "window_before_session_start", "pre_window_unreliable",
-                     "baseline_window_unreliable", "no_feature_values")
+                     "baseline_window_unreliable", "baseline_window_overlaps_bout", "no_feature_values")
 SCORE_COLUMNS = score_drops.SCORE_COLUMNS
 WINDOW_FEATURES = tuple(DYADIC_COLS)                  # Ava's pair features, as computed by the Stage 9 pipeline
 FLAG_NAMES = ("missing", "out_of_frame", "jump", "frozen", "low_conf")
@@ -109,6 +121,16 @@ START_MEANING = ("start_s is the first frame whose score is >= threshold with tr
                  "of the source's scores); no score-to-event latency gap is applied, so for classifier scores it "
                  "is not the annotated behavior onset")
 WORDING = "precedes / is associated with (never causes or leads to)"
+USABLE_VALUE_RULE = "finite value with tracking_ok on frames t and t-1 (Stage 9 rule)"
+CAUSAL_NOTE = "computed from the session truncated at t1_s"
+# compare_windows' window semantics and effect definition, as reported in every result
+WINDOW_DEFINITIONS = {
+    "pre": "[start_s - pre_s, start_s)",
+    "baseline": "[start_s - pre_s - baseline_gap_s - baseline_s, start_s - pre_s - baseline_gap_s)",
+    "anchor": "start_s (never fired_s)", "truncation": "each window from the session truncated at its own end"}
+MEAN_DIFF_DEFINITION = ("the MEDIAN across paired sessions of the per-session paired differences "
+                        "(per_session[].paired_diff: each session's mean of its used bouts' pre - baseline); not a "
+                        "mean over windows or sessions (the field name is historical and kept for compatibility)")
 
 
 @dataclass(frozen=True)
@@ -132,6 +154,39 @@ QUALITY_POLICIES = {
     "quality_v1_strict90": QualityPolicy("quality_v1_strict90", 0.9),
 }
 DEFAULT_QUALITY_POLICY = "quality_v1"
+
+
+def quality_reasons(policy, n_frames, n_usable_frames, longest_veto_frames):
+    """The reasons a window fails `policy`, in order, from its measurements (the ONE decision rule: _assess uses
+    it, and anything that checks a recorded verdict can reuse it). An empty list means reliable."""
+    reasons = []
+    if Fraction(n_usable_frames) < Fraction(str(policy.min_usable_fraction)) * n_frames:   # exact: no float rounding
+        reasons.append("usable_fraction_below_min")
+    if policy.veto_flags and longest_veto_frames > policy.veto_max_frames:
+        reasons.append("frozen_or_out_of_frame_run")
+    return reasons
+
+
+@dataclass(frozen=True)
+class OverlapPolicy:
+    """A versioned rule for which windows are excluded because another bout intersects them (Ava's decision)."""
+    name: str
+    other_bouts: str               # which bouts count
+    windows: tuple                 # which windows are checked against them
+
+    def to_json(self):
+        return {"name": self.name, "other_bouts": self.other_bouts, "windows_checked": list(self.windows),
+                "intersection": "half-open frame ranges [start, end) of the bout and the window share a frame",
+                "not_bouts": "threshold crossings that never fired (shorter than min_duration_s or below the "
+                             "threshold) are not bouts and exclude nothing"}
+
+
+# overlap_v1 = Ava's approved V1 (docs/contract_v1_overlap_options.md): fired bouts; pre AND baseline windows
+OVERLAP_POLICIES = {
+    "overlap_v1": OverlapPolicy("overlap_v1", "the other fired bouts of the cited query (same session and behavior; "
+                                              "the complete, verified query result)", ("pre", "baseline")),
+}
+DEFAULT_OVERLAP_POLICY = "overlap_v1"
 
 
 class _Refused(Exception):
@@ -277,6 +332,14 @@ def _canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def evidence_id(tool, request, result):
+    """The deterministic identity of one executed call: "ev:<tool>:<first 24 hex of the SHA-256>" of the canonical
+    {tool, request, result}. Altering the request or the result changes it."""
+    if tool not in TOOLS:
+        raise ValueError(f"unknown tool {tool!r}")
+    return f"ev:{tool}:{_sha(_canonical({'tool': tool, 'request': request, 'result': result}))[:24]}"
+
+
 def _base(data):
     return {"data_source": data.data_source, "derived_from": data.derived_from,
             "contract_version": CONTRACT_VERSION, "association_only": True}
@@ -403,16 +466,12 @@ def _assess(pose, first, stop, policy):
     flags = _prefix_flags(pose, stop)
     w = flags[(flags["frame"] >= first) & (flags["frame"] < stop)]
     fired = [f for f in FLAG_NAMES if f in w.columns and bool(w[f].any())]
-    reasons = []
-    if Fraction(n_ok) < Fraction(str(policy.min_usable_fraction)) * n:     # exact: no float rounding at 0.8
-        reasons.append("usable_fraction_below_min")
     longest = 0
     if policy.veto_flags:
         bad = w.assign(_b=w[list(policy.veto_flags)].any(axis=1)).groupby("frame")["_b"].any()
         bad = bad.reindex(range(first, stop), fill_value=False).to_numpy(bool)
         longest = _longest_run(bad)
-        if longest > policy.veto_max_frames:
-            reasons.append("frozen_or_out_of_frame_run")
+    reasons = quality_reasons(policy, n, n_ok, longest)
     return {"usable_fraction": n_ok / n, "n_frames": n, "n_usable_frames": n_ok, "flags_fired": fired,
             "longest_veto_run_s": longest / tb.FPS_INT if policy.veto_flags else None,
             "verdict": "unreliable" if reasons else "reliable", "reason": reasons[0] if reasons else None,
@@ -505,9 +564,7 @@ def get_window_features(data, request):
                       if v.size else {"mean": None, "min": None, "max": None, "n": 0})
     return {"status": "ok", **_base(data), "session": request["session"], "t0_s": float(request["t0_s"]),
             "t1_s": float(request["t1_s"]), "n_frames": stop - first, "n_usable_frames": int(ok[first:stop].sum()),
-            "summary": summary,
-            "usable_value_rule": "finite value with tracking_ok on frames t and t-1 (Stage 9 rule)",
-            "causal": "computed from the session truncated at t1_s"}
+            "summary": summary, "usable_value_rule": USABLE_VALUE_RULE, "causal": CAUSAL_NOTE}
 
 
 # ======================================================================
@@ -613,6 +670,18 @@ def _gate(request):
             "override_reason": why.strip()[:300] if lowered else None}
 
 
+def _gate_verdict(n_input, n_windows, n_sessions, gate):
+    """The evidence gate's decision: None when it is met, else the insufficient_evidence fields."""
+    if n_input < gate["min_n_windows"]:
+        return {"reason": "too_few_bouts", "n_available": n_input, "n_required": gate["min_n_windows"],
+                "failed_gate": "min_n_windows"}
+    for name, have in (("min_n_windows", n_windows), ("min_n_sessions", n_sessions)):
+        if have < gate[name]:
+            return {"reason": "too_few_usable_windows", "n_available": have, "n_required": gate[name],
+                    "failed_gate": name}
+    return None
+
+
 @_guard
 def compare_windows(data, request):
     """Pre-bout vs baseline windows anchored on start_s, paired by session."""
@@ -625,13 +694,19 @@ def compare_windows(data, request):
     gap_s = _duration_s(request["baseline_gap_s"], "baseline_gap_s", allow_zero=True)
     gate = _gate(request)
     bouts = _verified_bouts(data, request)
+    overlap = OVERLAP_POLICIES[DEFAULT_OVERLAP_POLICY]
     windows = [_bout_windows(i, b, pre_s, base_s, gap_s) for i, b in enumerate(bouts)]
+
+    def hits_other_bout(k, a, z):          # [a, z) intersects another fired bout of the query (overlap policy)
+        b = bouts[k]
+        return any(j != k and o["session"] == b["session"] and o["behavior"] == b["behavior"]
+                   and o["end"] > a and o["start"] < z for j, o in enumerate(bouts))
+
     used, excluded = [], []
     for k, (b, (S, p0, b0, b1, before_start)) in enumerate(zip(bouts, windows)):
         pose = data._get(b["session"]).pose
         why = None
-        if any(j != k and o["session"] == b["session"] and o["behavior"] == b["behavior"]
-               and o["end"] > p0 and o["start"] < S for j, o in enumerate(bouts)):
+        if "pre" in overlap.windows and hits_other_bout(k, p0, S):
             why = "pre_window_overlaps_bout"
         elif before_start:
             why = "window_before_session_start"
@@ -639,6 +714,8 @@ def compare_windows(data, request):
             why = "pre_window_unreliable"
         elif _assess(pose, b0, b1, policy)["verdict"] != "reliable":
             why = "baseline_window_unreliable"
+        elif "baseline" in overlap.windows and hits_other_bout(k, b0, b1):
+            why = "baseline_window_overlaps_bout"
         else:
             pre, base = _values(pose, p0, S, feature), _values(pose, b0, b1, feature)
             if not pre.size or not base.size:
@@ -657,26 +734,114 @@ def compare_windows(data, request):
     common = {**_base(data), "feature": feature, **counts, "excluded": excluded,
               "pre_s": float(request["pre_s"]), "baseline_s": float(request["baseline_s"]),
               "baseline_gap_s": float(request["baseline_gap_s"]), "quality_policy": policy.name,
-              "evidence_gate": gate, "windows": {
-                  "pre": "[start_s - pre_s, start_s)",
-                  "baseline": "[start_s - pre_s - baseline_gap_s - baseline_s, start_s - pre_s - baseline_gap_s)",
-                  "anchor": "start_s (never fired_s)", "truncation": "each window from the session truncated "
-                                                                     "at its own end"}}
-    if len(bouts) < gate["min_n_windows"]:
-        return {"status": "insufficient_evidence", "reason": "too_few_bouts", "n_available": len(bouts),
-                "n_required": gate["min_n_windows"], "failed_gate": "min_n_windows", **common}
-    for name, have in (("min_n_windows", counts["n_windows"]), ("min_n_sessions", counts["n_sessions"])):
-        if have < gate[name]:
-            return {"status": "insufficient_evidence", "reason": "too_few_usable_windows", "n_available": have,
-                    "n_required": gate[name], "failed_gate": name, **common}
+              "quality_policy_definition": policy.to_json(),
+              "overlap_policy": overlap.name, "overlap_policy_definition": overlap.to_json(),
+              "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate,
+              "windows": dict(WINDOW_DEFINITIONS)}
+    verdict = _gate_verdict(len(bouts), counts["n_windows"], counts["n_sessions"], gate)
+    if verdict:
+        return {"status": "insufficient_evidence", **verdict, **common}
     per_session = [{"session": sid, "n_bouts": len(d), "paired_diff": statistics.fmean(d)}
                    for sid, d in sorted(by_session.items())]
     return {"status": "ok", **common,
             "pre_mean": statistics.fmean(u["pre"] for u in used),
             "baseline_mean": statistics.fmean(u["baseline"] for u in used),
             "mean_diff": statistics.median(p["paired_diff"] for p in per_session),
-            "mean_diff_definition": "median over sessions of each session's mean (pre - baseline) difference",
+            "mean_diff_definition": MEAN_DIFF_DEFINITION,
             "per_session": per_session, "wording": WORDING}
+
+
+_COMPARE_COMMON = frozenset({"data_source", "derived_from", "contract_version", "association_only", "status", "feature",
+                             "n_input", "n_used", "n_excluded", "n_sessions", "n_bouts", "n_windows",
+                             "n_baseline_windows", "n_sessions_input", "excluded", "pre_s", "baseline_s",
+                             "baseline_gap_s", "quality_policy", "quality_policy_definition", "overlap_policy",
+                             "overlap_policy_definition", "exclusion_order", "evidence_gate", "windows"})
+_COMPARE_KEYS = {"ok": _COMPARE_COMMON | {"pre_mean", "baseline_mean", "mean_diff", "mean_diff_definition",
+                                          "per_session", "wording"},
+                 "insufficient_evidence": _COMPARE_COMMON | {"reason", "n_available", "n_required", "failed_gate"}}
+
+
+def _used_sessions(bouts, excluded):
+    """The sessions of the bouts a comparison used, in request order: the request's bouts without its excluded
+    ones. compare_windows lists exclusions as {session, start_s, why} in bout order, so they must be a
+    subsequence of the bouts with a reason from EXCLUSION_REASONS; None otherwise."""
+    j, kept = 0, []
+    for b in bouts:
+        x = excluded[j] if j < len(excluded) else None
+        if isinstance(x, dict) and set(x) == {"session", "start_s", "why"} and x["why"] in EXCLUSION_REASONS and \
+                (x["session"], x["start_s"]) == (b["session"], b["start_s"]):
+            j += 1
+        else:
+            kept.append(b["session"])
+    return kept if j == len(excluded) else None
+
+
+def comparison_problems(request, result):
+    """The internal consistency of one saved compare_windows result with its request under Contract v1, without
+    the data and without recomputing any measurement: its exact fields for its status; the request's parameters,
+    the fixed policies and definitions echoed; the gate (_gate) of the request; counts that agree with each other
+    and with the request's bouts; the status that the gate's own decision (_gate_verdict) gives for those counts;
+    and, for "ok", exactly one per-session row for each session of the used bouts (the request's bouts without the
+    documented exclusions), carrying that session's number of used bouts, and a mean_diff that is the median of
+    their paired differences (its definition). Problems (empty: consistent). Consistency, not authenticity."""
+    try:
+        status = result.get("status")
+        if status not in _COMPARE_KEYS or set(result) != _COMPARE_KEYS[status]:
+            return [f"a compare_windows result with status {str(status)[:30]!r} must have exactly its fields"]
+        gate = _gate(request)
+        policy = request.get("quality_policy", DEFAULT_QUALITY_POLICY)
+        bouts, r, problems = request["bouts"], result, []
+        echoed = {"feature": request["feature"], "pre_s": _finite(request["pre_s"]),
+                  "baseline_s": _finite(request["baseline_s"]), "baseline_gap_s": _finite(request["baseline_gap_s"]),
+                  "quality_policy": policy, "quality_policy_definition": QUALITY_POLICIES[policy].to_json(),
+                  "overlap_policy": DEFAULT_OVERLAP_POLICY,
+                  "overlap_policy_definition": OVERLAP_POLICIES[DEFAULT_OVERLAP_POLICY].to_json(),
+                  "exclusion_order": list(EXCLUSION_REASONS), "evidence_gate": gate,
+                  "windows": dict(WINDOW_DEFINITIONS), "contract_version": CONTRACT_VERSION, "association_only": True}
+        wrong = [k for k, v in echoed.items() if r[k] != v]
+        if wrong:
+            problems.append(f"the result does not echo its request and Contract v1's fixed method ({wrong})")
+        counts = [r[k] for k in ("n_input", "n_used", "n_excluded", "n_sessions", "n_bouts", "n_windows",
+                                 "n_baseline_windows", "n_sessions_input")]
+        if not all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in counts) or \
+                not isinstance(r["excluded"], list):
+            return problems + ["the result's counts are not counts"]
+        used = r["n_used"]
+        kept = _used_sessions(bouts, r["excluded"])
+        if kept is None:
+            problems.append("the excluded windows are not request bouts (in order) with a documented reason")
+            kept = []
+        if r["n_input"] != len(bouts) or r["n_sessions_input"] != len({b["session"] for b in bouts}) or \
+                not used == r["n_bouts"] == r["n_windows"] == r["n_baseline_windows"] or \
+                r["n_excluded"] != len(r["excluded"]) or used + r["n_excluded"] != r["n_input"] or \
+                used != len(kept) or r["n_sessions"] != len(set(kept)):
+            problems.append("the result's counts contradict each other or the request's bouts")
+        verdict = _gate_verdict(r["n_input"], r["n_windows"], r["n_sessions"], gate)
+        if (verdict is None) != (status == "ok"):
+            problems.append(f"status {status!r} contradicts the evidence gate for {r['n_windows']} windows in "
+                            f"{r['n_sessions']} sessions (at least {gate['min_n_windows']} in "
+                            f"{gate['min_n_sessions']} required)")
+        elif verdict is not None and {k: r[k] for k in verdict} != verdict:
+            problems.append("the insufficient_evidence fields are not the gate's decision for its counts")
+        elif status == "ok":
+            rows = r["per_session"]
+            if not isinstance(rows, list) or any(not isinstance(x, dict) or set(x) != {"session", "n_bouts",
+                                                                                        "paired_diff"} or
+                                                 _finite(x["paired_diff"]) is None or
+                                                 isinstance(x["n_bouts"], bool) or
+                                                 not isinstance(x["n_bouts"], int) or x["n_bouts"] < 1
+                                                 for x in rows):
+                return problems + ["per_session rows must be {session, n_bouts >= 1 (an integer), paired_diff}"]
+            want = [(sid, kept.count(sid)) for sid in sorted(set(kept))]       # compare_windows' by_session
+            if [(x["session"], x["n_bouts"]) for x in rows] != want:
+                problems.append("the per_session rows are not the sessions and counts of the request's bouts "
+                                "after the documented exclusions")
+            if r["mean_diff_definition"] != MEAN_DIFF_DEFINITION or r["wording"] != WORDING or \
+                    r["mean_diff"] != statistics.median(x["paired_diff"] for x in rows):
+                problems.append("the effect is not the median of its per-session paired differences")
+        return problems
+    except (KeyError, TypeError, ValueError, AttributeError, statistics.StatisticsError, _Refused):
+        return ["the compare_windows result or its request is malformed"]
 
 
 # ======================================================================
@@ -687,6 +852,45 @@ _TOOL_FUNCS = {"query_events": query_events, "get_window_features": get_window_f
                "check_tracking_quality": check_tracking_quality, "compare_windows": compare_windows}
 _FIXED_FOLLOW_UP = ("query_run_id", "query", "bouts", "baseline_s", "baseline_gap_s", "feature", "min_n_windows",
                     "min_n_sessions", "gate_override_reason", "quality_policy")
+
+
+class FollowUps:
+    """The fixed-follow-up rule of one investigation's compare_windows calls, data-independent: every pre_s from
+    FOLLOW_UP_PRE_S; after the first analysis at most MAX_FOLLOW_UPS more, each changing only pre_s
+    (_FIXED_FOLLOW_UP) to a value not yet analysed. InvestigationRunner applies it; investigation_agent_v1
+    replays a saved report's comparisons through it."""
+
+    def __init__(self):
+        self.first = None
+        self.calls = 0                       # compare_windows analyses that ran (status other than "error")
+        self.analysed = set()                # their pre_s values
+
+    def problem(self, req):
+        """The refusal message for this request, or None."""
+        if not isinstance(req, dict) or "pre_s" not in req:
+            return None                                       # the tool itself reports the malformed request
+        pre = _finite(req["pre_s"])
+        if pre is None:
+            return None                                       # ditto: invalid_request from the tool
+        if pre not in FOLLOW_UP_PRE_S:
+            return f"pre_s must be one of the preselected values {list(FOLLOW_UP_PRE_S)}"
+        if self.first is None:
+            return None
+        if self.calls >= 1 + MAX_FOLLOW_UPS:
+            return f"at most {MAX_FOLLOW_UPS} follow-up compare_windows analyses after the first"
+        changed = [k for k in _FIXED_FOLLOW_UP if req.get(k) != self.first.get(k)]
+        if changed:
+            return f"a follow-up may change only pre_s (changed: {changed})"
+        if pre in self.analysed:
+            return f"pre_s {pre!r} was already analysed"
+        return None
+
+    def ran(self, req):
+        """Record an analysis that ran (a result other than "error")."""
+        if self.first is None:
+            self.first = copy.deepcopy(req)
+        self.calls += 1
+        self.analysed.add(_finite(req["pre_s"]))
 
 
 class InvestigationRunner:
@@ -704,9 +908,7 @@ class InvestigationRunner:
             raise ValueError(f"max_tool_calls must be 1-{MAX_TOOL_CALLS}")
         self.data, self.investigation_id, self.max_tool_calls = data, investigation_id, max_tool_calls
         self.attempts = []
-        self._first_compare = None
-        self._compare_calls = 0              # compare_windows analyses that ran (status other than "error")
-        self._analysed = set()               # their pre_s values
+        self.follow_ups = FollowUps()
 
     @property
     def calls_used(self):
@@ -744,35 +946,13 @@ class InvestigationRunner:
         if tool not in _TOOL_FUNCS:
             return _error("invalid_request", f"unknown tool {tool[:40]!r}; tools: {list(TOOLS)}")
         if tool == "compare_windows":
-            problem = self._compare_problem(req)
+            problem = self.follow_ups.problem(req)
             if problem:
                 return _error("invalid_request", problem)
         result = _TOOL_FUNCS[tool](self.data, req)
         if tool == "compare_windows" and result["status"] != "error":     # an analysis ran
-            if self._first_compare is None:
-                self._first_compare = req
-            self._compare_calls += 1
-            self._analysed.add(_finite(req["pre_s"]))
+            self.follow_ups.ran(req)
         return result
-
-    def _compare_problem(self, req):
-        if not isinstance(req, dict) or "pre_s" not in req:
-            return None                                       # the tool itself reports the malformed request
-        pre = _finite(req["pre_s"])
-        if pre is None:
-            return None                                       # ditto: invalid_request from the tool
-        if pre not in FOLLOW_UP_PRE_S:
-            return f"pre_s must be one of the preselected values {list(FOLLOW_UP_PRE_S)}"
-        if self._first_compare is None:
-            return None
-        if self._compare_calls >= 1 + MAX_FOLLOW_UPS:
-            return f"at most {MAX_FOLLOW_UPS} follow-up compare_windows analyses after the first"
-        changed = [k for k in _FIXED_FOLLOW_UP if req.get(k) != self._first_compare.get(k)]
-        if changed:
-            return f"a follow-up may change only pre_s (changed: {changed})"
-        if pre in self._analysed:
-            return f"pre_s {pre!r} was already analysed"
-        return None
 
     def record(self):
         """The full attempt log (JSON-ready), for the investigation report."""

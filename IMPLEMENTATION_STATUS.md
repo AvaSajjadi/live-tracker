@@ -111,6 +111,8 @@ video, slides and poster for the submission.
   the models were not retrained with them. Stage 9 investigation runs with the jump flag off.
   **Decision (2026-10-24): we will not wire them in.** Doing so would mean retraining both models and measuring
   everything again. The models and numbers stay as they are.
+- Score calibration (Igor's plan item 9) was not done. The code exists but is off by default; turning it on breaks the
+  demo attack rule. Details and numbers: `docs/model_settings.md`. The submission uses raw scores.
 - Slides / report, and the demo rehearsal.
 - Contract v1 decisions still to confirm with Syed: see `plan/AVA.md` and the open items in
   `docs/contract_v1_integration.md` section 6.

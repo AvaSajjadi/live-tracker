@@ -42,3 +42,55 @@
 2. Look at the two branches in section 5.
 3. Decide what to do with the untracked files.
 4. Tell Syed that his work is merged.
+
+## 2026-10-24 (part 2: project check and calibration)
+
+### 1. What we did
+1. Read this log. Found that newer work was already on GitHub (PR #35 merged, 4450 tests passed).
+2. Checked if all parts of the project are built. Read the team plan, the three plan files and `IMPLEMENTATION_STATUS.md`.
+3. Looked at the two Syed branches (`syed/day34-replay`, `syed/experimental-investigation`). They hold no work that is missing from our code.
+4. Decided: we will NOT wire the tuned quality values into the defaults. No retraining.
+5. Checked pyarrow. It is already in `requirements.txt`. Removed the old note.
+6. Checked Igor's work item by item against `plan/IGOR.md`. His 58 tests pass.
+7. Found that calibration (Igor's item 9) was never done.
+8. Added calibration code to `classify.py` and tried it. Result: model B macro F1 fell from 0.651 to 0.592, and the demo attack rule found 0 of 56 attack bouts.
+9. Decided: NO calibration for the submission. Switched it off by default. Retrained both models. The old numbers came back (0.499 and 0.651).
+10. Checked Igor's two zips (validation scores and model files). Compared them with our rebuilt models.
+11. Wrote messages for Igor and Syed.
+
+### 2. Commands we ran
+- `git log`, `git branch`, `git diff --stat`: show history and differences. They change nothing.
+- `python scripts/check_leakage.py`: checks that test sessions are not used in training. 7 passed, 1 failed (see problems).
+- `python -m pytest -q <test files>`: runs the tests. Igor's 58 passed. Classify tests passed.
+- `python -m live_tracker.classify train --name model_a/model_b ...`: trains and saves a model.
+- `python -m live_tracker.classify scores ...`: writes per-frame scores for the validation sessions.
+- `python scripts/tune_attack_rule.py`: chooses the attack rule on validation scores.
+- `sha256sum`: makes a file fingerprint, to check Igor's score file.
+- Unzipped Igor's files into a new empty folder. We did not load the `.joblib` files.
+
+### 3. Files we changed, and why
+- `IMPLEMENTATION_STATUS.md`: removed the old pyarrow note; recorded the quality-values decision and that calibration was not applied.
+- `src/live_tracker/classify.py` and `tests/test_classify.py`: added optional calibration (`FitParams(calibrate="sigmoid")`). It is OFF by default. 3 new tests.
+- `docs/model_settings.md`: added the calibration test result and Igor's original model versions.
+- `SESSION_LOG.md`: this part.
+- Commits: `1e54787`, `1900f09`, `2e981df`, `f86c29d`, `b5e5c34`, `fff9251`, `cad3ba1`. All pushed to `ava/model-settings`.
+
+### 4. Problems and fixes
+- `check_leakage.py` has 1 FAIL ("test = all official test sessions, 19 in manifest, 0 official"). It is not a leak. `labels.parquet` was rebuilt from the train file only, so it has no test sessions. Not fixed on purpose: fixing it means reading the test file.
+- Calibration broke the demo attack rule. Fix: we turned calibration off.
+- Our rebuilt scores differ from Igor's by up to 0.09. Igor's zip shows why: he used a Mac with scikit-learn 1.6.1; we use Windows with 1.7.2. Cause not tested.
+
+### 5. Not finished
+- Calibration (Igor's item 9): not applied. The report must say the scores are NOT calibrated.
+- Check of Syed's work against `plan/SYED.md`: not done.
+- The final test run: not done on purpose (test split can be used once).
+- Slides, report, demo rehearsal, backup video.
+- Igor's and Syed's plan checkboxes are old and wrong.
+- Untracked files not committed on purpose: `.whl` files and `reply_to_syed*.txt`.
+
+### 6. Next time
+1. Check Syed's work item by item against `plan/SYED.md`.
+2. Run the full test suite once more (about 40 minutes).
+3. Agree the test-split policy with Igor, then run the final test once.
+4. Slides, report, demo rehearsal, backup video.
+5. Decide if the `check_leakage.py` FAIL needs a fix.

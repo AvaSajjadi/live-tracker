@@ -20,6 +20,7 @@ from live_tracker.formats import inject_tracking_failures, wide_to_long
 from live_tracker.motion import frame_features
 from live_tracker.quality import flag_tracking, tracking_loss_events, window_quality
 from live_tracker.ui_style import apply as apply_style
+from live_tracker.ui_style import note
 
 DEMO_CSV = Path(__file__).parent / 'example_pose_demo.csv'
 
@@ -69,9 +70,10 @@ if data is not None:
 
         # --- starter section (unchanged) ----------------------------------
         st.subheader('Motion features (OFFLINE ONLY)')
-        st.caption('OFFLINE ONLY: uses Savitzky-Golay smoothing, which looks at future frames. '
-                   'Fine for offline analysis, never for live monitoring or replay. '
-                   'The causal sections below are the live-safe ones.')
+        note('caption', 'OFFLINE ONLY: never for live monitoring or replay.',
+             'This section uses Savitzky-Golay smoothing, which looks at future frames. '
+             'Fine for offline analysis, never for live monitoring or replay. '
+             'The causal sections below are the live-safe ones.')
         f = frame_features(data[['x_a', 'y_a']].to_numpy(),
                            data[['x_b', 'y_b']].to_numpy(), fps=fps)
         st.metric('Frames', len(f))

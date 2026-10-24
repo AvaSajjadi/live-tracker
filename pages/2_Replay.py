@@ -230,8 +230,9 @@ def view():
 
 def render(state):
     if state.at_end:
-        st.info("End of session: everything known after the recording ended, including bouts and tracking "
-                "warnings that were still going. Seek to a frame to go back into the replay.")
+        ui_style.note("info", "End of session: everything known after the recording ended.",
+                      "Includes bouts and tracking warnings that were still going. "
+                      "Seek to a frame to go back into the replay.")
         m = st.columns(3)
         m[0].metric("Frame", "end")
         m[1].metric("Time", rv.fmt_s(replay.times[-1]) + " (last frame)")
@@ -275,8 +276,9 @@ def render(state):
     rows = rv.timeline_rows(state)
     if rows:
         st.dataframe(pd.DataFrame(rows).drop(columns=["event_id"]), hide_index=True, width="stretch")
-        st.caption("Onset: first frame of the bout; fired: when the rule's minimum duration was reached; "
-                   "closure: when the bout ended (known only after it ended).")
+        with st.expander("What do onset, fired and closure mean?"):
+            st.caption("Onset: first frame of the bout; fired: when the rule's minimum duration was reached; "
+                       "closure: when the bout ended (known only after it ended).")
     else:
         st.caption("No event has fired yet.")
 

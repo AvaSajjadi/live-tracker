@@ -18,6 +18,7 @@ import streamlit as st
 
 from live_tracker.agent import Clarification, RuleProposal
 from live_tracker.ui_style import apply as apply_style
+from live_tracker.ui_style import note
 from live_tracker.claude_agent import ClaudeUnavailable
 from live_tracker.rule_workflow import (BackendFailure, DecisionError, DuplicateRuleError, RuleWorkflow,
                                         StaleActionError, is_valid_workflow, preview)
@@ -46,10 +47,11 @@ st.caption("Type what you want to monitor. A rule is only a proposal until you c
 backend_label = st.radio("Interpretation", list(BACKEND_LABELS), index=0)
 backend = BACKEND_LABELS[backend_label]
 if backend == "claude":
-    st.info("The Claude cross-check only accepts instructions that the offline parser already "
-            "understands; it can block a proposal but never interpret an instruction the offline "
-            "parser rejects. It needs ANTHROPIC_API_KEY and LIVE_TRACKER_CLAUDE_MODEL and makes one "
-            "paid API call per click on Propose rule.")
+    note("info", "Claude cross-check: needs an API key and makes one paid call per click on Propose rule.",
+         "The Claude cross-check only accepts instructions that the offline parser already "
+         "understands; it can block a proposal but never interpret an instruction the offline "
+         "parser rejects. It needs ANTHROPIC_API_KEY and LIVE_TRACKER_CLAUDE_MODEL and makes one "
+         "paid API call per click on Propose rule.")
 
 text = st.text_area("Instruction", key=TEXT_KEY,
                     placeholder="Alert me when the mice attack for at least 2 seconds")

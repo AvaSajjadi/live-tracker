@@ -163,7 +163,8 @@ def test_state_survives_reruns():
 def test_claude_option_explains_its_limits():
     at = start()
     at.radio[0].set_value(at.radio[0].options[1]).run()
-    info = texts(at.info)
+    info = texts(at.info) + " " + texts(at.caption)      # short line in the box, full text under "More info"
+    assert "needs an API key" in texts(at.info)
     assert "only accepts instructions that the offline parser already understands" in info
     assert "never interpret an instruction the offline parser rejects" in info
 

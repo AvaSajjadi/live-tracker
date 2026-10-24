@@ -36,8 +36,9 @@ STATUS_BOX = {"supported": st.info, "insufficient": st.warning, "no_bouts": st.i
 
 ui_style.apply()
 st.title("Investigation")
-st.caption("The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
-           "what the Contract v1 tools can and cannot conclude.")
+ui_style.note("caption", "The evidence behind a replayed session.",
+              "The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
+              "what the Contract v1 tools can and cannot conclude.")
 nav = st.columns([2, 1, 4])
 try:
     nav[0].page_link("pages/2_Replay.py", label="Back to Replay", icon=":material/arrow_back:")
@@ -230,5 +231,6 @@ with tab_prov:
     st.download_button("Download investigation record (JSON)", iv.export_json(res),
                        file_name=f"{entry.session}_investigation.json", mime="application/json",
                        key=f"investigation_json_{run_id}")
-    st.caption("The same record the Replay page exports. No Markdown rendering exists for Contract v1 tool records; "
-               "findings/2 Markdown exists only for agent reports.")
+    ui_style.note("caption", "The same record the Replay page exports.",
+                  "No Markdown rendering exists for Contract v1 tool records; "
+                  "findings/2 Markdown exists only for agent reports.")

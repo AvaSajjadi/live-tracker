@@ -263,7 +263,8 @@ def test_a_rehearsal_that_does_not_reproduce_the_reference_is_still_a_verified_i
     text = page_text(at)
     assert "Verified autonomous investigation" in text
     assert "Verdict: not equivalent" in text and "threshold" in text and "not sent" in text
-    assert "concerns run5 equivalence, not the investigation's own validity" in text
+    assert "equivalence, not the investigation's own validity" in text
+    assert "Scientific report: verified." in text
     assert "actual API spending $0" in text                                    # a rehearsal spends nothing
 
 
@@ -347,7 +348,7 @@ def showing(at):
 
 
 def displayed_question(at):
-    return next(c.value for c in at.caption if "Question: " in c.value).split("Question: ", 1)[1]
+    return next(m.value for m in at.markdown if m.value.startswith("> "))[2:]
 
 
 def rehearse_asking(synthetic, question):
@@ -425,6 +426,7 @@ def test_a_paid_run_still_shows_provider_reported_spending(synthetic, monkeypatc
     (name,) = saved_dirs(synthetic["tmp"])
     spend = json.loads((synthetic["tmp"] / "live" / name / "run.json").read_text())["cost"]["actual_spend_usd"]
     metrics = {m.label: m.value for m in at.metric}
-    assert metrics["Actual spend (provider-reported)"] == f"${spend:.5f}" and "Actual API spending" not in metrics
+    assert metrics["Actual spend (provider-reported)"] == metrics["Actual API spending"] == f"${spend:.5f}"
+    assert "Simulated cost (emulated, not spent)" not in metrics
     ledger = next(df.value for df in at.dataframe if "cost status" in df.value.columns)
     assert "cost (USD)" in ledger.columns

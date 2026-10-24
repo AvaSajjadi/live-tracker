@@ -52,3 +52,20 @@ It fits a sigmoid on the validation sessions with the classifier frozen (2026-10
 Calibration lowers the attack scores, because the balanced class weights had pushed them up. If we turn it on, the
 demo rule (`evaluate.ATTACK_RULE_V1`), the alert threshold of 0.8, the Stage 9 runs, the tests and these docs must be
 redone. Validation numbers would also be slightly optimistic, because validation fits the calibration.
+
+## Igor's original models (received 2026-10-24)
+
+Igor's Oct 19 files (`model_a`, `model_b`, `.joblib` and `.json`) were checked by reading the `.json` files only; the
+`.joblib` files were not loaded. They are not in Git.
+
+| | Igor | Rebuilt here |
+|---|---|---|
+| Machine | macOS arm64 | Windows 11 |
+| Python | 3.13.5 | 3.12.10 |
+| scikit-learn | 1.6.1 | 1.7.2 |
+| numpy / pandas / scipy | 2.1.3 / 2.2.3 / 1.15.3 | 2.3.5 / 2.3.3 / 1.16.3 |
+
+Same in both: `C` 1.0, seed 0, training rows (137,827), feature count (77 and 102) and feature names.
+Validation macro F1 differs only in the third decimal: model A 0.4978 (Igor) vs 0.4986 (rebuilt), model B 0.65143 vs
+0.65148. The score differences of up to 0.09 are most likely from the different library versions and platform.
+That cause was not tested.

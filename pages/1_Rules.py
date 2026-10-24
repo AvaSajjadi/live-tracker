@@ -17,6 +17,7 @@ import json
 import streamlit as st
 
 from live_tracker.agent import Clarification, RuleProposal
+from live_tracker.ui_style import apply as apply_style
 from live_tracker.claude_agent import ClaudeUnavailable
 from live_tracker.rule_workflow import (BackendFailure, DecisionError, DuplicateRuleError, RuleWorkflow,
                                         StaleActionError, is_valid_workflow, preview)
@@ -34,6 +35,7 @@ if recovered or WORKFLOW_KEY not in st.session_state:
     st.session_state[WORKFLOW_KEY] = RuleWorkflow()
 wf: RuleWorkflow = st.session_state[WORKFLOW_KEY]
 
+apply_style()
 st.title("Monitoring rules")
 if recovered:
     st.error("The stored rule session was invalid and has been reset. No rules are approved; "

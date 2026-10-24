@@ -15,8 +15,10 @@ import streamlit as st
 from live_tracker import session_view as sv
 from live_tracker.calms21 import TORSO_KEYPOINTS
 from live_tracker.features import KEYPOINT_COLS
+from live_tracker import ui_style
 
 st.set_page_config(page_title="Real session | Motion Engine", layout="wide")
+ui_style.apply()
 st.title("Motion engine | real validation session")
 st.caption("Real CalMS21 pose data (validation split only). Measurements of motion and tracking; "
            "no behavior is claimed. Settings are the team's quality settings, not tuned for this page.")

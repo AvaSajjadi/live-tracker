@@ -9,7 +9,9 @@ an explicit confirmation and the typed authorization text.
 import streamlit as st
 
 from live_tracker import investigation_v1_ui as ui
+from live_tracker import ui_style
 
+ui_style.apply()
 st.title("Live Agent")
 st.caption("An autonomous, model-planned investigation over the Contract v1 tools on the verified CalMS21 "
            "validation split. Every value shown is read from a verified tool result; association only; publication "

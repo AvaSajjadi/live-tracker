@@ -19,10 +19,12 @@ from live_tracker.filters import smooth_dataframe
 from live_tracker.formats import inject_tracking_failures, wide_to_long
 from live_tracker.motion import frame_features
 from live_tracker.quality import flag_tracking, tracking_loss_events, window_quality
+from live_tracker.ui_style import apply as apply_style
 
 DEMO_CSV = Path(__file__).parent / 'example_pose_demo.csv'
 
 st.set_page_config(page_title='Live Tracker', layout='wide')
+apply_style()
 st.title('Live Tracker | Motion Engine')
 st.caption('Milestone 1: visualize tracked positions and quality flags; no behavior claims.')
 st.write('Upload a CSV with columns: x_a, y_a, x_b, y_b. One row per frame.')

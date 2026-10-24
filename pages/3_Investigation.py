@@ -23,6 +23,7 @@ from live_tracker import investigation_view as iv
 from live_tracker import replay as rp
 from live_tracker import replay_investigation as ri
 from live_tracker import replay_view as rv
+from live_tracker import ui_style
 from live_tracker import validation_run_ui as vui
 from live_tracker.rule_workflow import is_valid_workflow
 from streamlit.errors import StreamlitPageNotFoundError
@@ -33,6 +34,7 @@ SESSION_KEY = "investigation_session"
 STATUS_BOX = {"supported": st.info, "insufficient": st.warning, "no_bouts": st.info, "unsupported": st.info,
               "error": st.error}
 
+ui_style.apply()
 st.title("Investigation")
 st.caption("The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
            "what the Contract v1 tools can and cannot conclude.")

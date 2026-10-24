@@ -109,8 +109,6 @@ video, slides and poster for the submission.
 - Whether the keypoint features help a classifier: untested (needs regenerating features and retraining).
 - Tuned quality values in `params.py` (jump 3000 px/s, One-Euro beta 0.05) are not wired into the defaults, and
   the models were not retrained with them. Stage 9 investigation runs with the jump flag off.
-- `pyarrow` is needed by `classify.py` and the ablation but is not declared in `pyproject.toml` or
-  `requirements.txt`.
 - Slides / report, and the demo rehearsal.
 - Contract v1 decisions still to confirm with Syed: see `plan/AVA.md` and the open items in
   `docs/contract_v1_integration.md` section 6.

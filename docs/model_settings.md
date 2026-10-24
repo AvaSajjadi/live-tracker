@@ -33,3 +33,22 @@ $env:PYTHONPATH = "src"
 
 The normal `classify features` command also needs the test file and writes the test sessions into the same files.
 The numbers above do not use them.
+
+## Calibration: NOT applied (still to do)
+
+`plan/IGOR.md` item 9 asked for scores calibrated on validation. It was not done, so the saved models give **raw
+class-weighted logistic regression scores**. A score of 0.8 is not an 80 % chance. Say this in the report.
+
+Calibration code is in `classify.py` and is **off** by default. Turn it on with `FitParams(calibrate="sigmoid")`.
+It fits a sigmoid on the validation sessions with the classifier frozen (2026-10-24 test, not kept):
+
+| | Raw (used) | Calibrated |
+|---|---|---|
+| Model B validation macro F1 | 0.651 | 0.592 |
+| Model A validation macro F1 | 0.499 | 0.497 |
+| Demo rule ask 0.6 / 0.5 s | event F1 0.728 | detects 0 of 56 attack bouts |
+| Best rule after calibration | | ask 0.3 / 0.5 s, event F1 0.734, 11.5 false alerts per hour |
+
+Calibration lowers the attack scores, because the balanced class weights had pushed them up. If we turn it on, the
+demo rule (`evaluate.ATTACK_RULE_V1`), the alert threshold of 0.8, the Stage 9 runs, the tests and these docs must be
+redone. Validation numbers would also be slightly optimistic, because validation fits the calibration.

@@ -8,7 +8,9 @@ The genuine saved outputs (live_run1, run3) are only read, when present, and che
 
 import hashlib
 import json
+import os
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -32,7 +34,18 @@ RUN3 = ROOT / "outputs" / "investigation_v1" / "phase3b1_run3"
 def offline(monkeypatch, tmp_path):
     def blocked(*a, **k):
         raise AssertionError("network access attempted")
-    monkeypatch.setattr(socket.socket, "connect", blocked)
+    real_connect = socket.socket.connect
+
+    def guarded_connect(self, address, *a, **k):
+        # Windows has no native socketpair: socket.socketpair() (asyncio's event loop uses it) connects a loopback
+        # pair inside the socket module. Only that connection is allowed; any other, loopback included, is refused.
+        caller = sys._getframe(1)
+        if caller.f_globals.get("__name__") == "socket" and \
+                caller.f_code.co_name in ("socketpair", "_fallback_socketpair") and \
+                isinstance(address, tuple) and address and address[0] in ("127.0.0.1", "::1"):
+            return real_connect(self, address, *a, **k)
+        blocked()
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket, "create_connection", blocked)
     monkeypatch.setattr(live, "_get_json", blocked)
     monkeypatch.setattr(lv1, "get_json_no_redirects", blocked)
@@ -66,6 +79,25 @@ def provider(monkeypatch, key=None, cost=None, faults=None):
     emu = LR.EmulatedOpenRouterV1(faults, cost)
     monkeypatch.setattr(runs, "HTTP_CLIENT_FACTORY", lambda: httpx2.Client(transport=httpx2.MockTransport(emu)))
     return get, emu
+
+
+def test_the_network_guard_allows_only_the_socketpair_loopback():
+    with pytest.raises(AssertionError, match="network access attempted"):
+        socket.create_connection(("openrouter.ai", 443))
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            s = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:                                         # (no IPv6 here)
+            continue
+        with s, pytest.raises(AssertionError, match="network access attempted"):
+            s.connect((host, 9))                                # a direct loopback connection: refused too
+    pair = getattr(socket, "_fallback_socketpair", None) or (socket.socketpair if os.name == "nt" else None)
+    if pair is None:
+        pytest.skip("this Python has no pure-Python socketpair (the Windows path) to exercise")
+    a, b = pair()                                               # what asyncio does on Windows: allowed
+    with a, b:
+        a.sendall(b"x")
+        assert b.recv(1) == b"x"
 
 
 def open_page(**state):

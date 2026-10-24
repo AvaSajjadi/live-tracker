@@ -8,7 +8,8 @@ What load_run() can and cannot establish (VERIFICATION_LEVELS)
 --------------------------------------------------------------
 1. CONSISTENCY of the recorded execution (checked): the four files are re-derived against each other and against
    the tracked split manifest, the event_log validation, Contract v1's own rules and ATTACK_RULE_V1:
-   - files are read through directory file descriptors with no-follow semantics, each a regular file (fstat)
+   - files are read through directory file descriptors with no-follow semantics (on Windows, handles opened
+     relative to the held directory's handle, reparse points never traversed), each a regular file (fstat)
      within MAX_FILE_BYTES enforced while reading, read once and hashed from those bytes;
    - the summary is "verified" with every runner step ok, REAL labels, the test split not read, and its recorded
      digests equal the files;
@@ -128,12 +129,16 @@ def runs_dir(env=None):
 
 
 # ---- safe reading: directory descriptors, no-follow, fstat, bounded reads ----
+# POSIX: openat(dir_fd) with O_NOFOLLOW / O_DIRECTORY (below). Windows has neither, so it has its own handle-based
+# reader (further below) with the same guarantees; _read_run picks one, and a refusal never falls back to the other.
 
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
 
 
 def _platform_ok():
+    if os.name == "nt":
+        return _windows_opener() is not None
     return hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd
 
 
@@ -155,6 +160,20 @@ def _open_dir(name, dir_fd=None):
     return fd
 
 
+def _read_bounded(fd, name):
+    """Every byte of an open regular file, at most MAX_FILE_BYTES (enforced while reading)."""
+    chunks, size = [], 0
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > MAX_FILE_BYTES:
+            _refuse(f"{name} is larger than {MAX_FILE_BYTES} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _read_at(dir_fd, name):
     """The bytes of regular file `name` directly inside dir_fd: no symlink, at most MAX_FILE_BYTES (enforced while
     reading)."""
@@ -169,16 +188,7 @@ def _read_at(dir_fd, name):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             _refuse(f"{name} is not a regular file")
-        chunks, size = [], 0
-        while True:
-            chunk = os.read(fd, 1 << 20)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_FILE_BYTES:
-                _refuse(f"{name} is larger than {MAX_FILE_BYTES} bytes")
-            chunks.append(chunk)
-        return b"".join(chunks)
+        return _read_bounded(fd, name)
     finally:
         os.close(fd)
 
@@ -186,6 +196,8 @@ def _read_at(dir_fd, name):
 def _read_run(root, name):
     if not _platform_ok():
         _refuse("this platform cannot open files without following symlinks; runs are not shown (fail closed)")
+    if os.name == "nt":  # pragma: no cover - Windows
+        return _read_run_windows(root, name, _windows_opener())
     root_fd = _open_dir(str(root))
     try:
         run_fd = _open_dir(name, root_fd)
@@ -197,14 +209,220 @@ def _read_run(root, name):
         os.close(root_fd)
 
 
+# ---- Windows: handle-based reading, the counterpart of openat(dir_fd) + O_NOFOLLOW ----
+# The runs root is opened by its path with CreateFileW (_winapi.CreateFile); the run directory and each file are
+# opened RELATIVE TO THE HANDLE of the directory already held, with NtCreateFile (OBJECT_ATTRIBUTES.RootDirectory),
+# as openat(dir_fd) does on POSIX: once a directory is held, a later rename, replacement or link elsewhere in the
+# path cannot redirect what is opened inside it. Every open uses FILE_OPEN_REPARSE_POINT (FILE_FLAG_OPEN_REPARSE_POINT
+# for CreateFileW): a symlink, junction or any other reparse point is opened AS ITSELF, never traversed, and is then
+# refused. No handle grants FILE_SHARE_DELETE (a held directory or file cannot be renamed, replaced or deleted while
+# it is read) and a file does not grant FILE_SHARE_WRITE (it cannot change while it is read). Each handle is then
+# checked before use: an ordinary directory / regular file by its attributes (a reparse point, or attributes that
+# are not reported, are refused) and still the object at its path (device and file id). The bytes are read from that
+# handle, bounded by MAX_FILE_BYTES, and hashed by load_run. Every handle is closed on every path. The opener is a
+# parameter so this logic is testable anywhere (tests/test_validation_run_view.py uses a POSIX stand-in).
+
+_GENERIC_READ, _FILE_GENERIC_READ = 0x80000000, 0x00120089
+_FILE_SHARE_READ, _FILE_SHARE_WRITE = 0x1, 0x2
+_OPEN_EXISTING = 3                                        # CreateFileW
+_FILE_FLAG_BACKUP_SEMANTICS, _FILE_FLAG_OPEN_REPARSE_POINT = 0x02000000, 0x00200000
+_FILE_OPEN = 1                                            # NtCreateFile disposition
+_FILE_DIRECTORY_FILE, _FILE_NON_DIRECTORY_FILE = 0x1, 0x40
+_FILE_SYNCHRONOUS_IO_NONALERT, _FILE_OPEN_REPARSE_POINT = 0x20, 0x00200000
+_OBJ_CASE_INSENSITIVE = 0x40
+_ERROR_DIRECTORY = 267                                    # "the directory name is invalid": not a directory
+
+
+def _file_attributes(st):
+    """Windows file attributes of a stat result (None when not reported: then the object is refused)."""
+    return getattr(st, "st_file_attributes", None)
+
+
+def _attributes(st):
+    """The usable Windows attributes of a stat result: a 32-bit unsigned integer (0 included), else None."""
+    a = _file_attributes(st)
+    return a if isinstance(a, int) and not isinstance(a, bool) and 0 <= a <= 0xFFFFFFFF else None
+
+
+def _file_identity(st):
+    """(device, file id) of a stat result when both are usable, else None. A volume serial number or file id of 0
+    is what Python reports when the filesystem gave none, so it never identifies an object."""
+    pair = (getattr(st, "st_dev", None), getattr(st, "st_ino", None))
+    if all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in pair):
+        return pair
+    return None
+
+
+class _NtOpener:  # pragma: no cover - Windows (exercised by the Windows CI job)
+    """root(path) and child(parent_fd, name, directory) -> a read-only CRT descriptor owning its handle."""
+
+    def __init__(self):
+        import _winapi
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT),
+                        ("Buffer", wintypes.LPWSTR)]
+
+        class ObjectAttributes(ctypes.Structure):
+            _fields_ = [("Length", wintypes.ULONG), ("RootDirectory", wintypes.HANDLE),
+                        ("ObjectName", ctypes.POINTER(UnicodeString)), ("Attributes", wintypes.ULONG),
+                        ("SecurityDescriptor", ctypes.c_void_p), ("SecurityQualityOfService", ctypes.c_void_p)]
+
+        class IoStatusBlock(ctypes.Structure):
+            _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+        ntdll = ctypes.WinDLL("ntdll")
+        create = ntdll.NtCreateFile
+        create.restype = ctypes.c_long                      # NTSTATUS: negative is an error
+        create.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.ULONG, ctypes.POINTER(ObjectAttributes),
+                           ctypes.POINTER(IoStatusBlock), ctypes.c_void_p, wintypes.ULONG, wintypes.ULONG,
+                           wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
+        to_dos = ntdll.RtlNtStatusToDosError
+        to_dos.restype, to_dos.argtypes = wintypes.ULONG, [wintypes.ULONG]
+        self._winapi, self._ctypes, self._msvcrt, self._wintypes = _winapi, ctypes, msvcrt, wintypes
+        self._types, self._create, self._to_dos = (UnicodeString, ObjectAttributes, IoStatusBlock), create, to_dos
+
+    def _fd(self, handle):
+        try:
+            return self._msvcrt.open_osfhandle(handle, os.O_RDONLY)     # the descriptor now owns the handle
+        except BaseException:
+            self._winapi.CloseHandle(handle)
+            raise
+
+    def root(self, path):
+        handle = self._winapi.CreateFile(os.path.abspath(path), _GENERIC_READ, _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+                                         0, _OPEN_EXISTING, _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+                                         0)
+        return self._fd(handle)
+
+    def child(self, parent_fd, name, directory):
+        ctypes, wintypes = self._ctypes, self._wintypes
+        UnicodeString, ObjectAttributes, IoStatusBlock = self._types
+        buffer = ctypes.create_unicode_buffer(name)
+        size = 2 * len(name)
+        object_name = UnicodeString(size, size + 2, ctypes.cast(buffer, wintypes.LPWSTR))
+        attributes = ObjectAttributes(ctypes.sizeof(ObjectAttributes), self._msvcrt.get_osfhandle(parent_fd),
+                                      ctypes.pointer(object_name), _OBJ_CASE_INSENSITIVE, None, None)
+        handle, status_block = wintypes.HANDLE(), IoStatusBlock()
+        share = _FILE_SHARE_READ | (_FILE_SHARE_WRITE if directory else 0)
+        options = (_FILE_SYNCHRONOUS_IO_NONALERT | _FILE_OPEN_REPARSE_POINT
+                   | (_FILE_DIRECTORY_FILE if directory else _FILE_NON_DIRECTORY_FILE))
+        status = self._create(ctypes.byref(handle), _FILE_GENERIC_READ, ctypes.byref(attributes),
+                              ctypes.byref(status_block), None, 0, share, _FILE_OPEN, options, None, 0)
+        if status < 0:
+            raise ctypes.WinError(self._to_dos(status & 0xFFFFFFFF))
+        return self._fd(handle.value)
+
+
+_WINDOWS = []                                             # the one _NtOpener, once built (or None if unavailable)
+
+
+def _windows_opener():
+    if os.name != "nt":
+        return None
+    if not _WINDOWS:  # pragma: no cover - Windows
+        try:
+            _WINDOWS.append(_NtOpener())
+        except (ImportError, OSError, AttributeError):
+            _WINDOWS.append(None)                         # unavailable: _platform_ok() refuses every run
+    return _WINDOWS[0]
+
+
+def _windows_checked(path, label, directory, open_):
+    """open_() -> fd, refused unless it is an ordinary directory / regular file, not a reparse point, and still the
+    object at `path`. The descriptor is closed on any refusal."""
+    try:
+        fd = open_()
+    except FileNotFoundError:
+        _refuse(f"{label!r} cannot be opened (not found)" if directory else f"{label} is missing")
+    except OSError as exc:
+        if directory and getattr(exc, "winerror", None) == _ERROR_DIRECTORY:
+            _refuse(f"{label!r} is not a real directory (symlinks are refused)")
+        _refuse(f"{label!r} cannot be opened ({exc.strerror})" if directory else
+                f"{label} cannot be opened ({exc.strerror})")
+    try:
+        # the opened handle: usable attributes and identity are required (never defaulted), then checked
+        st = os.fstat(fd)
+        attributes, identity = _attributes(st), _file_identity(st)
+        if attributes is None or identity is None:
+            _refuse(f"{label!r}: the opened object's Windows metadata (attributes, device and file id) is "
+                    "incomplete (refused)")
+        if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            _refuse(f"{label!r} is not a real directory (symlinks are refused)" if directory else
+                    f"{label} is a symlink (refused)")
+        is_dir_attribute = bool(attributes & stat.FILE_ATTRIBUTE_DIRECTORY)
+        if directory and (not stat.S_ISDIR(st.st_mode) or not is_dir_attribute):
+            _refuse(f"{label!r} is not a directory")
+        if not directory and (not stat.S_ISREG(st.st_mode) or is_dir_attribute):
+            _refuse(f"{label} is not a regular file")
+        # the path, observed separately: the same requirements, then the same object
+        try:
+            at = os.lstat(path)
+        except OSError:
+            _refuse(f"{label!r} changed while it was being opened")
+        path_attributes, path_identity = _attributes(at), _file_identity(at)
+        if path_attributes is None or path_identity is None:
+            _refuse(f"{label!r}: the path's Windows metadata (attributes, device and file id) is incomplete "
+                    "(refused)")
+        if stat.S_ISLNK(at.st_mode) or path_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT or \
+                path_identity != identity:
+            _refuse(f"{label!r} changed while it was being opened (symlinks are refused)")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_run_windows(root, name, opener):
+    """The run's files read through `opener` (see above): every handle checked, bounded, and closed."""
+    for part in (name, *RUN_FILES):
+        if not part or part in (".", "..") or any(c in part for c in "\\/:"):
+            _refuse(f"{part!r} is not a single plain name")
+    root = Path(root)
+    root_fd = _windows_checked(root, str(root), True, lambda: opener.root(str(root)))
+    try:
+        run_fd = _windows_checked(root / name, name, True, lambda: opener.child(root_fd, name, True))
+        try:
+            out = {}
+            for f in RUN_FILES:
+                fd = _windows_checked(root / name / f, f, False, lambda: opener.child(run_fd, f, False))
+                try:
+                    out[f] = _read_bounded(fd, f)
+                finally:
+                    os.close(fd)
+            return out
+        finally:
+            os.close(run_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _link_like(path):
+    """A symlink, or (Windows) any other reparse point such as a junction, or (Windows) an object whose attributes
+    are not usable."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    if os.name != "nt":
+        return False
+    attributes = _attributes(st)
+    return attributes is None or bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def list_runs(root=None):
     """Names of candidate run directories (plain names, real directories holding a run summary), sorted. Listing
     is not verification: load_run() decides."""
     root = Path(root) if root is not None else runs_dir()
     if not root.is_dir():
         return []
-    return sorted(p.name for p in root.iterdir() if NAME_RE.fullmatch(p.name) and p.is_dir() and not p.is_symlink()
-                  and (p / SUMMARY).is_file() and not (p / SUMMARY).is_symlink())
+    return sorted(p.name for p in root.iterdir() if NAME_RE.fullmatch(p.name) and p.is_dir() and not _link_like(p)
+                  and (p / SUMMARY).is_file() and not _link_like(p / SUMMARY))
 
 
 # ---- the run ----

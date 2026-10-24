@@ -53,6 +53,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -168,10 +169,111 @@ def make_plan(args):
                        cache_dir=str(args.cache_dir))
 
 
-def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
+# ---- live progress (presentation only) ----
+# run(progress=...) reports, as they happen: each stage starting / completing / failing, each recorded trace entry
+# (projected by progress_event), "waiting for the provider" before each model request, the cost ledger's recorded
+# spending after each reply, each output file once written, and the final status. Nothing here decides anything:
+# a failing progress sink is dropped (_Progress) and the run, its files and its verification are as without one.
+
+# What each progress field may show: explicit values taken from the code paths that produce them (checked against
+# those sources by tests/test_live_agent_progress.py). Anything else gets the field's fixed fallback, so a model- or
+# provider-supplied string is never shown merely because it looks like an identifier.
+KNOWN_TOOLS = frozenset(t["name"] for t in av1.TOOL_SPECS_V1) | {av1.FINISH}
+UNKNOWN_TOOL = "unknown tool"
+TRACE_KINDS = frozenset(av1.TRACE_KINDS)
+STOP_REASONS = frozenset(lv1.KNOWN_STOP_REASONS) | {"pause_turn"}          # the provider's reply stop reasons
+TURN_OUTCOMES = frozenset({"malformed", "usage_unavailable", "over_budget"})
+TOOL_ERROR_CODES = frozenset({"bad_window", "budget_exhausted", "invalid_request", "no_scores", "unknown_behavior",
+                              "unknown_feature", "unknown_session", "unverified_bouts"})
+REFUSAL_KINDS = frozenset({"final_answer_rejected", "follow_up_limit", "invalid_arguments", "pre_window_not_in_grid",
+                           "repeated_call", "tool_budget_exhausted", "tool_contract_violation", "tool_failure",
+                           "unauthorized", "unknown_evidence", "unknown_tool"}) | \
+    frozenset(f"tool_refused:{c}" for c in TOOL_ERROR_CODES)
+MODEL_ERROR_REASONS = frozenset({
+    "api_error", "auth_error", "client_error", "connection_error", "rate_limited", "timeout",      # SDK errors
+    "missing_api_key", "not_v1_schemas", "provider_cost_unknown", "provider_reported_budget", "request_too_large",
+    "sdk_not_installed", "unexpected_attempts",                                                   # adapters
+    "unexpected_model", "unexpected_stop_reason", "usage_mismatch"})                              # withheld replies
+BUDGET_STOPS = frozenset({"timeout", "token_budget", "cost_budget"})
+STOPPING_REASONS = BUDGET_STOPS | frozenset({"finished", "model_refusal", "model_unavailable", "rejected_actions",
+                                             "usage_unavailable", "repeated_actions", "max_model_turns",
+                                             "max_tool_calls"})
+RUN_STATUSES = frozenset({"verified", "incomplete", "refused", "failed", "over_target"})
+STAGE_ERRORS = frozenset({"RunRefused", "LiveRefused", "ValueError", "RuntimeError", "OSError", "FileNotFoundError",
+                          "PermissionError", "TimeoutError", "KeyError", "TypeError", "RunUnavailable",
+                          "ReportVerificationError", "AmbientEnvironmentError"})
+
+
+def _tool(name):
+    """A known Contract v1 tool identifier, else the fixed label (a model-supplied name is never shown)."""
+    return name if isinstance(name, str) and name in KNOWN_TOOLS else UNKNOWN_TOOL
+
+
+def _allowed(value, allowed, fallback):
+    """value when it is one of the field's known values, else the field's fixed fallback."""
+    return value if isinstance(value, str) and value in allowed else fallback
+
+
+def _count(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def progress_event(entry):
+    """What a live view may show of one trace entry, every field from an explicit allowlist: its kind, step, elapsed
+    time, KNOWN tool names (others: "unknown tool"), whether a call was accepted or refused and the refusal's known
+    kind, the loop's known stopping reasons, the provider's known stop reasons, known model-error reasons and token
+    counts. Never the model's text, a model-supplied name, a tool's arguments, results or scientific status
+    (ok / insufficient_evidence), a refusal's message or a finish's content: results and the finding are shown only
+    from the verified saved report. The agent's trace and the saved report are not changed."""
+    kind = entry.get("kind")
+    out = {"type": "trace", "kind": _allowed(kind, TRACE_KINDS, "other"), "step": _count(entry.get("step")),
+           "elapsed_s": entry.get("elapsed_s") if isinstance(entry.get("elapsed_s"), (int, float)) and
+           not isinstance(entry.get("elapsed_s"), bool) else None}
+    if kind == "model_turn":
+        if entry.get("outcome") is not None:
+            out["outcome"] = _allowed(entry.get("outcome"), TURN_OUTCOMES, "not_used")
+        stop = entry.get("stop_reason")
+        out["stop_reason"] = None if stop is None else _allowed(stop, STOP_REASONS, "other")
+        out["input_tokens"] = _count(entry.get("input_tokens"))
+        out["output_tokens"] = _count(entry.get("output_tokens"))
+        out["tool_names"] = [_tool(c.get("name") if isinstance(c, dict) else None)
+                             for c in entry.get("tool_calls") or []][:12]
+    elif kind == "model_error":
+        out["reason"] = _allowed(entry.get("reason"), MODEL_ERROR_REASONS, "provider_error")
+    elif kind in ("tool_call", "finish"):
+        out["tool"] = _tool(entry.get("tool"))
+        refused = entry.get("outcome") == "refused"
+        out["outcome"] = "refused" if refused else "accepted"
+        if refused:
+            out["refused"] = _allowed(entry.get("refused"), REFUSAL_KINDS, "refused")
+    elif kind == "budget_exceeded":
+        out["stopping_reason"] = _allowed(entry.get("stopping_reason"), BUDGET_STOPS, "budget")
+    elif kind == "stop":
+        out["stopping_reason"] = _allowed(entry.get("stopping_reason"), STOPPING_REASONS, "stopped")
+    return out
+
+
+class _Progress:
+    """A progress sink that can never affect the run: its first exception drops it."""
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    def __call__(self, event):
+        if self.sink is None:
+            return
+        try:
+            self.sink(event)
+        except Exception:
+            self.sink = None
+
+
+def run(args, *, env=None, http_get=None, http_client=None, emulator=None, progress=None):
     """One investigation (see the module docstring). env, http_get and http_client are injected by tests; a live
-    run without them uses the process environment, Stage 8's metadata GETs and the SDK's own HTTP client."""
+    run without them uses the process environment, Stage 8's metadata GETs and the SDK's own HTTP client.
+    progress: an optional, presentation-only callback (see progress_event); it never changes the run."""
     env = os.environ if env is None else env
+    progress = _Progress(progress)
     plan, policy = make_plan(args), make_policy(args)
     if args.live:                                  # best-effort mode alone never authorizes a paid run
         lv1.authorize_live(plan, args.confirm_budget_usd, args.authorize_paid_run)  # before any request or file
@@ -194,19 +296,40 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
                          **({} if args.live else {"label": EMULATED_LABEL})},
                "test_split": "not read: validation member and validation cache only"}
     status, ledger, key_limit, key_remaining = "verified", None, None, None
+
+    def step(name, fn):                            # vr._step, with the stage reported as it starts and ends
+        progress({"type": "stage", "stage": name, "state": "started"})
+        try:
+            out = vr._step(summary, name, fn)
+        except Exception as exc:
+            progress({"type": "stage", "stage": name, "state": "failed",
+                      "error": _allowed(type(exc).__name__, STAGE_ERRORS, "error")})
+            raise
+        progress({"type": "stage", "stage": name, "state": "completed"})
+        return out
+
+    def observe(entry):                            # the agent's trace entries, as recorded
+        if entry.get("kind") == "model_request":
+            progress({"type": "model_request"})
+            return
+        progress(progress_event(entry))
+        if entry.get("kind") in ("model_turn", "model_error") and ledger is not None:
+            progress({"type": "spending", "basis": "provider-reported" if args.live else "simulated",
+                      "known_cost_usd": ledger.known_cost_usd, "unknown_cost_attempts": ledger.unknown_cost_attempts,
+                      "requests": len(ledger.entries)})
     try:
-        data, scores, pose = vr._step(summary, "inputs", lambda: iv.load_data(args, manifest, cache))
+        data, scores, pose = step("inputs", lambda: iv.load_data(args, manifest, cache))
         synthetic = scores["synthetic"]
         summary["inputs"] = {"scores": {k: v for k, v in scores.items() if k != "frames_per_session"},
                              "pose_cache": pose, "data_source": data.data_source, "derived_from": data.derived_from,
                              "data_fingerprint": data.fingerprint, "sessions": list(data.sessions)}
         recorded = None
         if args.validation_run:
-            recorded = vr._step(summary, "validation_run", lambda: iv.check_validation_run(
+            recorded = step("validation_run", lambda: iv.check_validation_run(
                 args.validation_run, args.runs_dir, manifest, data, scores, synthetic))
         if args.live:
-            pre = vr._step(summary, "preflight", lambda: lv1.preflight_v1(plan, manifest=manifest, env=env,
-                                                                          http_get=http_get, policy=policy))
+            pre = step("preflight", lambda: lv1.preflight_v1(plan, manifest=manifest, env=env,
+                                                             http_get=http_get, policy=policy))
             summary["preflight"], key_limit = pre, pre["provider_key_limit_usd"]
             key_remaining = pre["provider_key_remaining_usd"]
             # the adapter sees the capped inference key alone (never the management key)
@@ -222,24 +345,27 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
             emulator = emulator or EmulatedOpenRouterV1()
             http_client = httpx2.Client(transport=httpx2.MockTransport(emulator))
             model_env, compat = {live.PROVIDERS[plan.provider].key_env: "dry-run-placeholder-not-a-key"}, None
-        budget, estimate = vr._step(summary, "budget", lambda: lv1.budget_v1(plan, prices))
+        budget, estimate = step("budget", lambda: lv1.budget_v1(plan, prices))
         summary["budget"], summary["estimate"] = asdict(budget), estimate
         model, ledger = lv1.build_model_v1(plan, estimate, env=model_env, http_client=http_client, compat=compat)
-        report = vr._step(summary, "investigate", lambda: av1.investigate_v1(
-            plan.question, data, model, budget=budget, investigation_id=INVESTIGATION_ID, allow_synthetic=synthetic))
+        report = step("investigate", lambda: av1.investigate_v1(
+            plan.question, data, model, budget=budget, investigation_id=INVESTIGATION_ID, allow_synthetic=synthetic,
+            observer=observe if progress.sink is not None else None))
         saved = iv._json_bytes(report.to_json())
         _write(out / OUTPUT_NAMES[0], saved, key)
+        progress({"type": "saved", "file": OUTPUT_NAMES[0]})
         doc = json.loads((out / OUTPUT_NAMES[0]).read_bytes())           # what was saved, not what is in memory
         if doc != json.loads(saved):
             raise RuntimeError("the saved report is not the report that was checked")
-        summary["report"] = vr._step(summary, "verify", lambda: iv.check_report(doc, data, synthetic))
+        summary["report"] = step("verify", lambda: iv.check_report(doc, data, synthetic))
         _write(out / OUTPUT_NAMES[1], av1.render_markdown_v1(doc).encode("utf-8"), key)
+        progress({"type": "saved", "file": OUTPUT_NAMES[1]})
 
         def check_ledger():
             problems = lv1.ledger_problems(doc, ledger.to_json(), plan)
             if problems:
                 raise RuntimeError(f"the cost ledger does not match the report: {problems[:3]}")
-        vr._step(summary, "cost_ledger", check_ledger)
+        step("cost_ledger", check_ledger)
         summary["investigation"] = {
             "finished": doc["finished"], "stopping_reason": doc["stopping_reason"], "finding": doc["finding"],
             "primary_evidence_id": doc["primary_evidence_id"], "observations": doc["observations"],
@@ -247,8 +373,8 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
             "tool_sequence": [(t["tool"], t.get("refused") or t["outcome"]) for t in doc["trace"]
                               if t["kind"] in ("tool_call", "finish")]}
         if recorded is not None:
-            summary["report"]["validation_run"] = vr._step(
-                summary, "compatibility", lambda: iv.check_query_against_run(doc, recorded))
+            summary["report"]["validation_run"] = step(
+                "compatibility", lambda: iv.check_query_against_run(doc, recorded))
         if not doc["finished"]:
             status = "incomplete"
     except REFUSALS:
@@ -264,6 +390,10 @@ def run(args, *, env=None, http_get=None, http_client=None, emulator=None):
     summary["status"] = status
     summary["outputs"] = {n: iv._sha((out / n).read_bytes()) for n in OUTPUT_NAMES[:2] if (out / n).is_file()}
     _write(out / OUTPUT_NAMES[2], iv._json_bytes(summary), key)
+    progress({"type": "saved", "file": OUTPUT_NAMES[2]})
+    stopped = (summary.get("investigation") or {}).get("stopping_reason")
+    progress({"type": "finished", "status": _allowed(status, RUN_STATUSES, "unknown"),
+              "stopping_reason": None if stopped is None else _allowed(stopped, STOPPING_REASONS, "stopped")})
     summary["output_dir"] = str(out)
     return summary
 

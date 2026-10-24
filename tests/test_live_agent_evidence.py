@@ -376,11 +376,10 @@ def gate_scores():
     return pd.concat(parts, ignore_index=True)
 
 
-@pytest.fixture
-def gate_inputs(tmp_path):
-    """The five-session SYNTHETIC validation inputs (pose cache, score archive, manifest), as `inputs` gives them."""
-    root = tmp_path / "five_sessions"
-    root.mkdir()
+def build_gate_inputs(root):
+    """The five-session SYNTHETIC validation inputs (pose cache, score archive, manifest) written under root, as
+    `inputs` gives them (also used by tests/live_agent_progress_demo.py)."""
+    root.mkdir(parents=True, exist_ok=True)
     manifest = root / "manifest.json"
     manifest.write_text(json.dumps(GATE_MANIFEST))
     recs = {sid: record(sid, *gate_arrays(sid, i), n=GATE_FRAMES,
@@ -393,6 +392,11 @@ def gate_inputs(tmp_path):
     zip_path = archive(root, {VAL_MEMBER: table, TEST_MEMBER: table})
     return {"zip": zip_path, "sha": hashlib.sha256(zip_path.read_bytes()).hexdigest(), "cache": cache,
             "manifest": manifest, "tmp": root}
+
+
+@pytest.fixture
+def gate_inputs(tmp_path):
+    return build_gate_inputs(tmp_path / "five_sessions")
 
 
 @pytest.fixture

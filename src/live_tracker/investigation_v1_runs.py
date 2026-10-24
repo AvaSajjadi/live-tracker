@@ -373,14 +373,18 @@ def new_run_name():
 
 # test seam: a factory of the httpx client the paid run uses (None: the SDK's own client)
 HTTP_CLIENT_FACTORY = None
+# test / demo seam: a factory of the emulated endpoint a FREE REHEARSAL uses (None: the CLI's own emulator). It is
+# never used for a paid run (tests/live_agent_progress_demo.py sets a slowed emulator for watching live progress).
+REHEARSAL_EMULATOR_FACTORY = None
 
 
 def execute(config, inputs, *, confirm_budget_usd, authorization, paid=True, root=None, env=None, http_get=None,
-            emulator=None):
+            emulator=None, progress=None):
     """One investigation through the CLI's run() under the lock, into a new protected directory. paid=True needs the
     confirmed budget and the exact authorization text (refused by authorize_live before any request or file);
     paid=False is the free rehearsal over the emulated endpoint. Returns (run name, summary); raises the CLI's
-    refusals (LiveRefused, RunRefused, ValueError, ...) or RunBusy."""
+    refusals (LiveRefused, RunRefused, ValueError, ...) or RunBusy. progress: an optional, presentation-only
+    callback for the live view (the CLI's progress events, plus the lock); it never changes the run."""
     lr = script("investigation_v1_live")
     root = Path(root or live_dir())
     name = new_run_name()
@@ -392,9 +396,14 @@ def execute(config, inputs, *, confirm_budget_usd, authorization, paid=True, roo
     args = lr.parser().parse_args(argv + (["--live"] if paid else []))
     # passed as given: the CLI's authorize_live decides on them (a missing or wrong value is refused there)
     args.confirm_budget_usd, args.authorize_paid_run = (confirm_budget_usd, authorization) if paid else (None, None)
+    if not paid and emulator is None and REHEARSAL_EMULATOR_FACTORY is not None:
+        emulator = REHEARSAL_EMULATOR_FACTORY()
+    sink = lr._Progress(progress)
     with RunLock(root):
+        sink({"type": "stage", "stage": "lock", "state": "completed", "run": name})
         client = HTTP_CLIENT_FACTORY() if (paid and HTTP_CLIENT_FACTORY) else None
-        summary = lr.run(args, env=env, http_get=http_get, http_client=client, emulator=emulator)
+        summary = lr.run(args, env=env, http_get=http_get, http_client=client, emulator=emulator,
+                         progress=sink if sink.sink is not None else None)
     return name, summary
 
 

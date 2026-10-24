@@ -243,13 +243,19 @@ def test_tracking_warnings_panel():
     at = seek(at, 125)
     w = table(at, "kind")
     assert list(w["kind"]) == ["missing_coordinates"] and list(w["end"]) == ["ongoing"]
-    assert "Kept separate from the event log" in text(at.caption)
+    assert "Stored separately from the monitor event log" in text(at.caption)
+    assert "untuned placeholders" in text(at.caption)
     at = seek(at, 300)
     w = table(at, "kind")
     assert {"missing_coordinates", "low_confidence"} <= set(w["kind"])
     assert w.loc[w["kind"] == "missing_coordinates", "end"].item() == "4.50 s"
     at = seek(at, 255)
     assert "mouse b: 3 low confidence" in text(at.warning)
+
+
+def test_end_of_session_hint_is_shown():
+    at = seek(start(workflow()), 30)
+    assert "Click End of session to see the final events and the session summary" in text(at.caption)
 
 
 def test_skeleton_image_and_legend():

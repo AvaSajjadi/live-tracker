@@ -443,7 +443,8 @@ def build_summary(records, *, run_id, session, rules=None, recording=None, answe
         caveats.append(f"{answers['timing_unknown']} answer(s) have no recorded replay time.")
     if tracking["supplied"]:
         caveats.append("Tracking warnings come from a separate warning source and are not monitor events; "
-                       "their storage and thresholds are provisional (pending Ava).")
+                       "they are stored apart from the event log (decided with Ava, 2026-10-24). "
+                       "Their thresholds are untuned placeholders.")
     else:
         caveats.append("No tracking-warning source was supplied: tracking quality is not summarized here "
                        "(this is not the same as no tracking problems).")

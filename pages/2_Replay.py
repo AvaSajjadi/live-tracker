@@ -215,6 +215,8 @@ def view():
     c[3].button("+1 frame", key=f"replay_fwd1_{run}", on_click=step, args=(1,))
     c[4].button("+1 s", key=f"replay_fwd1s_{run}", on_click=step, args=(one_s,))
     c[5].button("End of session", key=f"replay_endbtn_{run}", on_click=show_end)
+    st.caption("Click End of session to see the final events and the session summary. "
+               "Dragging the slider to the last frame does not show them.")
     st.session_state[K["slider"]] = st.session_state[K["frame"]]
     st.slider("Frame", replay.frames[0], replay.frames[-1], key=K["slider"],
               on_change=lambda: (st.session_state.update({K["frame"]: st.session_state[K["slider"]],
@@ -296,7 +298,8 @@ def render(state):
                 st.caption("Seek to a frame to answer.")
 
     st.subheader("Tracking warnings")
-    st.caption("Kept separate from the event log until Ava confirms how tracking warnings are stored.")
+    st.caption("Stored separately from the monitor event log (decided with Ava, 2026-10-24). "
+               "Warning thresholds are untuned placeholders.")
     wrows = rv.warning_rows(state)
     if wrows:
         st.dataframe(pd.DataFrame(wrows), hide_index=True, width="stretch")

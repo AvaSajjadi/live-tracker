@@ -37,6 +37,18 @@ def badge(text, kind="neutral"):
     return (f'<span class="lt-badge" style="background:{_BG[kind]};color:{COLORS[kind]}">{text}</span>')
 
 
+_ACTION_STYLE = {"alert": f"background-color:{_BG['alert']};color:{COLORS['alert']};font-weight:600",
+                 "ask": f"background-color:{_BG['ask']};color:{COLORS['ask']};font-weight:600",
+                 "log": f"background-color:{_BG['neutral']};color:{COLORS['neutral']};font-weight:600"}
+
+
+def color_actions(df, column="action"):
+    """A table with the alert / ask / log cells colored (red / amber / grey). Same data, only the look."""
+    if column not in df.columns:
+        return df
+    return df.style.map(lambda v: _ACTION_STYLE.get(str(v), ""), subset=[column])
+
+
 def note(kind, short, more=None):
     """kind: info | warning | error | success | caption. `more` goes into a collapsed expander."""
     getattr(st, kind)(short)

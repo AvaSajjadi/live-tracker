@@ -275,7 +275,8 @@ def render(state):
     st.subheader("Events so far")
     rows = rv.timeline_rows(state)
     if rows:
-        st.dataframe(pd.DataFrame(rows).drop(columns=["event_id"]), hide_index=True, width="stretch")
+        st.dataframe(ui_style.color_actions(pd.DataFrame(rows).drop(columns=["event_id"])),
+                     hide_index=True, width="stretch")
         with st.expander("What do onset, fired and closure mean?"):
             st.caption("Onset: first frame of the bout; fired: when the rule's minimum duration was reached; "
                        "closure: when the bout ended (known only after it ended).")

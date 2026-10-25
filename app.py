@@ -18,37 +18,34 @@ import streamlit as st
 from live_tracker.filters import smooth_dataframe
 from live_tracker.formats import inject_tracking_failures, wide_to_long
 from live_tracker.motion import frame_features
+from live_tracker.params import FROZEN_MIN_FRAMES, MAX_SPEED_PX_S, ONE_EURO
 from live_tracker.quality import flag_tracking, tracking_loss_events, window_quality
 from live_tracker.ui_style import apply as apply_style
-from live_tracker.ui_style import note
 
 DEMO_CSV = Path(__file__).parent / 'example_pose_demo.csv'
 
 st.set_page_config(page_title='Live Tracker', layout='wide')
 apply_style()
 st.title('Live Tracker | Motion Engine')
-st.caption('Milestone 1: visualize tracked positions and quality flags; no behavior claims.')
-st.write('Upload a CSV with columns: x_a, y_a, x_b, y_b. One row per frame.')
 fps = st.number_input('Frame rate (fps)', min_value=1.0, value=30.0)
 
 # --- added: data source choice -------------------------------------------
 use_demo = st.checkbox('Use built-in synthetic demo data (not CalMS21)')
-upload = None if use_demo else st.file_uploader('Pose CSV', type='csv')
+upload = None if use_demo else st.file_uploader(
+    'Pose CSV (columns x_a, y_a, x_b, y_b; one row per frame)', type='csv',
+    help='One row per frame. Columns: x_a, y_a, x_b, y_b = pixel positions of mouse a and mouse b.')
 
-# --- added: settings for the new sections (placeholders, not tuned) -------
-with st.sidebar:
-    st.header('Quality settings')
-    st.caption('Placeholder values for testing. They still need to be chosen on training data.')
-    frozen_min_frames = st.number_input('Frozen if identical for N frames', min_value=2, value=15)
-    max_speed = st.number_input('Jump if faster than (px/s)', min_value=1.0, value=3000.0)
-    window_s = st.number_input('Quality window (s)', min_value=0.1, value=1.0)
+# --- fixed values: the engine does the quality check and the smoothing by itself ----------------
+# (chosen on CalMS21 train data, see live_tracker/params.py; the window length is a placeholder)
+frozen_min_frames, max_speed, window_s = FROZEN_MIN_FRAMES, MAX_SPEED_PX_S, 1.0
+min_cutoff, beta = ONE_EURO['min_cutoff'], ONE_EURO['beta']
+
+# --- the few settings a user may want to change -------------------------------------------------
+with st.expander('Advanced settings'):
+    st.caption('These settings change only this page. The model and the replay use fixed settings.')
     min_quality = st.slider('Warn if window quality below', 0.0, 1.0, 0.8)
     min_loss_s = st.number_input('Report tracking loss longer than (s)', min_value=0.0, value=0.5)
-    st.header('Causal smoothing')
-    min_cutoff = st.number_input('One-Euro min cutoff (Hz)', min_value=0.01, value=1.0)
-    beta = st.number_input('One-Euro beta', min_value=0.0, value=0.05, format='%.3f')
-    st.header('Testing')
-    inject = st.checkbox('Inject fake tracking failures')
+    inject = st.checkbox('Inject fake tracking failures (for testing the warnings)')
 
 data = None
 if use_demo:
@@ -69,11 +66,9 @@ if data is not None:
                     'mouse a frozen for 1 s.')
 
         # --- starter section (unchanged) ----------------------------------
+        # OFFLINE ONLY: this section uses Savitzky-Golay smoothing, which looks at future frames.
+        # Fine for offline analysis, never for live monitoring or replay (the causal sections are live-safe).
         st.subheader('Motion features (OFFLINE ONLY)')
-        note('caption', 'OFFLINE ONLY: never for live monitoring or replay.',
-             'This section uses Savitzky-Golay smoothing, which looks at future frames. '
-             'Fine for offline analysis, never for live monitoring or replay. '
-             'The causal sections below are the live-safe ones.')
         f = frame_features(data[['x_a', 'y_a']].to_numpy(),
                            data[['x_b', 'y_b']].to_numpy(), fps=fps)
         st.metric('Frames', len(f))

@@ -113,6 +113,7 @@ video, slides and poster for the submission.
 | `src/live_tracker/notify.py` | Log file and optional ntfy phone messages | `test_notify.py` (13) |
 | `src/live_tracker/monitor_runner.py` | The program: wait, run, log, answers, interruptions, report, stop | `test_monitor_runner.py` (21) |
 | `src/live_tracker/run_control.py`, `run_ui.py`, `pages/6_Run.py` | Start, stop, watch, answer (also after the run), report | `test_run_control.py` (22), `test_run_page.py` (12) |
+| `src/live_tracker/demo.py`, `demo_ui.py`, `pages/7_Demo.py`, `scripts/prepare_demo_session.py` | Live demo page: a recorded video and its run start together; GO signal, delay meter; see `docs/demo_recording.md` | `test_demo.py` (12), `test_demo_page.py` (11) |
 
 Measured on one validation session: live scores equal whole-session scores (largest difference 5e-13); the program,
 run as its own process, produced the same 46 events as the whole-session calculation. Details and limits:

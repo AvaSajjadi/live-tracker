@@ -38,7 +38,10 @@ def render():
                       key="schedule_tz")
 
     if mode == MODE_HOURS:
-        hours = st.number_input("Hours", min_value=0.5, max_value=168.0, value=8.0, step=0.5, key="schedule_hours")
+        h_col, m_col = st.columns(2)
+        whole_hours = h_col.number_input("Hours", min_value=0, max_value=168, value=8, step=1, key="schedule_hours")
+        minutes = m_col.number_input("Minutes", min_value=0, max_value=59, value=0, step=1, key="schedule_minutes")
+        hours = whole_hours + minutes / 60
         start_choice = st.radio("Start", [START_NOW, START_AT], horizontal=True, key="schedule_start_choice")
         start_day = start_clock = None
         if start_choice == START_AT:

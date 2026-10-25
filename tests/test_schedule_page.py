@@ -33,12 +33,19 @@ def test_the_section_is_on_the_rules_page_and_says_what_is_not_connected(at):
 
 
 def test_propose_for_hours_shows_a_preview_with_confirm_and_reject(at):
-    at.number_input(key="schedule_hours").set_value(8.0).run()
+    at.number_input(key="schedule_hours").set_value(8).run()
     button(at, "Propose schedule")[0].click().run()
     assert "Proposed schedule S1" in texts(at.markdown)
     assert "Not active until you click Confirm" in texts(at.warning)
     assert "8 h 00 min" in texts(at.markdown)
     assert len(button(at, "Confirm")) >= 1 and len(button(at, "Reject")) >= 1
+
+
+def test_a_run_of_only_minutes_can_be_proposed(at):
+    at.number_input(key="schedule_hours").set_value(0)
+    at.number_input(key="schedule_minutes").set_value(4).run()
+    button(at, "Propose schedule")[0].click().run()
+    assert not at.exception and "0 h 04 min" in texts(at.markdown)
 
 
 def test_confirm_adds_an_approved_row_and_saves_a_file(at, tmp_path):
@@ -67,7 +74,7 @@ def test_from_to_window_across_midnight_is_twelve_hours(at):
 def test_changing_an_input_drops_the_proposal(at):
     button(at, "Propose schedule")[0].click().run()
     assert "Proposed schedule S1" in texts(at.markdown)
-    at.number_input(key="schedule_hours").set_value(10.0).run()
+    at.number_input(key="schedule_hours").set_value(10).run()
     assert "Proposed schedule" not in texts(at.markdown)
     assert not [b for b in at.button if b.key and b.key.startswith("schedule_confirm_")]
 

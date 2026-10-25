@@ -400,3 +400,10 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 3. Upload page: the live preview now shows "Corners for the Colab notebook", one line of 8 numbers to copy.
 4. Tests: 81 passed (mars script helpers, notebook file, screen map, upload camera, corner picker, live view, uploads).
 5. Not finished: run the notebook on Colab and measure the GPU speed; a record-camera-to-file button in the app (today: record with the Windows Camera app); wiring MARS into pose_model.py for a live GPU machine.
+
+### Part 9, later: MARS runs locally (2026-10-25)
+1. The user decided to skip Colab and run MARS on this laptop.
+2. Set up a stable folder `C:\Users\AnTiC\mars_local` (outside Git): `models\` (the 3 .pb files, 328 MB) and `env\` (Python 3.12 venv with TensorFlow 2.21, numpy, opencv-python-headless, pandas, pyarrow). Deleted the temporary copies in the scratchpad (env, extracted models, models.zip, MARS code clone).
+3. New `scripts/mars_local.cmd` runs the offline script with those paths (defaults: keypoints.parquet and stretched.mp4 in the folder you run it from). Tested on 32 frames: works; steady speed about 1.2 frames per second after a 20 s warm-up (1 minute of video is about 25 minutes).
+4. Docs: `docs/camera.md` section 8 is now the local route (Colab kept as an option).
+5. Not finished: a record-to-file button in the app; speed-ups (skip detectors by tracking boxes, other model formats); live use (needs about 27 times more speed); wiring MARS into pose_model.py.

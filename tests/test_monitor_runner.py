@@ -386,3 +386,39 @@ def test_a_run_that_keeps_up_says_so_and_a_slow_moment_is_reported(tmp_path):
     report = (slow.run_dir / "report.md").read_text(encoding="utf-8")
     assert "Processing FELL BEHIND real time at times (slowest moment: 2.0 s behind)" in report
     assert read_status(slow)["max_lag_s"] >= 1.9 and json.loads((slow.run_dir / "report.json").read_text())["run"]["max_lag_s"] >= 1.9
+
+
+# ---- a model file that does not fit this scikit-learn ----
+
+def model_files(tmp_path, info_extra=None, joblib_bytes=b"not a model"):
+    (tmp_path / "models").mkdir(exist_ok=True)
+    info = {"features": "basic,motion", "feature_columns": ["a"], **(info_extra or {})}
+    (tmp_path / "models" / "model_x.json").write_text(json.dumps(info), encoding="utf-8")
+    (tmp_path / "models" / "model_x.joblib").write_bytes(joblib_bytes)
+
+
+def pose_source():
+    return rsrc.KeypointFileSource(make_poses(5), SESSION)
+
+
+def test_a_model_trained_with_another_scikit_learn_is_refused_with_the_fix(tmp_path):
+    model_files(tmp_path, {"sklearn_version": "0.0.1"})
+    cfg = config(tmp_path, model="models/model_x")
+    with pytest.raises(mr.RunRefusedError) as err:
+        mr.build_scorer(cfg, pose_source(), root=tmp_path)
+    text = str(err.value)
+    assert "trained with scikit-learn 0.0.1" in text and "does not load across versions" in text
+    assert "live_tracker.classify train --name model_x" in text
+
+
+def test_a_model_file_that_cannot_be_loaded_is_explained_not_a_raw_error(tmp_path):
+    model_files(tmp_path)                                     # no version recorded, and the file is not a model
+    with pytest.raises(mr.RunRefusedError) as err:
+        mr.build_scorer(config(tmp_path, model="models/model_x"), pose_source(), root=tmp_path)
+    assert "could not be loaded" in str(err.value) and "probably trained with another version" in str(err.value)
+
+
+def test_a_missing_model_or_name_is_refused_and_a_score_source_needs_none(tmp_path):
+    with pytest.raises(mr.RunRefusedError, match="needs a model"):
+        mr.build_scorer(config(tmp_path), pose_source(), root=tmp_path)
+    assert mr.build_scorer(config(tmp_path), rsrc.synthetic_source(), root=tmp_path) is None

@@ -492,7 +492,18 @@ def build_scorer(config, source, root=ROOT):
     from .live_scoring import LiveScorer
     base = Path(config.model) if Path(config.model).is_absolute() else Path(root) / config.model
     info = json.loads(base.with_suffix(".json").read_text(encoding="utf-8"))
-    model = joblib.load(base.with_suffix(".joblib"))
+    import sklearn
+    retrain = (f"Retrain it with this Python: PYTHONPATH=src python -m live_tracker.classify train --name {base.name} "
+               f"--features {info.get('features', 'basic,motion')} (see docs/run_on_another_computer.md).")
+    trained_with = info.get("sklearn_version")
+    if trained_with and trained_with != sklearn.__version__:
+        raise RunRefusedError(f"the model {base.name} was trained with scikit-learn {trained_with}, but this Python has "
+                              f"{sklearn.__version__}, and a model file does not load across versions. {retrain}")
+    try:
+        model = joblib.load(base.with_suffix(".joblib"))
+    except Exception as exc:                  # an old model file raises odd errors (for example a missing attribute)
+        raise RunRefusedError(f"the model {base.name} could not be loaded with scikit-learn {sklearn.__version__} "
+                              f"({type(exc).__name__}). It was probably trained with another version. {retrain}") from exc
     return LiveScorer(model, info["feature_columns"], session=source.session, features=info.get("features", "basic,motion"),
                       fps=config.fps)
 

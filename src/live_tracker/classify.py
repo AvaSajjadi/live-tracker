@@ -262,7 +262,8 @@ def main(argv=None):
     print(f"{a.name}: {len(feature_columns(feats))} features ({a.features})")
     model, info = fit_model(feats, labels, manifest, a.seed)
     val = summary_metrics(score_frames(model, feats, manifest["validation"]), labels)
-    info.update({"name": a.name, "features": a.features, "split_manifest": a.split,
+    import sklearn
+    info.update({"sklearn_version": sklearn.__version__, "name": a.name, "features": a.features, "split_manifest": a.split,
                  "validation_metrics": val})
     out = Path(a.models)
     out.mkdir(parents=True, exist_ok=True)

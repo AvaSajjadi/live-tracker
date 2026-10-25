@@ -5,7 +5,7 @@ The current app supports three distinct demonstrations:
 | Demonstration | Inputs and meaning |
 |---|---|
 | Synthetic rehearsal | Built-in generated scores/poses, clearly marked SYNTHETIC; proves software behavior, not scientific findings |
-| Saved real validation run | Local recorded journals, summaries and evidence; Replay/Investigation check consistency and browse without running a model |
+| Saved real validation run | Local recorded journals, summaries and evidence; Investigation checks consistency and browses without running a model |
 | Recorded-video simulation | Local video plus matching saved keypoints and Model B; the runner scores keypoints at playback speed, without camera-image inference |
 
 Real validation work is documented in [validation_run_v1.md](validation_run_v1.md). Validation shares animals with
@@ -27,7 +27,7 @@ These artifacts are git-ignored; cloning the repository does not supply them. Ar
 | `data/raw/calms21/calms21_task1_train.json` | Preparing keypoints, models or validation cache; not needed merely to open a completed run |
 | `data/raw/calms21_validation/` verified cache | Validation motion measurements and relevant evidence verification; build from official train JSON |
 | Igor's validation Model B scores zip and expected digest | Reproducing a new validation run under the existing explicit approval requirements |
-| `outputs/validation_run_v1/<run>/` | Saved Replay/Investigation run: complete journal, snapshot, summary and Contract v1 evidence files |
+| `outputs/validation_run_v1/<run>/` | Saved Investigation run: complete journal, snapshot, summary and Contract v1 evidence files |
 | Saved Live Agent run (for example `live_run1`) with its required evidence files | Offline reopening on Live Agent; follow [live_agent_demo.md](live_agent_demo.md) |
 
 Do not commit datasets, model files, videos, credentials or local run outputs. Do not fetch the 28 GB video archive
@@ -46,8 +46,8 @@ for a rehearsal; arrange one authorized recording or use the explicit single-vid
    (SYNTHETIC)**. Start, inspect alert/ask colors, answer an ask, stop or finish, and download the deterministic report.
    This is the dependable artifact-free fallback; never describe its output as real-data results.
 5. If local artifacts are present, rehearse the recorded-video path: Upload simulated camera → Rules (explicit
-   validation demo thresholds only if agreed) → Replay → Real session → Start recorded session. Replay selects its
-   own data; use Next to reach the Upload recording's scoring view. A positions CSV has no behavior alerts.
+   validation demo thresholds only if agreed) → Replay → Real session → Start recorded session. Replay shows the
+   Upload recording with its keypoints (inspection only); use Next to reach its scoring view. A positions CSV has no behavior alerts.
 6. For a saved validation or Live Agent run, open it offline and check that verification succeeds before the talk;
    a missing or invalid run must remain an error, never a silent synthetic replacement.
 7. Clear paid-provider credentials and notification configuration (`LIVE_TRACKER_NTFY_TOPIC`) from the demo shell if you want the rehearsal

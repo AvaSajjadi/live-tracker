@@ -155,8 +155,8 @@ Upload → Rules → Replay → Real session. Upload accepts recorded video with
 **Simulated camera (recorded video)** uses a local recording; its success message explicitly says no physical camera
 is connected. It requires the video and matching pose artifact described in [demo readiness](docs/demo_readiness.md).
 A positions CSV gives motion only, without behavior alerts. Rules are proposed, reviewed and explicitly confirmed.
-Replay's data selector chooses its own synthetic demonstration or saved validation run; it does not score the Upload
-video. Real session uses the Upload source and approved rules. No camera-image inference is implemented.
+Replay is read-only inspection of the Upload recording: its video with the matching recorded keypoints drawn in sync;
+it does not score or monitor. Real session uses the Upload source and approved rules. No camera-image inference is implemented.
 
 ### Motion tool (`pages/8_Motion_Tool.py`)
 
@@ -214,7 +214,7 @@ Without the cache, the page says so and shows this command. Test sessions cannot
 
 ### Monitor (Python API)
 
-The monitor powers synthetic Replay and recorded-keypoint runs; saved real validation runs can also be browsed without re-running it. It can also be run from Python on synthetic scores:
+The monitor powers the synthetic replay sessions (Investigation) and recorded-keypoint runs; saved real validation runs can also be browsed without re-running it. It can also be run from Python on synthetic scores:
 
 ```python
 from live_tracker.fake_scores import demo_scores
@@ -320,7 +320,7 @@ The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.p
 
 ## Investigation, replay and session summary
 
-Replay and Investigation offer synthetic demonstrations and saved real **validation** runs. The documented real
+Investigation offers synthetic demonstrations and saved real **validation** runs. The documented real
 validation run is described in [validation_run_v1.md](docs/validation_run_v1.md); browsing checks consistency of local
 records, not independent authenticity, and does not re-score data. This does not complete H5 on the held-out test set:
 that work remains subject to team agreement and Ava's approved run. See [demo readiness](docs/demo_readiness.md) for
@@ -332,7 +332,7 @@ required local artifacts and an offline backup.
 | **Contract v1 investigation tools:** `query_events`, `get_window_features`, `check_tracking_quality` and `compare_windows`, with versioned tracking-quality policies, session-aware counts and evidence gates | merged, [PR #20](https://github.com/AvaSajjadi/live-tracker/pull/20) |
 | **Evidence-grounded claims and reports:** structured claims checked against evidence, association-only wording, and a bounded agent loop (12 tool calls, at most 2 follow-up comparisons) | merged, [PR #21](https://github.com/AvaSajjadi/live-tracker/pull/21) |
 | **Offline integration and docs:** a deterministic, synthetic, offline integration run and a Contract v1 demo | merged, [PR #22](https://github.com/AvaSajjadi/live-tracker/pull/22) |
-| **Replay page and session summary** for recorded sessions (initial synthetic implementation; now also saved validation runs), with a Contract v1 evidence panel | merged, [PR #24](https://github.com/AvaSajjadi/live-tracker/pull/24) |
+| **Replay page and session summary** for recorded sessions (initial synthetic implementation; the page is now recorded video/keypoint inspection, and saved validation runs are browsed on Investigation), with a Contract v1 evidence panel | merged, [PR #24](https://github.com/AvaSajjadi/live-tracker/pull/24) |
 | **Investigation page:** the bouts, windows, tracking status and comparison outcome behind a replayed session | merged, [PR #25](https://github.com/AvaSajjadi/live-tracker/pull/25) |
 
 Investigation results are designed to be **association-only** ("precedes / is associated with"), never causal.
@@ -374,7 +374,7 @@ live analysis runs on the other (a simulated live stream from a recording, not a
 ```
 app.py                     Streamlit front door: the menu (guided flow first); the old home page is pages/8_Motion_Tool.py
 pages/1_Rules.py           Streamlit page: plain-English rules with researcher approval
-pages/2_Replay.py          Streamlit page: synthetic replay or saved real validation run
+pages/2_Replay.py          Streamlit page: recorded video with its matching keypoints, read only
 pages/3_Investigation.py   Streamlit page: the evidence behind a replayed session
 pages/4_Real_Session.py    Streamlit page: recorded-data simulation and optional validation motion measurements
 src/live_tracker/          the package (quality, filters, features, calms21, classify, evaluate,

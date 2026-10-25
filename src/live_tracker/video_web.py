@@ -9,6 +9,7 @@ is never changed. Nothing here is imported unless a page needs it.
 
 from __future__ import annotations
 
+import io
 import struct
 import subprocess
 from pathlib import Path
@@ -25,28 +26,42 @@ class ConversionFailed(RuntimeError):
     """The converter ran but the result is not a good copy."""
 
 
-def _moov(path):
-    """The bytes of the 'moov' box (the index), wherever it sits in the file, or None."""
-    with open(path, "rb") as f:
-        f.seek(0, 2)
-        end = f.tell()
-        pos = 0
-        while pos + 8 <= end:
-            f.seek(pos)
-            size, kind = struct.unpack(">I4s", f.read(8))
-            header = 8
-            if size == 1:
-                size = struct.unpack(">Q", f.read(8))[0]
-                header = 16
-            elif size == 0:
-                size = end - pos
-            if size < header:
-                return None
-            if kind == b"moov":
-                f.seek(pos + header)
-                return f.read(size - header)
-            pos += size
+def _moov_in(f):
+    """The bytes of the 'moov' box (the index) in an open binary file, wherever it sits, or None."""
+    f.seek(0, 2)
+    end = f.tell()
+    pos = 0
+    while pos + 8 <= end:
+        f.seek(pos)
+        size, kind = struct.unpack(">I4s", f.read(8))
+        header = 8
+        if size == 1:
+            size = struct.unpack(">Q", f.read(8))[0]
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header:
+            return None
+        if kind == b"moov":
+            f.seek(pos + header)
+            return f.read(size - header)
+        pos += size
     return None
+
+
+def _moov(path):
+    with open(path, "rb") as f:
+        return _moov_in(f)
+
+
+def _codec_name(moov):
+    if moov is None:
+        return None
+    for marker, name in ((b"avc1", "h264"), (b"avc3", "h264"), (b"vp09", "vp9"), (b"av01", "av1"),
+                         (b"hvc1", "hevc"), (b"hev1", "hevc"), (b"mp4v", "mp4v")):
+        if marker in moov:
+            return name
+    return "other"
 
 
 def video_codec(path):
@@ -55,16 +70,9 @@ def video_codec(path):
     if path.suffix.lower() == ".webm":
         return "webm"
     try:
-        moov = _moov(path)
+        return _codec_name(_moov(path))
     except OSError:
         return None
-    if moov is None:
-        return None
-    for marker, name in ((b"avc1", "h264"), (b"avc3", "h264"), (b"vp09", "vp9"), (b"av01", "av1"),
-                         (b"hvc1", "hevc"), (b"hev1", "hevc"), (b"mp4v", "mp4v")):
-        if marker in moov:
-            return name
-    return "other"
 
 
 def seconds(path):
@@ -86,9 +94,27 @@ def seconds(path):
     return duration / timescale if timescale else None
 
 
+def codec_of_bytes(name, data):
+    """The same as video_codec, for a video that is only in memory (an upload that is not saved yet)."""
+    if Path(name).suffix.lower() == ".webm":
+        return "webm"
+    try:
+        return _codec_name(_moov_in(io.BytesIO(data)))
+    except (OSError, struct.error):
+        return None
+
+
+def is_playable_bytes(name, data):
+    """(True/False, short reason) for a video in memory."""
+    return _playable(codec_of_bytes(name, data))
+
+
 def is_browser_playable(path):
     """(True/False, short reason). A .webm is taken as playable; an mp4 / mov is checked by its codec."""
-    codec = video_codec(path)
+    return _playable(video_codec(path))
+
+
+def _playable(codec):
     if codec is None:
         return False, "the video file could not be read"
     if codec == "webm" or codec in PLAYABLE:

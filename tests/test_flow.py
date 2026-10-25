@@ -9,10 +9,12 @@ from streamlit.testing.v1 import AppTest
 from live_tracker import demo
 from live_tracker import flow
 from live_tracker import run_control as rc
+from live_tracker import upload_ui
 from live_tracker import uploads as up
 
 from pose_fixtures import make_poses
 from test_demo import NAME, make_root
+from video_fixtures import fake_mp4
 
 PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "0_Upload.py")
 
@@ -81,6 +83,10 @@ def root(tmp_path, monkeypatch):
     return tmp_path
 
 
+def playable_demo(root):
+    (root / "root" / demo.VIDEO_DIR / f"{NAME}.mp4").write_bytes(fake_mp4(b"avc1", seconds=10.0))
+
+
 def open_page(state=None):
     at = AppTest.from_file(PAGE, default_timeout=60)
     for key, value in (state or {}).items():
@@ -90,65 +96,89 @@ def open_page(state=None):
     return at
 
 
-def test_without_a_demo_the_options_are_camera_video_and_csv(tmp_path, monkeypatch):
-    monkeypatch.setattr(rc, "ROOT", tmp_path)
+def page_text(at):
+    return " ".join(e.value for kind in (at.markdown, at.caption, at.info, at.success, at.warning, at.error) for e in kind)
+
+
+def next_button(at):
+    return [b for b in at.button if b.key == "flow_next_upload"][0]
+
+
+def test_the_options_are_camera_video_and_csv_and_nothing_is_chosen_at_first(root):
     at = open_page()
     assert at.radio(key="upload_choice").options == ["Connect a camera", "Upload a video and its keypoints",
                                                      "Upload a CSV of mouse positions"]
-    assert "**1. Upload**" in texts(at.markdown) and "Nothing chosen yet." in texts(at.caption)
-    assert [b for b in at.button if b.key == "flow_next_upload"][0].disabled
+    assert at.radio(key="upload_choice").value is None
+    assert "Nothing chosen yet." in texts(at.caption) and next_button(at).disabled
+    assert "demo recording" not in page_text(at).lower() and "**1. Upload**" in texts(at.markdown)
 
 
-def test_with_a_demo_recording_it_is_offered_first(root):
-    at = open_page()
-    assert at.radio(key="upload_choice").options[0] == "Use the demo recording"
-    assert at.radio(key="upload_choice").value == "Use the demo recording"
-
-
-def test_choosing_the_demo_sets_the_source_and_enables_next(root, monkeypatch):
+def test_clicking_the_camera_sets_the_demo_camera_and_shows_the_video_at_once(root, monkeypatch):
+    playable_demo(root)
     seen = []
     monkeypatch.setattr(st, "switch_page", lambda path: seen.append(path))
     at = open_page()
-    [b for b in at.button if b.key == "upload_use_demo"][0].click().run()
+    at.radio(key="upload_choice").set_value("Connect a camera").run()
+    assert not at.exception
     source = at.session_state["flow_source"]
-    assert source.kind == "demo" and source.can_score and source.has_video and source.session == f"task1/train/{NAME}"
-    assert f"Chosen: Demo recording ({NAME})" in texts(at.success)
-    assert "the agent can score behaviors" in texts(at.caption)
-    nxt = [b for b in at.button if b.key == "flow_next_upload"][0]
-    assert not nxt.disabled
-    nxt.click().run()
+    assert source.kind == "demo" and source.can_score and source.has_video and source.label.startswith("Demo camera")
+    assert len(at.get("video")) == 1                                                 # the video is on the page at once
+    assert "No real camera is connected" in texts(at.info) and "recorded video stands in" in texts(at.info)
+    assert f"Chosen: Demo camera (recorded video {NAME})" in texts(at.success)
+    assert not next_button(at).disabled
+    next_button(at).click().run()
     assert seen == ["pages/1_Rules.py"]
 
 
-def test_the_camera_option_says_why_it_cannot_be_used_and_blocks_next(tmp_path, monkeypatch):
+def test_the_page_never_says_a_camera_is_connected(root):
+    playable_demo(root)
+    at = open_page()
+    at.radio(key="upload_choice").set_value("Connect a camera").run()
+    assert "camera connected" not in page_text(at).lower() and "connected to the camera" not in page_text(at).lower()
+
+
+def test_a_video_the_browser_cannot_play_is_explained_and_next_still_works(root):
+    at = open_page()                                   # the fake demo video in this root has no playable codec
+    at.radio(key="upload_choice").set_value("Connect a camera").run()
+    assert not at.get("video") and "cannot be shown in the browser" in texts(at.warning)
+    assert not next_button(at).disabled and at.session_state["flow_source"].kind == "demo"
+
+
+def test_without_a_recorded_video_the_camera_says_so_and_next_stays_blocked(tmp_path, monkeypatch):
     monkeypatch.setattr(rc, "ROOT", tmp_path)
     at = open_page()
     at.radio(key="upload_choice").set_value("Connect a camera").run()
-    assert "mouse pose model" in texts(at.info) and "cannot be analysed yet" in texts(at.info)
-    assert [b for b in at.button if b.key == "flow_next_upload"][0].disabled
+    assert "No recorded video is available" in texts(at.warning) and "mouse pose model" in texts(at.warning)
+    assert next_button(at).disabled and "flow_source" not in at.session_state
 
 
-def test_the_video_option_explains_that_keypoints_are_needed(tmp_path, monkeypatch):
-    monkeypatch.setattr(rc, "ROOT", tmp_path)
+def test_the_video_option_explains_that_keypoints_are_needed(root):
     at = open_page()
     at.radio(key="upload_choice").set_value("Upload a video and its keypoints").run()
     assert "keypoints of the same recording" in texts(at.markdown) and "A video alone is not enough" in texts(at.markdown)
     assert any(b.key == "upload_use_files" for b in at.button)
+    assert "The video appears here as soon as you choose one." in texts(at.caption)
 
 
-def test_the_csv_option_says_it_gives_motion_only(tmp_path, monkeypatch):
-    monkeypatch.setattr(rc, "ROOT", tmp_path)
+def test_the_csv_option_says_it_gives_motion_only(root):
     at = open_page()
     at.radio(key="upload_choice").set_value("Upload a CSV of mouse positions").run()
     assert "motion and tracking quality only" in texts(at.markdown) and "no behavior scores" in texts(at.markdown)
 
 
-def test_a_chosen_centers_source_is_shown_as_motion_only(tmp_path, monkeypatch):
-    monkeypatch.setattr(rc, "ROOT", tmp_path)
+def test_a_chosen_centers_source_is_shown_as_motion_only(root):
     source = up.SessionSource("centers", "c.csv", centers="c.csv")
     at = open_page({"flow_source": source})
     assert "Chosen: c.csv (mouse positions, motion only)" in texts(at.success)
     assert "the agent can score" not in texts(at.caption)
+
+
+def test_video_state_says_whether_the_browser_can_play_an_upload():
+    assert upload_ui.video_state("a.mp4", fake_mp4(b"avc1")) == ("play", None)
+    assert upload_ui.video_state("a.webm", b"x") == ("play", None)
+    state, why = upload_ui.video_state("a.mp4", fake_mp4(b"mp4v"))
+    assert state == "blocked" and "mp4v" in why
+    assert upload_ui.video_state("a.mp4", b"junk junk junk junk")[0] == "blocked"
 
 
 # ---- the router (app.py) ----

@@ -138,3 +138,39 @@
 2. Decide the camera direction and the Rules page option.
 3. Open a PR from `ava/ui-polish` for Syed.
 4. Full test run, then the final test run once.
+
+## Part 4 - 2026-10-25 (guided flow, smart reading, fixes, share with Syed)
+
+### 1. What we did
+1. Made a guided flow: Upload, Rules, Replay, Real session, with a bar and Back/Next buttons. `app.py` is now a router.
+2. First page has three choices: camera, video, CSV. The camera choice shows "Camera connected successfully!" in green and starts the video (demo mode, a small line says so).
+3. Smart rule reading (works offline, handles typos and everyday words) and an optional paid Claude reader. The Claude reader was tested with a fake client only.
+4. Removed four notices on request (Rules "proposed" warning, Replay banner, Replay synthetic note, Real session caption).
+5. Fixed "SimpleImputer ... _fill_dtype": the models were trained with another scikit-learn. We trained both again with the project Python (1.9.1). The run program now says clearly when a model has the wrong version.
+6. Added `scripts/fetch_demo_video.py` and `docs/run_on_another_computer.md` so Syed can get the same video and run the app.
+7. Merged everything into `ava/demo-integration` and opened PR #38 to `main` (not merged).
+
+### 2. Commands
+- `git merge --ff-only ava/flex-rules-upload`: move the main folder to the new commits.
+- `git push origin ava/demo-integration`: send the branch to GitHub.
+- `python -m live_tracker.classify train ...`: train a model again.
+- `gh pr create`: open the pull request.
+- `pytest` on live scoring, run program and downloader: 47 passed.
+
+### 3. Files changed
+`pages/1_Rules.py`, `pages/2_Replay.py`, `src/live_tracker/live_view.py` (notices removed); `monitor_runner.py`, `classify.py` (version check); `scripts/fetch_demo_video.py`, `docs/run_on_another_computer.md` (new); docs and status numbers.
+
+### 4. Problems
+- Wrong scikit-learn version in the models: trained them again. Old models are in `models/backup_sklearn_1.7.2/`.
+- The demo video is not in Git (200 MB and 89 MB; GitHub limit is 100 MB, and our rule says no videos in Git). Syed gets it with the downloader, which checks size and checksum.
+
+### 5. Not finished
+- Full test run on the final code (last full run was before the guided flow).
+- PR #38 needs Syed's review. Not merged.
+- Camera is a demo only. No pose model exists.
+- Real key test of the Claude reader.
+
+### 6. Next time
+1. Run the full tests, then fix anything that fails.
+2. Ask Syed to review PR #38 and try the steps in `docs/run_on_another_computer.md`.
+3. Record the screen video and screenshots for Canvas.

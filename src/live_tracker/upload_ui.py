@@ -317,7 +317,7 @@ def live_preview(device):
     if status is not None:
         st.error(f"RECORDING  {status['seconds']:.0f} s  ({status['frames']} frames)")
     if not st.session_state.get("upload_screen_on", True):
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera video", width="stretch")
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera video", width="stretch", output_format="JPEG")
         return
     from . import corner_picker as cp
     from . import screen_map as sm
@@ -327,7 +327,8 @@ def live_preview(device):
     if corners is None:
         st.error("These corners cannot be used. Press Reset the corners.")
         return
-    st.image(cv2.cvtColor(sm.warp(image, corners), cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch")
+    stretched = cv2.resize(sm.warp(image, corners), (640, 356), interpolation=cv2.INTER_AREA)      # shown smaller: a big PNG ten times a second used a whole core
+    st.image(cv2.cvtColor(stretched, cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch", output_format="JPEG")
     st.caption("Corners for the Colab notebook (copy this line into CORNERS):")
     st.code(sm.corners_text(corners), language=None)
 

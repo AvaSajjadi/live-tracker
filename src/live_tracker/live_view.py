@@ -174,7 +174,7 @@ def camera_preview(device, screen):
     if screen:
         from . import screen_map as sm
         image = sm.warp(image, screen)
-    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera picture (shown only)", width="stretch")
+    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera picture (shown only)", width="stretch", output_format="JPEG")
 
 
 def render_staged_running(run_dir, source):

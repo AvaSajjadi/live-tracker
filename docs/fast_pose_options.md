@@ -186,3 +186,28 @@ Pick the first one that works:
 ## Final thought
 
 The big discovery is that you probably do **not** need to make MARS faster. You can replace it with a small model that learns from the same public data MARS used. That data is large, hand-labeled, and free for school work. The one real risk is not speed, it is **accuracy when the two mice touch**. So test touching frames early, and keep MARS next to the new model as a judge.
+
+---
+
+## Appendix: Test 1, measured on this laptop (2026-10-25)
+
+This is the first real measurement. It is **speed only**. The model file is the small YOLO pose model that knows people (17 keypoints), not mice. A mouse-trained model has the same network shape (only 7 keypoints, so a little less work), so it should run at about the same speed. We have **no accuracy result** for mice yet.
+
+Setup: Intel i7-1165G7 laptop (4 cores, Intel Iris Xe graphics, no NVIDIA), Python 3.12, ultralytics 8.4.189, OpenVINO 2026.4.1, `yolo26n-pose` (2.9 million parameters). Input: 110 frames of the 1024 x 570 demo video; the first 10 frames are warm-up; the numbers are medians. The time includes preparing the picture, the model, and the post-processing.
+
+| Test | Time per frame | Frames per second |
+|---|---|---|
+| PyTorch on the CPU, 384 x 640 | 64.4 ms | about 15 |
+| PyTorch on the CPU, 640 x 640 | 62.5 ms | about 16 |
+| OpenVINO on the CPU, 384 x 640 | 61.1 ms | about 16 |
+| OpenVINO on the CPU, 640 x 640 | 182.8 ms (not understood; the export folder was reused, so ignore this number) | about 5 |
+| **OpenVINO on the Intel Iris Xe graphics chip, 384 x 640** | **16.5 ms** | **about 60** |
+
+**Sustained run (4 minutes, Iris Xe, 384 x 640):** 14,258 frames, **average 59 frames per second**. The median stayed between 14.8 and 18.4 ms in every 10-second window. In each window, 99% of the frames took under 20 to 36 ms. There was no big slowdown in 4 minutes. A longer run was not tested.
+
+What this means:
+1. The target is 33 ms or less per frame. The Iris Xe graphics chip meets it with about two times to spare, **for this one step**. The CPU alone does not (about 61 to 64 ms).
+2. The rest of the live program (reading the camera, Model B scoring, the monitor, the page) also needs time. Nobody measured the total yet.
+3. The unknown that matters most is **accuracy after training on mice**, especially when the two mice touch.
+
+Scripts: `scripts/bench_yolo_pose_speed.py` and `scripts/bench_yolo_pose_sustained.py` (run them in an environment with `ultralytics` and `openvino`).

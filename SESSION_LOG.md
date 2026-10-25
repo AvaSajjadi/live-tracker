@@ -350,3 +350,12 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 3. Tests: `tests/test_screen_map.py` and one more in `tests/test_upload_camera.py` (123 passed with the related tests). Docs: `docs/pose_model.md`.
 4. Not finished: the pose model file and backend (still missing). No real picture of an iPad was tried yet. The USB webcam (camera 0) is enough for this setup; the Nikon is not needed.
 5. Next time: get the pose model, test the corners with the webcam pointed at the iPad, check glare and brightness.
+
+### Part 9, later: pose model search (2026-10-25)
+1. The repo has NO mouse pose model (searched all 34 branches, history, ignored files, Downloads, zips). `pose_model.py` is only the empty slot. The demo read saved CalMS21 keypoints, never pictures.
+2. Tested the public DeepLabCut SuperAnimal-TopViewMouse (hrnet_w32 + fasterrcnn_resnet50_fpn_v2) on 5 s of the demo video, CPU only, in a separate env in the scratchpad (1.76 GB, DELETED after the test at the user's request).
+   - Speed: about 5.8 s per frame (detector about 5.7 s, pose network about 40 ms). Real time needs 0.033 s.
+   - Quality: a mouse found in only 31 of 150 frames, the second mouse never. With a lower detector cut-off (0.2) on 12 frames: no mouse found at all. Not usable on CalMS21-style footage.
+3. Found MARS (Segalin et al. 2021, the tool behind the CalMS21 keypoints): pretrained top-view pose models, v1.8, Caltech record 801be-66057 (models.zip 543 MB, license CC BY-NC 4.0, needs black and white mice). Not tried yet. Needs an older TensorFlow setup; GPU recommended; speed not reported.
+4. Not finished: no working pose model. Next: decide between trying MARS (old TensorFlow, may not run on this laptop) and the staged demo (camera films the iPad, saved keypoints are read, said openly).
+5. Small test files left in the scratchpad (about 6 MB). pip cache may hold some GB (not deleted).

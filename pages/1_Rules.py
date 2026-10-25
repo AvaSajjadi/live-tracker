@@ -29,7 +29,10 @@ TEXT_KEY = "rule_instruction"
 BACKEND_LABELS = {
     "Offline parser (default, no API key, no cost)": "offline",
     "Offline parser + Claude cross-check (paid API call)": "claude",
+    "Claude reads the sentence (stronger with loose wording, paid API call)": "claude_interpret",
 }
+INTERPRETED_BY = {"offline": "offline parser", "claude": "offline parser + Claude cross-check",
+                  "claude_interpret": "Claude (paid), checked by code"}
 
 # a missing or malformed stored value is replaced, never read as rules
 recovered = WORKFLOW_KEY in st.session_state and not is_valid_workflow(st.session_state[WORKFLOW_KEY])
@@ -55,6 +58,12 @@ if backend == "claude":
          "parser rejects. It needs ANTHROPIC_API_KEY and LIVE_TRACKER_CLAUDE_MODEL and makes one "
          "paid API call per click on Propose rule.")
 
+if backend == "claude_interpret":
+    note("info", "Claude reads the sentence: it copes with typos and loose wording. Needs an API key; one paid call per click.",
+         "Claude fills a strict form and code checks every number against your own words. Anything a rule cannot express "
+         "(a place, a time of day, an extra condition) is refused, not dropped, and every guess is shown as an assumption "
+         "before you confirm. It needs ANTHROPIC_API_KEY and LIVE_TRACKER_CLAUDE_MODEL. The offline parser stays the default.")
+
 text = st.text_area("Instruction", key=TEXT_KEY,
                     placeholder="Alert me when the mice attack for at least 2 seconds")
 
@@ -72,7 +81,7 @@ if wf.notice:
 # 3. the result of the last submission
 result = wf.last_result
 if isinstance(result, ClaudeUnavailable):
-    st.error(f"Claude cross-check unavailable ({result.reason}): {result.message}")
+    st.error(f"{'Claude' if wf.last_backend == 'claude_interpret' else 'Claude cross-check'} unavailable ({result.reason}): {result.message}")
     st.caption("Nothing was proposed. Choose the offline parser to continue without Claude.")
 elif isinstance(result, BackendFailure):
     st.error(result.message)
@@ -92,7 +101,7 @@ if pending is not None and isinstance(pending.proposal, RuleProposal):
         f"- **Alert mode:** {p['alert_mode']}\n"
         f"- **Alert threshold:** {p['alert_threshold']}\n"
         f"- **Ask threshold:** {p['ask_threshold']}\n"
-        f"- **Interpreted by:** {'offline parser + Claude cross-check' if p['backend'] == 'claude' else 'offline parser'}"
+        f"- **Interpreted by:** {INTERPRETED_BY[p['backend']]}"
     )
     if p["uses_default_thresholds"]:
         st.warning("Untuned default thresholds: " + ", ".join(p["uses_default_thresholds"])

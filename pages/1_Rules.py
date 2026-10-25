@@ -13,6 +13,7 @@ the proposal's token, so a stale or repeated click cannot act twice.
 """
 
 import json
+import os
 
 import streamlit as st
 
@@ -27,11 +28,11 @@ from live_tracker.rule_workflow import (BackendFailure, DecisionError, Duplicate
 WORKFLOW_KEY = "rule_workflow"
 TEXT_KEY = "rule_instruction"
 BACKEND_LABELS = {
-    "Offline parser (default, no API key, no cost)": "offline",
+    "Smart reading (default, no API key, no cost)": "offline",
     "Offline parser + Claude cross-check (paid API call)": "claude",
     "Claude reads the sentence (stronger with loose wording, paid API call)": "claude_interpret",
 }
-INTERPRETED_BY = {"offline": "offline parser", "claude": "offline parser + Claude cross-check",
+INTERPRETED_BY = {"offline": "smart reading (offline, free)", "claude": "offline parser + Claude cross-check",
                   "claude_interpret": "Claude (paid), checked by code"}
 
 # a missing or malformed stored value is replaced, never read as rules
@@ -46,7 +47,7 @@ st.title("Monitoring rules")
 if recovered:
     st.error("The stored rule session was invalid and has been reset. No rules are approved; "
              "please enter and confirm your rules again.")
-st.caption("Type what you want to monitor. A rule is only a proposal until you click Confirm; "
+st.caption("Write what you want to monitor in your own words. A rule is only a proposal until you click Confirm; "
            "only confirmed rules are used for monitoring.")
 
 backend_label = st.radio("Interpretation", list(BACKEND_LABELS), index=0)
@@ -64,8 +65,12 @@ if backend == "claude_interpret":
          "(a place, a time of day, an extra condition) is refused, not dropped, and every guess is shown as an assumption "
          "before you confirm. It needs ANTHROPIC_API_KEY and LIVE_TRACKER_CLAUDE_MODEL. The offline parser stays the default.")
 
+if backend == "offline":
+    st.caption("The smart reading copes with typos and everyday wording (\"let me know if the mice fight for more than 2 "
+               "seconds\") and shows what it understood. It runs on this computer: nothing is sent anywhere.")
+
 text = st.text_area("Instruction", key=TEXT_KEY,
-                    placeholder="Alert me when the mice attack for at least 2 seconds")
+                    placeholder="For example: let me know if the mice fight for more than 2 seconds")
 
 # 1. a changed instruction invalidates the pending proposal before any click is handled
 wf.sync_instruction(text)
@@ -88,7 +93,17 @@ elif isinstance(result, BackendFailure):
 elif isinstance(result, Clarification):
     st.warning("This instruction cannot be turned into a rule yet. Nothing was proposed.")
     for issue in result.issues:
-        st.markdown(f"- **{issue.code}**: {issue.message}")
+        st.markdown(f"- {issue.message}")
+    if wf.last_backend == "offline":
+        st.caption("Try other words, and say how long the behavior must last, in seconds. For example: "
+                   "\"Let me know if the mice fight for at least 2 seconds\".")
+        if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("LIVE_TRACKER_CLAUDE_MODEL"):
+            if st.button("Ask Claude to read this sentence (paid call)", key="ask_claude"):
+                with st.spinner("Claude is reading..."):
+                    wf.submit(text, backend="claude_interpret")
+                st.rerun()
+        else:
+            st.caption("Claude can read looser wording, but needs an API key. See docs/claude_interpreter.md.")
 
 pending = wf.pending
 if pending is not None and isinstance(pending.proposal, RuleProposal):

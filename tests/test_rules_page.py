@@ -60,7 +60,7 @@ def wf(at) -> RuleWorkflow:
 
 def test_page_starts_with_offline_default_and_no_monitoring():
     at = start()
-    assert at.radio[0].value.startswith("Offline parser (default")
+    assert at.radio[0].value.startswith("Smart reading (default")
     assert "Monitoring cannot start" in texts(at.warning)
     assert not has_button(at, "Confirm")
 
@@ -115,8 +115,8 @@ def test_reject_keeps_monitoring_blocked():
 def test_clarification_has_no_confirm_button(text):
     at = propose(start(), text)
     assert "cannot be turned into a rule yet" in texts(at.warning)
-    for issue in parse_rule(text, "R1").issues:  # every reason is shown to the researcher
-        assert f"**{issue.code}**: {issue.message}" in texts(at.markdown)
+    for issue in parse_rule(text, "R1").issues:  # every reason is shown to the researcher, in plain words (no code names)
+        assert f"- {issue.message}" in texts(at.markdown) and issue.code not in texts(at.markdown)
     assert not has_button(at, "Confirm") and not has_button(at, "Reject")
     assert wf(at).ruleset.rules == {}
 

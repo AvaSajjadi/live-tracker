@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from live_tracker import agent
 from live_tracker import claude_interpreter as ci
 from live_tracker.agent import Clarification, Issue, RuleProposal
 from live_tracker.claude_agent import ClaudeConfig, ClaudeUnavailable
@@ -76,7 +77,8 @@ def test_a_reading_cannot_arrive_already_approved_or_with_the_wrong_id():
 def test_the_offline_and_cross_check_backends_are_not_touched():
     wf = RuleWorkflow(interpret_fn=lambda *a, **k: pytest.fail("the reading must not be called"))
     assert isinstance(wf.submit("alert me when the mice attack for at least 2 seconds"), RuleProposal)
-    assert isinstance(RuleWorkflow().submit("alert me when mice attack for more that 2 seconds"), Clarification)   # the offline parser still refuses it
+    assert isinstance(agent.parse_rule("alert me when mice attack for more that 2 seconds", "R1"), Clarification)   # the strict parser still refuses it
+    assert isinstance(RuleWorkflow().submit("alert me when mice attack for more that 2 seconds"), RuleProposal)    # the default reading understands it
 
 
 # ---- the page ----
@@ -130,3 +132,63 @@ def test_a_constraint_the_rule_cannot_express_is_shown_as_a_refusal_with_the_rea
     [b for b in at.button if b.label == "Propose rule"][0].click().run()
     assert "cannot be turned into a rule yet" in texts(at.warning)
     assert "location condition ('near the wall')" in texts(at.markdown)
+
+
+# ---- the smart reading is the default on the page ----
+
+def test_the_first_choice_is_the_smart_reading_and_it_understands_a_loose_sentence_with_its_notes():
+    at = open_page()
+    assert at.radio[0].value.startswith("Smart reading (default") and "nothing is sent anywhere" in texts(at.caption)
+    at.text_area(key="rule_instruction").set_value("let me know if the mice are fighting for more that 2 seconds").run()
+    [b for b in at.button if b.label == "Propose rule"][0].click().run()
+    assert not at.exception
+    shown = texts(at.markdown)
+    assert "Interpreted by:** smart reading (offline, free)" in shown
+    assert "Your sentence was read as: 'let me know if the mice are attacking for at least 2 seconds'." in shown
+    assert "Read 'fighting' as attack" in shown and "inclusive minimum" in shown
+    assert "Minimum duration:** at least 2 seconds" in shown and "Behavior:** attack" in shown
+
+
+def test_a_refusal_is_shown_in_plain_words_with_an_example_and_no_code_names():
+    at = open_page()
+    at.text_area(key="rule_instruction").set_value("alert me when mice attack for less than 2 seconds").run()
+    [b for b in at.button if b.label == "Propose rule"][0].click().run()
+    assert "cannot be turned into a rule yet" in texts(at.warning)
+    assert "unsupported_duration" not in texts(at.markdown) and "Try other words" in texts(at.caption)
+    assert "Proposed rule" not in texts(at.subheader)
+
+
+def test_without_a_key_the_page_says_claude_needs_one_and_with_a_key_it_offers_the_button(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("LIVE_TRACKER_CLAUDE_MODEL", raising=False)
+    at = open_page()
+    at.text_area(key="rule_instruction").set_value("alert me when mice attack near the wall for 2 seconds").run()
+    [b for b in at.button if b.label == "Propose rule"][0].click().run()
+    assert "needs an API key" in texts(at.caption) and not any(b.key == "ask_claude" for b in at.button)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("LIVE_TRACKER_CLAUDE_MODEL", "test-model")
+    at = open_page()
+    at.text_area(key="rule_instruction").set_value("alert me when mice attack near the wall for 2 seconds").run()
+    [b for b in at.button if b.label == "Propose rule"][0].click().run()
+    assert any(b.key == "ask_claude" for b in at.button)
+
+
+def test_the_ask_claude_button_runs_the_paid_reading_only_when_clicked():
+    calls = []
+
+    def reading_fn(text, rule_id, **kw):
+        calls.append(text)
+        return fake_interpreter()(text, rule_id)
+
+    import os
+    os.environ["ANTHROPIC_API_KEY"], os.environ["LIVE_TRACKER_CLAUDE_MODEL"] = "sk-test-not-real", "test-model"
+    try:
+        at = open_page(RuleWorkflow(interpret_fn=reading_fn))
+        at.text_area(key="rule_instruction").set_value("alert me when mice attack near the wall for 2 seconds").run()
+        [b for b in at.button if b.label == "Propose rule"][0].click().run()
+        assert calls == []                                               # the smart reading refused; nothing was sent
+        [b for b in at.button if b.key == "ask_claude"][0].click().run()
+        assert calls == ["alert me when mice attack near the wall for 2 seconds"]
+    finally:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("LIVE_TRACKER_CLAUDE_MODEL", None)

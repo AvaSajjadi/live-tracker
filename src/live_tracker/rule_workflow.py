@@ -59,6 +59,7 @@ from . import agent
 from .agent import Clarification, RuleProposal, parse_rule
 from .claude_agent import ClaudeUnavailable, propose_rule_with_claude
 from .claude_interpreter import interpret_rule_with_claude
+from .flex_reader import read_flexibly
 from .rules import CLASSIFIER_BEHAVIORS, STATUSES, Rule, RuleSet, validate_rule
 
 __all__ = ["BACKENDS", "BackendFailure", "DecisionError", "DuplicateRuleError", "Pending",
@@ -298,7 +299,7 @@ class RuleWorkflow:
     notice: Optional[str] = None             # e.g. why a pending proposal was discarded
     _next_id: int = 1
     claude_fn: Callable[..., Result] = propose_rule_with_claude
-    offline_fn: Callable[..., Result] = parse_rule
+    offline_fn: Callable[..., Result] = read_flexibly
     interpret_fn: Callable[..., Result] = interpret_rule_with_claude
 
     # ---- ids ----

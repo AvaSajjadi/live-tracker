@@ -5,8 +5,8 @@ The dashboard now has a **guided flow** of four steps. Each page has a bar at th
 
 | Step | Page | What you do |
 |---|---|---|
-| 1 | **Upload** | choose what the agent looks at: the demo recording, a video with its keypoints, a keypoints file, or a CSV of mouse positions. A camera is listed but cannot be used yet |
-| 2 | **Rules** | tell the agent what to look for, in plain English, and Confirm the rule |
+| 1 | **Upload** | three choices: **Connect a camera**, **Upload a video** (with its keypoints), **Upload a CSV** of mouse positions. The video shows on the right as soon as there is one. No real camera can be analysed yet, so the camera choice is a clearly labeled **demo camera**: a recorded video stands in for the camera feed |
+| 2 | **Rules** | tell the agent what to look for **in your own words**; the smart reading copes with typos and everyday wording and shows what it understood; then Confirm the rule |
 | 3 | **Replay** | the replay page (a recorded run, played back) |
 | 4 | **Real session** | the recording plays on one side while the analysis runs on the other: alerts, counts, motion charts, the event table, and the report at the end |
 
@@ -65,9 +65,12 @@ That button needs a converter, the optional package `imageio-ffmpeg`, installed 
 - **or Xbox Game Bar:** click the browser, press Windows + Alt + R to start and again to stop. The file goes to `Videos\Captures`.
 
 Steps on the pages:
-1. **Upload:** choose "Use the demo recording", click **Use the demo recording**, then **Next**.
-2. **Rules:** type `alert me when the mice attack for at least 0.5 seconds, ask threshold 0.6, alert threshold 0.8`
-   (this gives the validated demo rule), click **Propose rule**, check it, click **Confirm**, then **Next**.
+1. **Upload:** click **Connect a camera**. The page says it is a demo camera (no real camera is connected) and the
+   recorded video appears on the right at once. Then **Next**. Say "demo camera" or "recorded video standing in for the
+   camera" in your text; do not say a camera is connected.
+2. **Rules:** write the rule in your own words. For the validated demo rule, include the thresholds, for example
+   `let me know if the mice fight for more than 0.5 seconds, ask threshold 0.6, alert threshold 0.8`. Click **Propose rule**,
+   read "Your sentence was read as ..." and the assumptions, click **Confirm**, then **Next**.
 3. **Replay:** click **Next** (or look at it, if you want).
 4. **Real session:** read the recording and the rule, click **Start the live session**. It says "Getting ready" for a few
    seconds, then the video and the analysis start together.

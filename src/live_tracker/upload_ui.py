@@ -230,6 +230,8 @@ def live_preview(device):
         st.error("These corners cannot be used. Press Reset the corners.")
         return
     st.image(cv2.cvtColor(sm.warp(image, corners), cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch")
+    st.caption("Corners for the Colab notebook (copy this line into CORNERS):")
+    st.code(sm.corners_text(corners), language=None)
 
 
 def render_camera():

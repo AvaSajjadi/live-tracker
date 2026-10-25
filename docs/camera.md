@@ -83,16 +83,37 @@ These are targets from the demo data, not tested limits (there is no working pos
 - **Not real:** finding the mice in the camera picture. The staged demo uses a saved file instead.
 - **Tried and failed:** the public DeepLabCut SuperAnimal-TopViewMouse model. It found a mouse in 31 of 150 frames of the demo
   video, never the second mouse, and it needs about 5.8 seconds per frame on this laptop (a live camera needs 0.03).
-- **Not tried yet:** MARS (Segalin et al. 2021), whose pretrained models make the same 7 keypoints. License CC BY-NC 4.0.
-  It may need an old TensorFlow setup.
+- **Tried and works, but slowly:** MARS (Segalin et al. 2021, license CC BY-NC 4.0), whose pretrained models make the same 7
+  keypoints in the CalMS21 order. On 20 frames of the demo video it found both mice in every frame, with a median error of
+  2 to 7 px against the saved CalMS21 keypoints (a body is about 190 px). On a degraded copy (small, blurry, compressed,
+  dimmer, like a webcam filming a screen) it still found both mice, but the white mouse's hips and tail base were off by
+  17 to 37 px. On a laptop CPU it needs about 0.9 s per frame (live needs 0.03 s). Caveats: the saved keypoints were made by
+  MARS itself and may come from its training data; MARS needs a top view with one black and one white mouse.
+- **The offline route (Google Colab):** `scripts/mars_pose_offline.py` and `colab/mars_pose_colab.ipynb` turn a recorded video
+  into a keypoints file in the layout the app reads. See section 8. The speed on a Colab GPU is not measured yet.
 
 ## 7. How to say it in the presentation
 
 "A camera films a screen, and the page shows it live. The behavior alerts are computed from the saved keypoints of that
 video. A pose model that finds the mice in the camera picture is the next step, and the program already has a place for it."
 
-## 8. Next steps
+## 8. Offline route with MARS on Google Colab
+
+Live pose on this laptop is too slow, so a recorded video can be analyzed on a GPU and brought back.
+
+1. Record the camera video (for example with the Windows Camera app). Keep the screen steady in the picture.
+2. In the app, Upload step, "USB camera": drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook".
+3. Open `colab/mars_pose_colab.ipynb` in Google Colab, choose a T4 GPU, run the cells, choose the video, paste the corner line.
+   Step 4 of the notebook is a 60-frame speed test; step 5 is the full run.
+4. Download `keypoints.parquet` and `stretched.mp4`.
+5. In the app: Upload > "Upload a video and its keypoints", choose the two files. Then Rules and Real session as usual.
+
+The script does the same steps as MARS (stretch the screen, two detectors for the black and the white mouse, crop, hourglass
+heatmaps, brightest point). It only reads the `.pb` model files. It never opens the `.pkl` files in the MARS zip (pickle can
+run code). The models are not stored in Git (they are 585 MB; the team keeps big files on the shared Drive).
+
+## 9. Next steps
 
 1. Test the staged demo with the camera on the iPad.
-2. Try MARS as a pose model.
-3. If a pose model works, the real path (C) uses the same screen stretch, scorer and monitor with no other changes.
+2. Measure MARS on a Colab GPU. If it is fast enough, a GPU computer could run it live.
+3. If a live pose model works, the real path (C) uses the same screen stretch, scorer and monitor with no other changes.

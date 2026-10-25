@@ -46,6 +46,11 @@ def check_corners(corners):
     return tuple(pts)
 
 
+def corners_text(corners):
+    """The 4 corners as one line of 8 numbers (x1,y1,x2,y2,...), to copy into scripts/mars_pose_offline.py --corners."""
+    return ",".join(f"{v:.3f}" for p in check_corners(corners) for v in p)
+
+
 def _matrix(corners, image_shape, size):
     import cv2
     h, w = image_shape[:2]

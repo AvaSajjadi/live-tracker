@@ -110,7 +110,7 @@ def render_usb_camera():
     device = st.text_input("Camera number or stream address", value="0", key="upload_device",
                            help="0 is the first camera, 1 the second. A network camera has an address like rtsp://...")
     current = flow.get_source()                                  # the demo camera or another camera number is no longer the choice
-    if current is not None and (current.kind == "demo" or (current.kind == "camera" and current.device != device.strip())):
+    if current is not None and current.kind == "demo" and not current.device:
         st.session_state.pop(flow.SOURCE_KEY, None)
     state = st.session_state.get("upload_camera_test")
     if st.button("Test the camera", key="upload_test_camera"):
@@ -125,15 +125,41 @@ def render_usb_camera():
         return None
     st.success("The camera works.")
     screen, png = screen_setup(state["png"])
+    mode = st.radio("What should the program analyze?", [REAL_POSE, STAGED], key="upload_cam_mode",
+                    help="Real: a pose model finds the mice in the camera picture (none is set up yet). "
+                         "Staged: the camera shows the iPad, but the numbers come from saved keypoints of the demo video.")
+    staged = mode == STAGED
+    current = flow.get_source()                                  # another camera, corners or mode than the saved ones: choose again
+    if current is not None and current.device is not None and (
+            current.device != device.strip() or current.screen != screen or current.staged_camera != staged):
+        st.session_state.pop(flow.SOURCE_KEY, None)
+    if staged:
+        render_staged_choice(device, screen)
+        return ("image", png)
     _, reason = cc.pose_model.load()
     if reason:
         st.warning(f"{reason} You can choose this camera now, but the analysis cannot start until a pose model is set up.")
-    current = flow.get_source()                                  # other corners than the saved ones: choose again
-    if current is not None and current.kind == "camera" and current.screen != screen:
-        st.session_state.pop(flow.SOURCE_KEY, None)
     if st.button("Use this camera", type="primary", key="upload_use_camera"):
         flow.set_source(up.SessionSource("camera", f"USB camera {device}", device=device.strip(), screen=screen))
     return ("image", png)
+
+
+REAL_POSE, STAGED = "Real pose model (needs a pose model)", "Staged demo (saved keypoints of the demo video)"
+
+
+def render_staged_choice(device, screen):
+    """The camera films a screen that plays the demo video. The picture is only shown; the keypoints are read from a file."""
+    st.warning("STAGED DEMO. The camera picture is shown live, but the alerts are computed from the SAVED keypoints of the demo "
+               "video, not from what the camera sees. Say this plainly when you present it.")
+    demos = demo.find_demos()
+    if not demos:
+        st.error("No demo video with saved keypoints is on this computer (data/raw/calms21_video/), so there is nothing to stage.")
+        return
+    d = demos[0]
+    st.caption(f"Play this video on the screen the camera films: {d.video.name}")
+    if st.button("Use the staged demo", type="primary", key="upload_use_staged"):
+        flow.set_source(up.SessionSource("demo", f"Staged demo: camera {device} films the screen", video=str(d.video),
+                                         poses=str(d.poses), session=d.session, device=device.strip(), screen=screen))
 
 
 CORNER_NAMES = ("top-left", "top-right", "bottom-right", "bottom-left")

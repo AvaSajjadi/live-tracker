@@ -71,3 +71,18 @@ def test_the_screen_corners_are_saved_with_the_camera_and_shown_stretched(monkey
     at.checkbox(key="upload_screen_on").set_value(False).run()
     button(at, "upload_use_camera").click().run()
     assert at.session_state["flow_source"].screen is None
+
+
+def test_the_staged_demo_can_be_chosen_and_keeps_the_camera_number(monkeypatch):
+    from live_tracker import demo as demo_mod
+    fake = demo_mod.Demo("clip", "task1/train/clip", Path("clip.mp4"), Path("clip_poses.parquet"))
+    monkeypatch.setattr(demo_mod, "find_demos", lambda root=None: [fake])
+    at = open_usb(monkeypatch, lambda device, opener=None: (PNG, None))
+    button(at, "upload_test_camera").click().run()
+    at.radio(key="upload_cam_mode").set_value("Staged demo (saved keypoints of the demo video)").run()
+    assert "STAGED DEMO" in texts(at.warning)
+    button(at, "upload_use_staged").click().run()
+    source = at.session_state["flow_source"]
+    assert source.staged_camera and source.device == "0" and source.session == "task1/train/clip"
+    at.radio(key="upload_cam_mode").set_value("Real pose model (needs a pose model)").run()
+    assert "flow_source" not in at.session_state or at.session_state["flow_source"] is None

@@ -78,6 +78,11 @@ class SessionSource:
         return self.kind in SCORING_KINDS
 
     @property
+    def staged_camera(self):
+        """A real camera that films a recording (an iPad), while the numbers come from the recording's saved keypoints."""
+        return self.kind == "demo" and bool(self.device)
+
+    @property
     def has_video(self):
         return bool(self.video)
 

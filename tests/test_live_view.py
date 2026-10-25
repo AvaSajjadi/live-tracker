@@ -338,3 +338,49 @@ def test_without_claude_the_plain_report_is_shown(env, monkeypatch):
     button(at, "live_bio_write")[0].click().run()
     assert not at.exception and "Report for the biologist plain" in texts(at.markdown)
     assert "plain report" in texts(at.caption) and len(at.get("download_button")) == 1
+
+
+# ---- staged demo: a real camera films a screen, the numbers come from saved keypoints ----
+
+def staged_source(tmp_path):
+    base = source(tmp_path)
+    return up.SessionSource("demo", "Staged demo: camera 0 films the screen", video=base.video, poses=base.poses,
+                            session=base.session, device="0")
+
+
+class FakeCap:
+    def read(self):
+        import numpy as np
+        return True, np.full((60, 80, 3), 90, dtype=np.uint8)
+
+    def release(self):
+        pass
+
+
+def test_a_staged_demo_says_what_it_is_and_waits_for_go(env, monkeypatch):
+    from live_tracker import run_sources as rsrc
+    monkeypatch.setattr(rsrc, "open_camera", lambda device: FakeCap())
+    root, launched = env
+    at = open_view(with_source(staged_source(root)))
+    assert "STAGED DEMO" in texts(at.warning) and "SAVED keypoints" in texts(at.warning)
+    button(at, "live_start_staged")[0].click().run()
+    assert not at.exception and len(launched) == 1
+    cfg = json.loads(Path(launched[0]).read_text(encoding="utf-8"))
+    assert cfg["wait_for_go"] is True and cfg["source"]["kind"] == "poses_file"       # the saved keypoints, not the camera
+    assert "Getting ready" in texts(at.info) and not button(at, "live_go_staged")
+
+
+def test_a_staged_demo_shows_the_camera_and_go_is_sent_by_the_button(env, monkeypatch):
+    from live_tracker import run_sources as rsrc
+    monkeypatch.setattr(rsrc, "open_camera", lambda device: FakeCap())
+    root, launched = env
+    at = open_view(with_source(staged_source(root)))
+    button(at, "live_start_staged")[0].click().run()
+    run_dir = Path(launched[0]).parent
+    write_status(run_dir, "ready")
+    at.run()
+    assert not at.exception and isinstance(at.session_state["live_camera_capture"], FakeCap)   # the camera is open and shown
+    assert "STAGED DEMO" in texts(at.warning)
+    assert not (run_dir / "GO").exists()                                              # GO waits for the researcher
+    button(at, "live_go_staged")[0].click().run()
+    assert (run_dir / "GO").exists() and at.session_state["live_go_sent"] is True

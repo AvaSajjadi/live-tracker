@@ -20,6 +20,7 @@ from . import flow
 from . import biologist_report as bio
 from . import live_session as ls
 from . import monitor_runner as mr
+from . import run_sources as rsrc
 from . import pose_model
 from . import run_control as rc
 from . import run_schedule as rs
@@ -30,6 +31,7 @@ from .uploads import SessionSource
 from .ui_style import note
 
 KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SOURCE, KEY_SERIES = "live_run", "live_video", "live_go_sent", "live_source", "live_series"
+KEY_CAP = "live_camera_capture"
 DEFAULT_OFFSET_S = 0.3                      # the video needs a moment to start after its element is drawn
 CHART_SECONDS = 30
 
@@ -49,6 +51,16 @@ def chosen_limit_s():
 def _reset():
     for key in (KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SERIES):
         st.session_state.pop(key, None)
+    _release_camera()
+
+
+def _release_camera():
+    cap = st.session_state.pop(KEY_CAP, None)
+    if cap is not None:
+        try:
+            cap.release()
+        except Exception:
+            pass
 
 
 def render():
@@ -134,7 +146,85 @@ def render_centers(source):
 
 # ---- before the session starts ----
 
+STAGED_WARNING = ("STAGED DEMO. The camera picture is shown live, but the alerts are computed from the SAVED keypoints of the "
+                  "demo video, not from what the camera sees. There is no pose model in this demo.")
+
+
+def render_staged_intro(source, rules):
+    st.warning(STAGED_WARNING)
+    seconds = ls.length_s(source.poses, source.fps)
+    st.markdown(f"- **Camera:** {source.label}.\n"
+                f"- **Video on the screen:** {Path(source.video).name}, {_mmss(seconds)} long. Play it from the start.\n"
+                f"- **Rules:** " + "; ".join(f"{r.behavior} for at least {r.min_duration_s:g} s "
+                                             f"(ask above {r.ask_threshold:g}, alert at {r.alert_threshold:g})" for r in rules)
+                + ".\n- **Scores:** Model B's raw scores (not calibrated).")
+    limit = chosen_limit_s()
+    if limit is not None and limit < seconds:
+        st.markdown(f"- **Time limit:** the analysis stops after {_mmss(limit)} (the time you confirmed on the Rules page).")
+    st.caption("Steps: 1. Press Start. 2. Wait for 'Ready'. 3. Press GO and press play on the screen at the same moment.")
+    if st.button("Start the staged session", type="primary", key="live_start_staged"):
+        try:
+            run_dir = ls.start_live(source, rules, wait_for_go=True, limit_s=limit)
+        except (mr.RunRefusedError, rs.ScheduleError, ValueError, OSError) as exc:
+            st.error(f"Not started: {exc}.")
+            return
+        st.session_state.update({KEY_RUN: str(run_dir), KEY_VIDEO: False, KEY_SENT: False})
+        st.rerun()
+
+
+@st.fragment(run_every=0.5)
+def camera_preview(device, screen):
+    """The live camera picture (stretched to the video part when corners were set). Only shown, never analysed."""
+    cap = st.session_state.get(KEY_CAP)
+    if cap is None:
+        try:
+            cap = st.session_state[KEY_CAP] = rsrc.open_camera(rsrc.camera_device(device))
+        except rsrc.CameraUnavailableError as exc:
+            st.error(f"The camera cannot be shown: {exc}.")
+            return
+    try:
+        ok, image = cap.read()
+    except Exception:
+        ok, image = False, None
+    if not ok or image is None:
+        st.warning("The camera gave no picture.")
+        return
+    import cv2
+    if screen:
+        from . import screen_map as sm
+        image = sm.warp(image, screen)
+    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera picture (shown only)", width="stretch")
+
+
+def render_staged_running(run_dir, source):
+    st.warning(STAGED_WARNING)
+    if KEY_SERIES not in st.session_state:
+        st.session_state[KEY_SERIES] = ls.motion_series(source.poses, source.fps)
+    length = ls.length_s(source.poses, source.fps)
+    left, right = st.columns([11, 9])
+    with right:
+        counts(run_dir)
+        camera_preview(source.device, source.screen)
+        status = rc.read_status(run_dir) or {}
+        if not st.session_state.get(KEY_SENT):
+            if status.get("state") == "ready":
+                st.success("Ready.")
+                if st.button("GO (press play on the screen at the same moment)", type="primary", key="live_go_staged"):
+                    rc.send_go(run_dir)
+                    st.session_state[KEY_SENT] = True
+                    st.rerun()
+            elif status.get("state") == "failed":
+                st.error("The run could not start.")
+            else:
+                st.info("Getting ready: loading the model and the keypoints.")
+    with left:
+        panel(run_dir, length, source.fps)
+
+
 def render_intro(source, rules):
+    if source.staged_camera:
+        render_staged_intro(source, rules)
+        return
     seconds = ls.length_s(source.poses, source.fps)
     playable = vw.playable_video(source.video) if source.has_video else None
     recording = source.label if source.kind == "demo" else f"{source.label}, {_mmss(seconds)} long"
@@ -180,6 +270,9 @@ def render_intro(source, rules):
 # ---- while it runs ----
 
 def render_running(run_dir, source):
+    if source.staged_camera:
+        render_staged_running(run_dir, source)
+        return
     playable = vw.playable_video(source.video) if source.has_video else None
     if KEY_SERIES not in st.session_state:
         st.session_state[KEY_SERIES] = ls.motion_series(source.poses, source.fps)

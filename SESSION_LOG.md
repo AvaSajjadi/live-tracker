@@ -343,3 +343,10 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
    - No real camera run has been tried. A camera run time is the Rules time, else 30 minutes.
    - Model B was trained on CalMS21 top-down view: a different view gives weak scores.
 6. Next time: get the pose model file, write the backend, test with the USB webcam (camera 0), then the Nikon.
+
+### Part 9, later: camera films an iPad (2026-10-25)
+1. The real presentation: a camera on a holder films an iPad that plays the demo video (CalMS21 `mouse064_task1_annotator1`, 1024 x 570, validation split).
+2. New `screen_map.py`: the researcher sets the 4 corners of the video; each picture is stretched to 1024 x 570 before the pose model. `SessionSource.screen` keeps the corners. `run_sources.make_source` and `live_session.camera_spec` pass them on. The Upload page has the corner sliders and shows the stretched picture.
+3. Tests: `tests/test_screen_map.py` and one more in `tests/test_upload_camera.py` (123 passed with the related tests). Docs: `docs/pose_model.md`.
+4. Not finished: the pose model file and backend (still missing). No real picture of an iPad was tried yet. The USB webcam (camera 0) is enough for this setup; the Nikon is not needed.
+5. Next time: get the pose model, test the corners with the webcam pointed at the iPad, check glare and brightness.

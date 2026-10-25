@@ -393,3 +393,10 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 4. Speed on this CPU after warm-up: about 0.9 s per frame (detectors about 160 ms each, pose about 540 ms). Needs 0.033 s for 30 fps live. DeepLabCut was 5.8 s per frame.
 5. Caveats: the comparison is MARS against MARS-made keypoints and these videos may be in its training data, so it does not prove it works on a phone screen or other mice. MARS needs one black and one white mouse, top view.
 6. Not finished: not wired into the project (`pose_model.py` backend); not tested on the live camera picture; speed ideas not tried (skip detectors by tracking boxes, batch, ONNX/OpenVINO, GPU).
+
+### Part 9, later: Colab route (2026-10-25)
+1. The user chose Google Colab. Wrote `scripts/mars_pose_offline.py` (video in, CalMS21 keypoints parquet out; optional screen corners; batches for a GPU; downloads the MARS models with an md5 check and only extracts the .pb files) and `colab/mars_pose_colab.ipynb` (GPU check, get script and models, choose video, corners and a 60-frame speed test, full run, quick look, download).
+2. Tested the script on this laptop (frames 1800+): median error 3.2 px against the saved keypoints; the project own upload check (`normalize_keypoints`) accepts the output file. 0.7 frames per second on CPU with batches. Not run on Colab yet.
+3. Upload page: the live preview now shows "Corners for the Colab notebook", one line of 8 numbers to copy.
+4. Tests: 81 passed (mars script helpers, notebook file, screen map, upload camera, corner picker, live view, uploads).
+5. Not finished: run the notebook on Colab and measure the GPU speed; a record-camera-to-file button in the app (today: record with the Windows Camera app); wiring MARS into pose_model.py for a live GPU machine.

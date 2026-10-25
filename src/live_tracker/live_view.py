@@ -1,4 +1,4 @@
-"""The live session view on the Real session page: the video on one side, the analysis on the other (new file).
+"""The live session view on the Real session page: the analysis on the left, a small video (1/4 of the width) on the right (new file).
 
 Rendering only; the logic is in live_session.py, run_control.py and video_web.py. The run is the real run program,
 so closing the page does not stop it. The page says plainly that this is a simulated live stream from a recording.
@@ -138,8 +138,8 @@ def render_running(run_dir, source):
     if playable is None:
         panel(run_dir, length, source.fps)
         return
-    left, right = st.columns([3, 2])
-    with left:
+    left, right = st.columns([3, 1])                          # run details on the left, a small video (1/4) on the right
+    with right:
         if st.session_state.get(KEY_VIDEO):
             st.video(str(playable), autoplay=True, muted=True)
             if not st.session_state.get(KEY_SENT):             # the video element is drawn; now start the run
@@ -148,7 +148,7 @@ def render_running(run_dir, source):
                 st.session_state[KEY_SENT] = True
         else:
             st.info("Getting ready: loading the model and the keypoints.")
-    with right:
+    with left:
         panel(run_dir, length, source.fps)
 
 

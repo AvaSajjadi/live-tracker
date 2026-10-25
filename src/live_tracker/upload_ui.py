@@ -26,8 +26,6 @@ CENTERS = "Upload a CSV of mouse positions"
 CHOICES = [CAMERA, VIDEO, CENTERS]
 KIND_TEXT = {"demo": "demo camera, a recorded video stands in for the feed", "video_keypoints": "video with keypoints",
              "keypoints": "keypoints, no picture", "centers": "mouse positions, motion only", "camera": "camera"}
-DEMO_MODE_NOTE = ("Demo mode: no physical camera is attached. A recorded video is the camera feed. "
-                  "A real camera needs a mouse pose model, which this project does not have yet.")
 
 
 def camera_source(d):
@@ -95,7 +93,6 @@ def render_camera():
     if current is None or current.to_dict() != source.to_dict():
         flow.set_source(source)                                  # choosing the demo camera is the whole step
     st.success("Camera connected successfully!")
-    st.caption(DEMO_MODE_NOTE)
     return ("path", demos[0].video)
 
 

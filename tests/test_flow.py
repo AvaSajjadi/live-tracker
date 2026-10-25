@@ -131,14 +131,12 @@ def test_clicking_the_camera_sets_the_demo_camera_and_shows_the_video_at_once(ro
 
 
 def test_the_green_message_always_comes_with_the_demo_mode_line(root):
-    """The message is the one asked for; the demo-mode line keeps screenshots and recordings truthful."""
+    """The message is the one asked for; the demo-mode line was removed on request."""
     playable_demo(root)
     at = open_page()
     at.radio(key="upload_choice").set_value("Connect a camera").run()
     assert "Camera connected successfully!" in [s.value for s in at.success]
-    caption = texts(at.caption)
-    assert "Demo mode: no physical camera is attached. A recorded video is the camera feed." in caption
-    assert "mouse pose model" in caption
+    assert "Demo mode" not in texts(at.caption)                                       # removed on request
     assert "Camera connected successfully!" not in texts(at.warning) + texts(at.error)
 
 

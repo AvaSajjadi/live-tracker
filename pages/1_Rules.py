@@ -117,8 +117,6 @@ elif isinstance(result, Clarification):
 pending = wf.pending
 if pending is not None and isinstance(pending.proposal, RuleProposal):
     p = preview(pending)
-    st.markdown("**Your instruction:**")
-    st.text(p["instruction"])
     with st.expander("Rule JSON"):
         st.code(json.dumps(p["rule_json"], indent=2), language="json")
 

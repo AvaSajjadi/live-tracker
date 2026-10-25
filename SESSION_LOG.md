@@ -258,3 +258,31 @@ Notes:
 
 Not finished: the Real session page still says a camera cannot be analysed (`live_view.py`). A camera run needs: a run spec for the camera, a live panel that does not need a poses file or video, and the Rules page schedule as the time limit. No pose model exists. No real camera was tried (no hardware test).
 Next time: step 3 (start a camera run from the Real session page), then the pose model backend, then a real camera test.
+
+### Part 7, later: connecting the Nikon D7500 (2026-10-25)
+1. What we did, step by step
+   1. Tested camera numbers with OpenCV. Camera 0 = laptop webcam (640x480), works. Camera 1 (1024x768) gives a flat dark picture (brightness 7.6 every time, no change). It is NOT the Nikon: Windows lists "USB2.0 IR UVC WebCam" (the laptop infrared camera for face login), most likely camera 1.
+   2. Learned: the D7500 is a Nikon (not Canon). It has Wi-Fi and Bluetooth (SnapBridge), but they send photos, not a live video stream our program can read. So we need a cable: USB with Nikon Webcam Utility, or HDMI with a capture card (better for overnight runs).
+   3. A phone can also be a camera (IP Webcam on Android, or DroidCam/Camo): type its address in the camera box. Good for a test, weak for all-night runs.
+   4. The user installed Nikon "Webcam Utility" 1.1.1.30000 (today). Windows sees the D7500 only as a file device (WPD), not as a webcam. Windows Settings > Cameras shows only "USB2.0 HD UVC WebCam". Teams was running (it can hold the camera).
+   5. Started a second dashboard with the new code on port 8767 (the old one on 8766 was left alone).
+2. Commands we ran
+   - OpenCV test scripts: open camera numbers 0 to 5, read 20 to 30 pictures, print only size and brightness (no picture saved the second time).
+   - `Get-PnpDevice`: list camera and Nikon devices Windows sees (read only).
+   - Registry and folder look: check that Nikon Webcam Utility is installed (read only).
+   - `streamlit run app.py --server.port 8767` (background): the new dashboard.
+3. Files changed: none in this part (only this log).
+4. Problems
+   - Nikon does not show up as a webcam yet. No light on the camera at one point (power or battery). Lens cap was removed by the user.
+   - One test picture of the user (webcam, camera 0) is still in the scratchpad folder `...\scratchpad\cam0.png`. The user said no to deleting it. It is not in Git. Delete it by hand when you want.
+   - Two photos of the user's screen are in `Downloads` (`photo_5109786690603126395_y.jpg`, `photo_5109786690603126400_y.jpg`). Not in Git.
+5. Not finished
+   - Make the Nikon work as a webcam.
+   - Step 3: the Real session page for a camera. A pose model (none exists).
+6. What to do next time
+   1. Restart the computer, turn the D7500 on, plug in USB, wait 10 seconds.
+   2. Open Zoom or Teams and look for a Nikon camera name. Tell the assistant the names.
+   3. Camera on video mode with Live View (LV) on. Check the D7500 is on Nikon's supported list.
+   4. If it still fails: HDMI cable and a capture card (clean HDMI out in the camera menu).
+   5. Then run the camera test again (camera numbers 0 to 5, brightness must change between pictures).
+   6. Then step 3 and the pose model.

@@ -304,3 +304,8 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
 2. Code, pages, tests and docs now match commit `53278e2` (the demo before the real camera work). Only the session log is different.
 3. The old dashboard on port 8766 is the demo version. The test dashboard on port 8767 is gone. Restart `streamlit run app.py` and press Ctrl+F5 in the browser.
 4. To get camera work back: `git revert` the three revert commits.
+
+### Part 8, later: Real session "Access is denied" (2026-10-25)
+1. Problem: Real session said "The run could not start: PermissionError [WinError 5] ... status.json.tmp -> status.json". Windows blocks the rename when the page has `status.json` open at the same moment.
+2. Fix: `_write_json` in `monitor_runner.py` now tries the rename up to 40 times (50 ms apart). New test in `tests/test_monitor_runner.py`.
+3. Not changed: the same rename pattern is in `event_log.write_jsonl`, `investigation_data.py` and `schedule_workflow.py`. They could fail the same way. Not seen yet.

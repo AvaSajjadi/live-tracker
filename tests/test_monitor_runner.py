@@ -422,3 +422,20 @@ def test_a_missing_model_or_name_is_refused_and_a_score_source_needs_none(tmp_pa
     with pytest.raises(mr.RunRefusedError, match="needs a model"):
         mr.build_scorer(config(tmp_path), pose_source(), root=tmp_path)
     assert mr.build_scorer(config(tmp_path), rsrc.synthetic_source(), root=tmp_path) is None
+
+
+def test_write_json_tries_again_when_windows_locks_the_file(tmp_path, monkeypatch):
+    import os
+    from live_tracker import monitor_runner
+    real, calls = os.replace, []
+
+    def locked_twice(a, b):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise PermissionError(5, "Access is denied")
+        return real(a, b)
+
+    monkeypatch.setattr(monitor_runner.os, "replace", locked_twice)
+    monitor_runner._write_json(tmp_path / "status.json", {"a": 1})
+    assert len(calls) == 3
+    assert (tmp_path / "status.json").read_text(encoding="utf-8").count('"a": 1') == 1

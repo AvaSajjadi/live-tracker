@@ -137,7 +137,14 @@ def _write_json(path, obj):
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, default=str) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(40):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:                  # Windows: a reader has the file open for a moment
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 def _duration(seconds):

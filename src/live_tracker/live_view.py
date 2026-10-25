@@ -17,6 +17,7 @@ import streamlit as st
 
 from . import demo
 from . import flow
+from . import biologist_report as bio
 from . import live_session as ls
 from . import monitor_runner as mr
 from . import run_control as rc
@@ -176,6 +177,34 @@ def counts(run_dir):
     q.markdown(f"<div style='background:#DDE6E3;border-radius:6px;padding:2px 10px;font-size:0.9rem'>Questions <b>{status.get('asks', 0)}</b></div>", unsafe_allow_html=True)
 
 
+def render_biologist_report(run_dir, report_json):
+    """The written report for the biologist: Claude writes it when the button is clicked (one paid request)."""
+    key = f"live_bio_{run_dir.name}"
+    saved = run_dir / bio.FILE_NAME
+    if key not in st.session_state and saved.exists():
+        st.session_state[key] = saved.read_text(encoding="utf-8")
+    text = st.session_state.get(key)
+    if text is None:
+        st.caption("Claude writes a short report in plain words for the biologist. It sends the facts of this run "
+                   "(no video, no keypoints) to Claude and uses your Claude key, so it costs a little.")
+        if st.button("Write the report for the biologist", key="live_bio_write"):
+            with st.spinner("Claude is writing the report..."):
+                text, problem = bio.write(report_json)
+            if problem:
+                st.error(f"Not written: {problem}")
+                return
+            st.session_state[key] = text
+            st.session_state[key + "_note"] = bio.save_and_notify(run_dir, text)
+        else:
+            return
+    with st.container(border=True):
+        st.markdown(text)
+    st.download_button("Download the report (Markdown)", text, file_name=f"{run_dir.name}_report.md",
+                       mime="text/markdown", key="live_bio_download", on_click="ignore")
+    if st.session_state.get(key + "_note"):
+        st.caption(st.session_state[key + "_note"])
+
+
 @st.fragment(run_every=1)
 def panel(run_dir, length_s, fps):
     run_dir = Path(run_dir)
@@ -234,6 +263,7 @@ def panel(run_dir, length_s, fps):
         if report is not None:
             with st.expander("Report"):
                 st.markdown(report[0])
+            render_biologist_report(run_dir, report[1])
     if status.get("state") in ("finished", "failed") or problem:
         if st.button("Start again", key="live_again"):
             _reset()

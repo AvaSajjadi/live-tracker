@@ -230,3 +230,11 @@ Notes:
 - Look at the Replay page in the browser. The skeletons must move with the video.
 - Skeleton lines are still PROVISIONAL. Full test run on the final code.
 - The video is not drawn under the skeletons (side by side only).
+
+## Part 5, later (2026-10-25): layout, time limit, report for the biologist
+- Real session: big video right (45%), small Alerts/Questions boxes above it, chart moved up (`0fc87a5`).
+- The run now stops at the schedule time confirmed on the Rules page, and the page says the report is ready (`851b365`).
+- New `src/live_tracker/biologist_report.py`: a button on the Real session page asks Claude (one request, facts only, no video) to write a plain report for the biologist. The program adds an exact facts table. The report is saved in the run folder, can be downloaded, and a short phone message goes out when `LIVE_TRACKER_NTFY_TOPIC` is set.
+- Tests: `tests/test_biologist_report.py` (fake client, no network) and two page tests.
+- Not tried with a real Claude key yet. The model is `$LIVE_TRACKER_CLAUDE_MODEL`, or `claude-sonnet-5-5`.
+- Lesson: patching `urllib.request.urlopen` did not stop the ntfy class (it keeps its own copy). Patch `NtfyNotifier.send` in tests. One test may have sent one harmless message to ntfy.sh topic "longrandomtopic" before the fix.

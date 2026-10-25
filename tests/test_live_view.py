@@ -254,6 +254,38 @@ def test_when_the_chosen_time_is_over_the_page_says_the_report_is_ready(env):
     assert "chosen time is over" in texts(at.success) and "report is ready" in texts(at.success)
 
 
+def test_the_biologist_report_is_written_on_a_click_and_can_be_downloaded(env, monkeypatch):
+    from live_tracker import biologist_report as bio
+    root, _ = env
+    src = source(root)
+    run_dir = demo_run(root)
+    write_status(run_dir, "finished", frames=720, alerts=1, asks=0, max_lag_s=0.0)
+    (run_dir / "report.md").write_text("# Run report", encoding="utf-8")
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(bio, "write", lambda report_json: calls.append(report_json) or ("# Report for the biologist Text.", None))
+    monkeypatch.setattr(bio, "save_and_notify", lambda d, md: "The report is saved. The phone message is off (no ntfy topic is set).")
+    at = open_view(running_state(src, run_dir))
+    assert calls == [] and not at.get("download_button")                  # nothing is sent to Claude before the click
+    button(at, "live_bio_write")[0].click().run()
+    assert not at.exception and calls == ["{}"]
+    assert "Report for the biologist" in texts(at.markdown) and len(at.get("download_button")) == 1
+    assert "phone message is off" in texts(at.caption)
+
+
+def test_a_failed_biologist_report_shows_the_reason(env, monkeypatch):
+    from live_tracker import biologist_report as bio
+    root, _ = env
+    run_dir = demo_run(root)
+    write_status(run_dir, "finished", frames=720, alerts=1, asks=0, max_lag_s=0.0)
+    (run_dir / "report.md").write_text("# Run report", encoding="utf-8")
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bio, "write", lambda report_json: (None, "ANTHROPIC_API_KEY is not set."))
+    at = open_view(running_state(source(root), run_dir))
+    button(at, "live_bio_write")[0].click().run()
+    assert "Not written" in texts(at.error) and not at.get("download_button")
+
+
 def test_stop_leaves_a_stop_file(env):
     root, _ = env
     src = source(root)

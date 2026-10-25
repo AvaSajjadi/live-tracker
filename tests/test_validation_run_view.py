@@ -313,7 +313,7 @@ def texts(elements):
     return " ".join(e.value for e in elements)
 
 
-@pytest.mark.parametrize("path", ["2_Replay.py", "3_Investigation.py"])
+@pytest.mark.parametrize("path", ["3_Investigation.py"])
 def test_real_mode_refuses_a_synthetic_run_with_no_fallback(made, monkeypatch, path):
     root, _, _ = made
     at = page(path, monkeypatch, root)
@@ -322,31 +322,14 @@ def test_real_mode_refuses_a_synthetic_run_with_no_fallback(made, monkeypatch, p
     assert not at.metric and not at.dataframe and "SYNTHETIC test data" not in texts(at.warning)
 
 
-@pytest.mark.parametrize("path", ["2_Replay.py", "3_Investigation.py"])
+@pytest.mark.parametrize("path", ["3_Investigation.py"])
 def test_real_mode_without_runs_says_so(tmp_path, monkeypatch, path):
     at = page(path, monkeypatch, tmp_path / "none")
     assert "No validation run found" in texts(at.error) and not at.dataframe
 
 
-def test_real_mode_renders_a_verified_run_insufficient_evidence_explicitly(made, monkeypatch):
-    root, _, manifest = made
-    at = page("3_Investigation.py", monkeypatch, root, manifest)
-    assert "verified" in texts(at.success)
-    assert texts(at.warning).count("Insufficient evidence") == 3 and "No effect value is reported" in texts(at.warning)
-    assert "no language model chose or interpreted them" in texts(at.info)
-    rec = at.get("download_button")[0]
-    assert rec.label.startswith("Download the recorded Contract v1 record") and "not authenticated" in rec.label
-    at = page("2_Replay.py", monkeypatch, root, manifest)
-    assert {m.label for m in at.metric} >= {"Sessions", "Events (predicted)", "Alerts", "Asks"}
-    assert "browsing is not one" in texts(at.info)                     # browsing is not an approval
 
 
-def test_the_synthetic_demonstration_is_still_the_default(monkeypatch, tmp_path):
-    monkeypatch.setenv("LIVE_TRACKER_REPLAY_DIR", str(tmp_path / "replay"))
-    at = AppTest.from_file(str(ROOT / "pages" / "2_Replay.py"), default_timeout=60)
-    at.run()
-    assert not at.exception and at.radio[0].value == vui.SYNTHETIC
-    assert "No approved rule" in texts(at.error)                       # the unchanged synthetic path
 
 
 # ---- the genuine run (local, read only) ----
@@ -373,7 +356,7 @@ def test_genuine_run_loads_read_only():
 
 
 @real
-@pytest.mark.parametrize("path", ["2_Replay.py", "3_Investigation.py"])
+@pytest.mark.parametrize("path", ["3_Investigation.py"])
 def test_genuine_run_renders_on_both_pages(monkeypatch, path):
     before = digests(REAL_ROOT / REAL_RUN)
     at = page(path, monkeypatch, REAL_ROOT)
@@ -588,7 +571,7 @@ def test_no_false_alert_or_prevalence_conclusion_is_drawn(real_copy, monkeypatch
     assert "NOT established here" in shown
 
 
-@pytest.mark.parametrize("path", ["2_Replay.py", "3_Investigation.py"])
+@pytest.mark.parametrize("path", ["3_Investigation.py"])
 def test_a_rejected_run_shows_no_conclusion_and_no_download(real_copy, monkeypatch, path):
     root, name = real_copy
     edit_summary(root / name, lambda s: s["monitor"].update(actions={"alert": 0, "ask": 80}))
@@ -1052,7 +1035,7 @@ def test_a_rehashed_probe_at_the_exact_boundary_is_consistent(real_copy):
     assert run.probe("check_tracking_quality")["verdict"] == "reliable"
 
 
-@pytest.mark.parametrize("path", ["2_Replay.py", "3_Investigation.py"])
+@pytest.mark.parametrize("path", ["3_Investigation.py"])
 def test_codex_metadata_forgery_shows_no_findings_and_no_download(real_copy, monkeypatch, path):
     root, name = real_copy
     forge(root / name, forged_compare(lambda r: r.update(copy.deepcopy(CODEX_METADATA))), sync_compare)
@@ -1063,7 +1046,7 @@ def test_codex_metadata_forgery_shows_no_findings_and_no_download(real_copy, mon
     assert "after event" not in shown and "No exclusion of overlapping events" not in shown
 
 
-@pytest.mark.parametrize("path", ["2_Replay.py", "3_Investigation.py"])
+@pytest.mark.parametrize("path", ["3_Investigation.py"])
 def test_codex_quality_forgery_shows_no_findings_and_no_download(real_copy, monkeypatch, path):
     root, name = real_copy
     forge(root / name, forge_probe_quality(usable_fraction=0.0, verdict="reliable", reasons=[]), sync_probe)

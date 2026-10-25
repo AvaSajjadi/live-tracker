@@ -1,0 +1,19 @@
+# Live Tracker look: light page, sage-grey panels, one terracotta accent, rounded corners.
+[theme]
+base = "light"
+primaryColor = "#B76A54"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F5F4"
+textColor = "#1F2933"
+borderColor = "#DDE6E3"
+font = "sans serif"
+baseRadius = "0.6rem"
+
+[server]
+maxUploadSize = 1024        # megabytes: research videos are large
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

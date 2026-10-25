@@ -134,7 +134,7 @@ def test_rejected_rule_is_never_monitored():
 # ---- clarification and backend errors ----
 
 @pytest.mark.parametrize("text", [
-    "", "Alert me when the mice attack", "Alert me if they fight for 2 s",
+    "", "Alert me when the mice attack", "Alert me if they groom for 2 s",     # "fight" is now read as attack (flex_reader)
     "Alert me if they attack for 2 seconds at night", "Log attacks for 2 seconds",
 ])
 def test_clarification_is_never_approvable(text):

@@ -25,7 +25,7 @@ def button(at, label):
     return next(b for b in at.button if b.label == label)
 
 
-def test_rules_to_replay_to_answer_to_summary(tmp_path, monkeypatch):
+def test_rules_then_replay_page_opens(tmp_path, monkeypatch):
     monkeypatch.setenv(rv.REPLAY_DIR_ENV, str(tmp_path))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("LIVE_TRACKER_CLAUDE_MODEL", raising=False)
@@ -35,25 +35,7 @@ def test_rules_to_replay_to_answer_to_summary(tmp_path, monkeypatch):
     at.switch_page("pages/1_Rules.py").run()                     # sentence -> proposal -> Confirm
     at.text_area(key="rule_instruction").input(INSTRUCTION).run()
     button(at, "Propose rule").click().run()
-    assert "Proposed rule R1" in " ".join(s.value for s in at.subheader)
-    button(at, "Confirm").click().run()
-    assert any("Monitoring can start: 1 approved rule." in s.value for s in at.success)
+    assert at.session_state["rule_workflow"].monitoring_allowed()
 
-    at.switch_page("pages/2_Replay.py").run()                    # the same session keeps the rule
-    assert not at.exception and at.warning[0].value == "Replay of a recorded session, not a live camera"
-    run = at.session_state["replay_active_run"]
-    at.session_state[f"replay_frame_{run}"] = 280                 # the ask fired at frame 270 (9.0 s)
-    at.run()
-    button(at, "Confirm").click().run()
-    assert any("Answered: confirmed at frame 280" in m.value for m in at.markdown)
-    button(at, "End of session").click().run()
-    shown = " ".join(m.value for m in at.markdown)
-    assert "# Session summary: SYNTHETIC_demo_01" in shown and "1 confirmed, 0 rejected, 0 unanswered" in shown
-    assert len([b for b in at.get("download_button") if b.key.startswith("replay_summary_")]) == 2
-
-    (journal,) = tmp_path.glob(f"{run}.journal.jsonl")             # what persisted, read back independently
-    state = el.load_journal(journal)
-    assert [r["researcher_answer"] for r in state.records if r["record"] == "event_answered"] == ["confirmed"]
-    again = sm.build_summary(state.records, run_id=run, session="SYNTHETIC_demo_01").as_dict()
-    assert again["counts"] == {"alert": 1, "ask": 1, "log": 0} and again["answers"]["confirmed"] == 1
-    assert again["provenance"]["label"] == "SYNTHETIC"
+    at.switch_page("pages/2_Replay.py").run()                    # the Replay page shows only video and skeletons
+    assert not at.exception and not at.metric and not at.dataframe

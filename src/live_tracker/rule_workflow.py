@@ -58,13 +58,16 @@ from typing import Callable, Optional, Union
 from . import agent
 from .agent import Clarification, RuleProposal, parse_rule
 from .claude_agent import ClaudeUnavailable, propose_rule_with_claude
+from .claude_interpreter import interpret_rule_with_claude
+from .flex_reader import read_flexibly
 from .rules import CLASSIFIER_BEHAVIORS, STATUSES, Rule, RuleSet, validate_rule
 
 __all__ = ["BACKENDS", "BackendFailure", "DecisionError", "DuplicateRuleError", "Pending",
            "RuleWorkflow", "StaleActionError", "describe_rule", "is_valid_workflow",
            "monitoring_allowed", "preview"]
 
-BACKENDS = ("offline", "claude")
+BACKENDS = ("offline", "claude", "claude_interpret")
+_BACKEND_NAMES = {"offline": "offline parser", "claude": "Claude cross-check", "claude_interpret": "Claude reading"}
 _DECISION_FIELDS = ("behavior", "min_duration_s", "alert_mode", "alert_threshold", "ask_threshold")
 _DEFAULTS = {k: Rule.__dataclass_fields__[k].default for k in ("alert_threshold", "ask_threshold")}
 
@@ -230,7 +233,7 @@ def _check_workflow(obj):
         raise ValueError("not a RuleWorkflow")
     state = vars(obj)  # instance attributes only; a missing one fails here
     for name in ("ruleset", "pending", "last_result", "last_backend", "notice", "_next_id",
-                 "claude_fn", "offline_fn"):
+                 "claude_fn", "offline_fn", "interpret_fn"):
         if name not in state:
             raise ValueError(f"missing attribute {name}")
     _ruleset_snapshot(state["ruleset"])  # structure: Rule objects under their own ids
@@ -269,7 +272,7 @@ def _check_workflow(obj):
         raise ValueError("last_result is malformed")
     if state["notice"] is not None and not isinstance(state["notice"], str):
         raise ValueError("notice is malformed")
-    if not (callable(state["claude_fn"]) and callable(state["offline_fn"])):
+    if not (callable(state["claude_fn"]) and callable(state["offline_fn"]) and callable(state["interpret_fn"])):
         raise ValueError("backend functions are not callable")
 
 
@@ -296,7 +299,8 @@ class RuleWorkflow:
     notice: Optional[str] = None             # e.g. why a pending proposal was discarded
     _next_id: int = 1
     claude_fn: Callable[..., Result] = propose_rule_with_claude
-    offline_fn: Callable[..., Result] = parse_rule
+    offline_fn: Callable[..., Result] = read_flexibly
+    interpret_fn: Callable[..., Result] = interpret_rule_with_claude
 
     # ---- ids ----
 
@@ -324,6 +328,8 @@ class RuleWorkflow:
         try:
             if backend == "claude":
                 result = self.claude_fn(text, rule_id, **claude_kwargs)
+            elif backend == "claude_interpret":
+                result = self.interpret_fn(text, rule_id, **claude_kwargs)
             else:
                 result = self.offline_fn(text, rule_id)
             problem = self._check_result(result, rule_id)
@@ -349,9 +355,8 @@ class RuleWorkflow:
 
     @staticmethod
     def _backend_failure(backend, problem):
-        text = (f"The {'Claude cross-check' if backend == 'claude' else 'offline parser'} failed "
-                f"unexpectedly ({problem}). Nothing was proposed.")
-        if backend == "claude":
+        text = (f"The {_BACKEND_NAMES[backend]} failed unexpectedly ({problem}). Nothing was proposed.")
+        if backend in ("claude", "claude_interpret"):
             return ClaudeUnavailable("api_error", text + " Use the offline parser or try again later.")
         return BackendFailure(backend, text + " Please report this; your approved rules are unchanged.")
 

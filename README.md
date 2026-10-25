@@ -339,10 +339,24 @@ request). Full launch and demo steps, including Windows PowerShell: `docs/live_a
   protocol (run5); the page shows that check separately.
 - The progress view, evidence charts and cost ledger show what was asked, which tools ran, and what was spent.
 
+## Lab run (overnight)
+
+A run is set in the Rules page (**Run schedule**: for N hours, or from one time to another), then started on the
+**Run** page. The work is done by a separate program, `python -m live_tracker.monitor_runner`, so closing the browser
+does not stop it. It waits for the start time, reads frames, scores them live with Model B, runs the approved rules,
+writes the event log, sends short messages (a log file, and a phone through ntfy if you set a topic) and writes a report
+at the end. A question left open can be answered the next morning.
+
+It works today with recorded data. **A real camera is not supported yet: there is no mouse pose model in this repository.**
+What was measured, the limits and a setup checklist: [`docs/lab_run.md`](docs/lab_run.md).
+The dashboard opens on a **guided flow**: Upload, Rules, Replay, Real session. On the Real session page the recording plays on one side and the
+live analysis runs on the other (a simulated live stream from a recording, not a camera):
+[`docs/demo_recording.md`](docs/demo_recording.md).
+
 ## Project structure
 
 ```
-app.py                     Streamlit main page: motion engine and tracking quality
+app.py                     Streamlit front door: the menu (guided flow first); the old home page is pages/8_Motion_Tool.py
 pages/1_Rules.py           Streamlit page: plain-English rules with researcher approval
 pages/2_Replay.py          Streamlit page: replay of synthetic sessions with events, warnings and summary
 pages/3_Investigation.py   Streamlit page: the evidence behind a replayed session

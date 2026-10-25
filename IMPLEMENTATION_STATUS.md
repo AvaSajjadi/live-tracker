@@ -103,14 +103,35 @@ fail with "No module named live_tracker".
 Still open: test-split evaluation (not run; needs `calms21_task1_test.json` and the team's go), demo rehearsal, backup
 video, slides and poster for the submission.
 
+## Stage 5: lab run program (Ava, 2026-10-24, branch `ava/monitor-runner`)
+
+| File | What it does | Tests |
+|---|---|---|
+| `src/live_tracker/run_schedule.py`, `schedule_workflow.py`, `schedule_ui.py` | Run schedule: for N hours or from A to B, approval, clock changes, completeness; the form on the Rules page | `test_run_schedule.py` (39), `test_schedule_workflow.py` (12), `test_schedule_page.py` (8) |
+| `src/live_tracker/live_scoring.py` | Pose frames to Model B scores from a short moving buffer | `test_live_scoring.py` (9, the last one opt-in on real data) |
+| `src/live_tracker/run_sources.py` | Score file, recorded keypoints, camera reader (fake-camera tests only), pose-model slot | `test_run_sources.py` (17) |
+| `src/live_tracker/notify.py` | Log file and optional ntfy phone messages | `test_notify.py` (13) |
+| `src/live_tracker/monitor_runner.py` | The program: wait, run, log, answers, interruptions, report, stop | `test_monitor_runner.py` (21) |
+| `src/live_tracker/run_control.py`, `run_ui.py`, `pages/6_Run.py` | Start, stop, watch, answer (also after the run), report | `test_run_control.py` (22), `test_run_page.py` (12) |
+| `src/live_tracker/flow.py`, `app.py` (router), `pages/0_Upload.py`, `upload_ui.py`, `uploads.py` | Guided flow: Upload, Rules, Replay, Real session, with a bar and Back / Next; checked uploads | `test_flow.py` (16), `test_uploads.py` (35) |
+| `src/live_tracker/live_view.py`, `live_session.py`, `video_web.py`, `demo.py`, `scripts/prepare_demo_session.py` | Real session page: the video on one side, the live analysis on the other; browser-playable check and web copy; the demo recording; see `docs/demo_recording.md` | `test_live_view.py` (18), `test_live_session.py` (10), `test_video_web.py` (18), `test_demo.py` |
+| `src/live_tracker/claude_interpreter.py` (+ third backend in `rule_workflow.py`, Rules page) | Claude reads loose wording (typos, "more than") into a rule; code checks quotes and numbers; refusals; assumptions shown; **tested with a fake client only, not with a real model**; see `docs/claude_interpreter.md` | `test_claude_interpreter.py` (58), `test_interpret_integration.py` (10) |
+
+Measured on one validation session: live scores equal whole-session scores (largest difference 5e-13); the program,
+run as its own process, produced the same 46 events as the whole-session calculation (models trained under scikit-learn
+1.7.2; retrained under 1.9.1 on 2026-10-25, 44 events on that session). Details and limits:
+`docs/lab_run.md`. **No camera and no mouse pose model exist yet; nothing here was tested on a real camera.**
+
 ## Still missing / open
 
 - Test-split evaluation: not run. It happens once, at the end, under a policy the team agrees first.
 - Whether the keypoint features help a classifier: untested (needs regenerating features and retraining).
 - Tuned quality values in `params.py` (jump 3000 px/s, One-Euro beta 0.05) are not wired into the defaults, and
   the models were not retrained with them. Stage 9 investigation runs with the jump flag off.
-- `pyarrow` is needed by `classify.py` and the ablation but is not declared in `pyproject.toml` or
-  `requirements.txt`.
+  **Decision (2026-10-24): we will not wire them in.** Doing so would mean retraining both models and measuring
+  everything again. The models and numbers stay as they are.
+- Score calibration (Igor's plan item 9) was not done. The code exists but is off by default; turning it on breaks the
+  demo attack rule. Details and numbers: `docs/model_settings.md`. The submission uses raw scores.
 - Slides / report, and the demo rehearsal.
 - Contract v1 decisions still to confirm with Syed: see `plan/AVA.md` and the open items in
   `docs/contract_v1_integration.md` section 6.

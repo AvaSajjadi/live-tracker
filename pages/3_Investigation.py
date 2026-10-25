@@ -23,6 +23,7 @@ from live_tracker import investigation_view as iv
 from live_tracker import replay as rp
 from live_tracker import replay_investigation as ri
 from live_tracker import replay_view as rv
+from live_tracker import ui_style
 from live_tracker import validation_run_ui as vui
 from live_tracker.rule_workflow import is_valid_workflow
 from streamlit.errors import StreamlitPageNotFoundError
@@ -33,9 +34,11 @@ SESSION_KEY = "investigation_session"
 STATUS_BOX = {"supported": st.info, "insufficient": st.warning, "no_bouts": st.info, "unsupported": st.info,
               "error": st.error}
 
+ui_style.apply()
 st.title("Investigation")
-st.caption("The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
-           "what the Contract v1 tools can and cannot conclude.")
+ui_style.note("caption", "The evidence behind a replayed session.",
+              "The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
+              "what the Contract v1 tools can and cannot conclude.")
 nav = st.columns([2, 1, 4])
 try:
     nav[0].page_link("pages/2_Replay.py", label="Back to Replay", icon=":material/arrow_back:")
@@ -228,5 +231,6 @@ with tab_prov:
     st.download_button("Download investigation record (JSON)", iv.export_json(res),
                        file_name=f"{entry.session}_investigation.json", mime="application/json",
                        key=f"investigation_json_{run_id}")
-    st.caption("The same record the Replay page exports. No Markdown rendering exists for Contract v1 tool records; "
-               "findings/2 Markdown exists only for agent reports.")
+    ui_style.note("caption", "The same record the Replay page exports.",
+                  "No Markdown rendering exists for Contract v1 tool records; "
+                  "findings/2 Markdown exists only for agent reports.")

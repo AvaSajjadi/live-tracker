@@ -25,6 +25,7 @@ import streamlit as st
 from . import investigation_agent_v1 as av1
 from . import investigation_live_v1 as lv1
 from . import investigation_v1_runs as runs
+from .ui_style import note
 
 PREFLIGHT_KEY = "live_agent_preflight"            # {"digest", "ready", "report", "token"}
 USED_KEY = "live_agent_used_tokens"
@@ -446,8 +447,9 @@ def verdict_of(saved):
 
 def render_progress_record(rec):
     with st.expander(f"Live progress of the last run started in this tab ({rec['run']})", expanded=False):
-        st.caption("Recorded as the run happened, in this browser tab only (not a monitor of other tabs or "
-                   "sessions). Results are shown only from the saved, re-verified report.")
+        note("caption", "Recorded in this browser tab only. Results come from the saved, re-verified report.",
+             "Recorded as the run happened, in this browser tab only (not a monitor of other tabs or "
+             "sessions). Results are shown only from the saved, re-verified report.")
         c = st.columns(4)
         c[0].metric("Model turns", f"{rec['turns']} of {rec['max_turns']}")
         c[1].metric("Tool calls executed", rec["executed"])
@@ -689,11 +691,12 @@ def render_overview(saved, ov):
         m[4].metric(SIMULATED_COST, f"${sp['simulated_usd']:.5f}", help="Computed by the emulated endpoint; no "
                     "request reached a provider and nothing was spent.")
     if e:
-        st.caption(f"Sign: Contract v1 defines each session's difference as pre-window minus baseline and reports their "
-                   f"median; a {e['sign']} value means the median session-paired `{e['feature']}` was "
-                   f"{'lower' if e['sign'] == 'negative' else 'higher' if e['sign'] == 'positive' else 'no different'} "
-                   "in the pre-bout window than in the baseline. Association only: no causal claim, no confidence "
-                   "interval, no significance test.")
+        note("caption", f"Sign: {e['sign']}. Association only: no causal claim, no interval, no significance test.",
+             f"Sign: Contract v1 defines each session's difference as pre-window minus baseline and reports their "
+             f"median; a {e['sign']} value means the median session-paired `{e['feature']}` was "
+             f"{'lower' if e['sign'] == 'negative' else 'higher' if e['sign'] == 'positive' else 'no different'} "
+             "in the pre-bout window than in the baseline. Association only: no causal claim, no confidence "
+             "interval, no significance test.")
     elif c.get("status") == "insufficient_evidence":
         st.caption(f"The comparison did not meet the evidence gate ({c.get('reason')}): {c.get('n_available')} "
                    f"available, {c.get('n_required')} required. No effect is reported.")
@@ -784,9 +787,10 @@ def render_evidence(saved):
     (runs.evidence_view); nothing is recomputed and no interval or significance test is shown."""
     d = saved.doc
     st.markdown("#### Scientific evidence")
-    st.caption("The recorded evidence behind the finding, read from the verified report: one accepted comparison at a "
-               "time, with the predicted bouts it used. Nothing is recomputed; no interval or significance test is "
-               "shown.")
+    note("caption", "The recorded evidence behind the finding. Nothing is recomputed.",
+         "The recorded evidence behind the finding, read from the verified report: one accepted comparison at a "
+         "time, with the predicted bouts it used. Nothing is recomputed; no interval or significance test is "
+         "shown.")
     choices = runs.comparison_choices(d)
     if not choices:
         st.info("This investigation recorded no accepted comparison, so there is no comparison evidence to chart.")
@@ -822,9 +826,9 @@ def render_evidence(saved):
 def render_sessions(v):
     if v["status"] != "ok" or not v["sessions"]:
         why = f" ({v['reason']}: {v['reason_text']})" if v.get("reason") else ""
-        st.info(f"No session-level effect is shown: this comparison's status is `{v['status']}`{why}. Contract v1 "
-                "records per-session differences only for a comparison that meets the evidence gate, so there is "
-                "nothing to plot.")
+        note("info", f"No session-level effect is shown: this comparison's status is `{v['status']}`{why}, "
+                     "so there is nothing to plot.",
+             "Contract v1 records per-session differences only for a comparison that meets the evidence gate.")
         return
     unit = v["unit"]
     m = st.columns(2)

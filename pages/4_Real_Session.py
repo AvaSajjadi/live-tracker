@@ -15,11 +15,19 @@ import streamlit as st
 from live_tracker import session_view as sv
 from live_tracker.calms21 import TORSO_KEYPOINTS
 from live_tracker.features import KEYPOINT_COLS
+from live_tracker import flow, live_view, ui_style
 
 st.set_page_config(page_title="Real session | Motion Engine", layout="wide")
-st.title("Motion engine | real validation session")
-st.caption("Real CalMS21 pose data (validation split only). Measurements of motion and tracking; "
-           "no behavior is claimed. Settings are the team's quality settings, not tuned for this page.")
+ui_style.apply()
+flow.render_bar("session")
+st.title("Real session")
+live_view.render()
+flow.render_nav("session")
+st.divider()
+st.subheader("Motion measurements of a validation session")
+ui_style.note("caption", "Real CalMS21 pose data, validation split only. Measurements, not behavior labels.",
+              "Real CalMS21 pose data (validation split only). Measurements of motion and tracking; "
+              "no behavior is claimed. Settings are the team's quality settings, not tuned for this page.")
 
 
 @st.cache_resource(show_spinner="Verifying the validation cache (hashes)...")
@@ -93,8 +101,6 @@ with st.expander("Feature table (first 200 rows)"):
     st.dataframe(view.table.head(200), width="stretch")
 
 # --- context: ground-truth annotation -------------------------------------------------------
-st.subheader("Annotation (ground truth, context only)")
-st.caption("CalMS21's own labels for this session. No feature or warning above uses them. "
-           "Not a model prediction.")
+st.subheader("Annotation")
 bouts = sv.label_bouts(view.labels)
 st.dataframe(bouts.drop(columns="session").round(2), hide_index=True, width="stretch")

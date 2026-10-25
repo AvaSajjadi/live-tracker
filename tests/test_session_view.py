@@ -157,7 +157,7 @@ def test_page_shows_a_session_and_labels_the_annotation_as_context(cache, monkey
     assert not at.exception, [e.value for e in at.exception]
     assert [m.label for m in at.metric][:4] == ["Frames", "Duration", "tracking_ok frames", "Tracking warnings"]
     assert at.selectbox[0].options == [sv.short_name(s) for s in VAL]
-    assert any("ground truth" in h.value.lower() for h in at.subheader)
+    assert any(h.value == "Annotation" for h in at.subheader)
     text = " ".join(c.value for c in at.caption).lower()
     assert "no behavior is claimed" in text
     at.selectbox[0].select(sv.short_name(VAL[1])).run()

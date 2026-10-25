@@ -101,6 +101,6 @@ with st.expander("Feature table (first 200 rows)"):
     st.dataframe(view.table.head(200), width="stretch")
 
 # --- context: ground-truth annotation -------------------------------------------------------
-st.subheader("Annotation (ground truth, context only)")
+st.subheader("Annotation")
 bouts = sv.label_bouts(view.labels)
 st.dataframe(bouts.drop(columns="session").round(2), hide_index=True, width="stretch")

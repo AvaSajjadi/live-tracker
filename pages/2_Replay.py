@@ -33,7 +33,7 @@ from live_tracker import replay as rp
 from live_tracker import replay_investigation as ri
 from live_tracker import replay_view as rv
 from live_tracker import summary as sm
-from live_tracker import ui_style
+from live_tracker import flow, ui_style
 from live_tracker import validation_run_ui as vui
 from live_tracker.rule_workflow import is_valid_workflow
 
@@ -56,7 +56,9 @@ def keys(run_id):
 
 
 ui_style.apply()
+flow.render_bar("replay")
 st.title("Replay")
+flow.render_nav("replay")
 # 0. data: the SYNTHETIC demonstration (below, unchanged) or a verified REAL validation run (read only)
 if vui.choose_mode("replay_data_mode_widget") == vui.REAL:
     vui.render_replay()

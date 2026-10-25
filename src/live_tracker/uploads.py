@@ -232,3 +232,38 @@ def save_centers(folder, name, data):
     path = Path(folder) / f"{Path(safe_name(name)).stem}_centers.csv"
     df.to_csv(path, index=False)
     return path
+
+
+# ---- from uploaded files to a source ----
+
+def build_keypoints_source(keypoints, video=None, *, fps=FPS, root=None):
+    """keypoints and video are (file name, bytes). A video alone cannot be analysed, so keypoints are required.
+
+    Saves everything in a new folder. If any file is bad, the folder is removed and UploadError is raised."""
+    import shutil
+    if keypoints is None:
+        raise UploadError("a video alone cannot be analysed: the behavior scores come from keypoints. "
+                          "Upload the keypoints file of the same recording too.")
+    folder = new_upload_dir(root)
+    try:
+        poses, session = save_keypoints(folder, keypoints[0], keypoints[1], fps)
+        video_path = save_video(folder, video[0], video[1]) if video else None
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    kind = "video_keypoints" if video_path else "keypoints"
+    label = (safe_name(video[0]) if video_path else safe_name(keypoints[0]))
+    return SessionSource(kind, label, video=str(video_path) if video_path else None, poses=str(poses), session=session,
+                         fps=float(fps))
+
+
+def build_centers_source(centers, *, fps=FPS, root=None):
+    """centers is (file name, bytes)."""
+    import shutil
+    folder = new_upload_dir(root)
+    try:
+        path = save_centers(folder, centers[0], centers[1])
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    return SessionSource("centers", safe_name(centers[0]), centers=str(path), fps=float(fps))

@@ -164,3 +164,42 @@ def test_source_kinds_and_what_they_need():
 def test_source_round_trips_through_a_dict():
     s = up.SessionSource("video_keypoints", "v", video="v.mp4", poses="p.parquet", session="S", fps=25.0)
     assert up.SessionSource.from_dict(s.to_dict()) == s
+
+
+# ---- from files to a source ----
+
+def test_keypoints_with_a_video_make_a_video_source_in_a_new_folder(tmp_path):
+    src = up.build_keypoints_source(("k.csv", csv_bytes(good_df(40))), ("clip.mp4", b"video"), root=tmp_path)
+    assert src.kind == "video_keypoints" and src.has_video and src.can_score and src.label == "clip.mp4"
+    assert src.session == "SYNTHETIC_live_01" and src.fps == 30.0
+    from pathlib import Path
+    assert Path(src.video).read_bytes() == b"video" and Path(src.poses).parent == Path(src.video).parent
+    assert Path(src.poses).parent.parent == tmp_path
+
+
+def test_keypoints_alone_make_a_source_without_a_picture(tmp_path):
+    src = up.build_keypoints_source(("k.csv", csv_bytes(good_df(40))), root=tmp_path)
+    assert src.kind == "keypoints" and not src.has_video and src.label == "k.csv"
+
+
+def test_a_video_alone_is_refused_with_the_reason(tmp_path):
+    with pytest.raises(up.UploadError, match="video alone cannot be analysed"):
+        up.build_keypoints_source(None, ("clip.mp4", b"video"), root=tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_bad_file_leaves_no_folder_behind(tmp_path):
+    with pytest.raises(up.UploadError):
+        up.build_keypoints_source(("k.csv", csv_bytes(good_df(40).drop(columns=["x"]))), ("clip.mp4", b"v"), root=tmp_path)
+    with pytest.raises(up.UploadError, match="must be one of"):
+        up.build_keypoints_source(("k.csv", csv_bytes(good_df(40))), ("clip.exe", b"MZ"), root=tmp_path)
+    assert not list(tmp_path.iterdir())
+
+
+def test_a_centers_file_makes_a_centers_source(tmp_path):
+    df = pd.DataFrame({c: range(20) for c in up.CENTER_COLUMNS})
+    src = up.build_centers_source(("c.csv", csv_bytes(df)), root=tmp_path)
+    assert src.kind == "centers" and not src.can_score and src.centers.endswith("_centers.csv")
+    with pytest.raises(up.UploadError):
+        up.build_centers_source(("c.csv", b"a,b\n1,2\n"), root=tmp_path / "other")
+    assert not (tmp_path / "other").exists() or not list((tmp_path / "other").iterdir())

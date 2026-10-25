@@ -1,26 +1,11 @@
 """Tests for video_web: codec detection from the file, the playable check, and making a web copy (with a fake converter)."""
 
-import struct
 from types import SimpleNamespace
 
 import pytest
 
 from live_tracker import video_web as vw
-
-
-def box(kind, payload=b""):
-    return struct.pack(">I4s", 8 + len(payload), kind) + payload
-
-
-def mvhd(seconds, timescale=1000):
-    return box(b"mvhd", bytes(4) + struct.pack(">IIII", 0, 0, timescale, int(seconds * timescale)) + bytes(80))
-
-
-def fake_mp4(codec=b"avc1", seconds=10.0, moov_first=False):
-    moov = box(b"moov", mvhd(seconds) + box(b"trak", box(b"stsd", bytes(8) + box(codec, bytes(20)))))
-    body = box(b"ftyp", b"isom" + bytes(16)) + box(b"free")
-    media = box(b"mdat", b"x" * 100)
-    return body + (moov + media if moov_first else media + moov)
+from video_fixtures import box, fake_mp4, mvhd
 
 
 def write(tmp_path, name, data):

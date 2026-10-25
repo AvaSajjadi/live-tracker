@@ -19,7 +19,7 @@ import streamlit as st
 from live_tracker.agent import Clarification, RuleProposal
 from live_tracker.ui_style import apply as apply_style
 from live_tracker.ui_style import note
-from live_tracker import schedule_ui
+from live_tracker import flow, schedule_ui
 from live_tracker.claude_agent import ClaudeUnavailable
 from live_tracker.rule_workflow import (BackendFailure, DecisionError, DuplicateRuleError, RuleWorkflow,
                                         StaleActionError, is_valid_workflow, preview)
@@ -38,6 +38,7 @@ if recovered or WORKFLOW_KEY not in st.session_state:
 wf: RuleWorkflow = st.session_state[WORKFLOW_KEY]
 
 apply_style()
+flow.render_bar("rules")
 st.title("Monitoring rules")
 if recovered:
     st.error("The stored rule session was invalid and has been reset. No rules are approved; "
@@ -135,3 +136,7 @@ else:
     st.warning("Monitoring cannot start: no rule is approved yet.")
 
 schedule_ui.render()
+
+st.divider()
+flow.render_nav("rules", can_next=wf.monitoring_allowed(),
+                next_hint="Confirm a rule first, then press Next.")

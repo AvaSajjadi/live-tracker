@@ -359,3 +359,10 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 3. Found MARS (Segalin et al. 2021, the tool behind the CalMS21 keypoints): pretrained top-view pose models, v1.8, Caltech record 801be-66057 (models.zip 543 MB, license CC BY-NC 4.0, needs black and white mice). Not tried yet. Needs an older TensorFlow setup; GPU recommended; speed not reported.
 4. Not finished: no working pose model. Next: decide between trying MARS (old TensorFlow, may not run on this laptop) and the staged demo (camera films the iPad, saved keypoints are read, said openly).
 5. Small test files left in the scratchpad (about 6 MB). pip cache may hold some GB (not deleted).
+
+### Part 9, later: staged demo (2026-10-25)
+1. Built the staged demo, the safe plan for the presentation: a real USB camera films the iPad that plays the demo video; the page shows the camera live; the alerts come from the SAVED keypoints of that video (not from the picture). The page says this in a yellow box on the Upload step and on the Real session page.
+2. Upload page, USB camera: new choice "Staged demo" (the other choice is "Real pose model"). It creates a `demo` source with a camera number (`SessionSource.staged_camera`) and the screen corners.
+3. Real session page: `render_staged_intro`, `camera_preview` (live picture, stretched to the video part when corners are set), `render_staged_running` with a GO button. GO is pressed together with play on the iPad (about 0.3 s human delay).
+4. Tests: 106 passed (live view, upload camera, uploads, screen map, flow, live session, demo smoke). Not tried with a real camera and a real iPad yet.
+5. Not finished: real test with the webcam on the iPad; MARS try (543 MB models, old TensorFlow); the Nikon.

@@ -161,7 +161,7 @@ def run_panel(run_dir):
             st.caption("Stop requested. The program will finish and write the report.")
         elif st.button("Stop run", key=f"run_stop_{run_dir.name}"):
             rc.stop_run(run_dir)
-            st.rerun(scope="fragment")
+            st.rerun()
 
     render_events(run_dir, status)
     report = rc.read_report(run_dir)
@@ -200,7 +200,7 @@ def render_events(run_dir, status):
         a, b = st.columns(2)
         if a.button("Confirm", key=f"run_confirm_{e['event_id']}", type="primary"):
             rc.answer_event(run_dir, e["event_id"], "confirmed")
-            st.rerun(scope="fragment")
+            st.rerun()
         if b.button("Reject", key=f"run_reject_{e['event_id']}"):
             rc.answer_event(run_dir, e["event_id"], "rejected")
-            st.rerun(scope="fragment")
+            st.rerun()

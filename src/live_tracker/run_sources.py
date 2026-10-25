@@ -215,6 +215,7 @@ def make_source(spec, root=ROOT):
     {"kind": "synthetic"}
     {"kind": "scores", "path": "outputs/scores_validation_model_b.csv", "session": "..."}
     {"kind": "keypoints", "json": "data/raw/calms21/calms21_task1_train.json", "session": "..."}
+    {"kind": "poses_file", "path": "data/raw/calms21_video/mouse064_poses.parquet", "session": "..."}
     {"kind": "camera", "device": 0}
     """
     root = Path(root)
@@ -225,16 +226,22 @@ def make_source(spec, root=ROOT):
     if kind == "scores":
         return ScoreFileSource(root / spec["path"] if not Path(spec["path"]).is_absolute() else spec["path"],
                                spec.get("session"), fps, description=f"score file {Path(spec['path']).name}")
-    if kind == "keypoints":
+    if kind in ("keypoints", "poses_file"):
         manifest = check_manifest(json.loads((root / "splits/split_manifest.json").read_text(encoding="utf-8")))
         session = spec.get("session")
-        path = Path(spec["json"])
+        path = Path(spec["json"] if kind == "keypoints" else spec["path"])
         if "test" in path.name.lower() or session in manifest["test"]:
             raise SourceRefusedError("test-split sessions are never used by the agent")
         if session not in manifest["train"] + manifest["validation"]:
             raise SourceRefusedError(f"session {session!r} is not in the train or validation split")
-        from .calms21 import load_calms21
-        poses, _ = load_calms21(path if path.is_absolute() else root / path, sessions=[session])
+        path = path if path.is_absolute() else root / path
+        if kind == "keypoints":
+            from .calms21 import load_calms21
+            poses, _ = load_calms21(path, sessions=[session])
+        else:                                   # one session saved by scripts/prepare_demo_session.py: starts at once
+            poses = pd.read_parquet(path)
+            if set(poses["session"]) != {session}:
+                raise SourceRefusedError(f"{path.name} does not hold exactly the session {session!r}")
         return KeypointFileSource(poses, session, fps, description=f"recorded keypoints of {session}")
     if kind == "camera":
         # a pose model is the missing piece; nothing is opened before it exists

@@ -211,3 +211,27 @@ def test_make_source_refuses_test_sessions_and_unknown_things(tmp_path):
 def test_make_source_camera_says_a_pose_model_is_missing():
     with pytest.raises(rsrc.NoPoseModelError):
         rsrc.make_source({"kind": "camera", "device": 0})
+
+
+# ---- one saved session (the demo source) ----
+
+def test_make_source_poses_file_plays_a_saved_session(tmp_path):
+    root = manifest_root(tmp_path)
+    poses = make_poses(20, seed=2, session="task1/train/b")
+    poses.to_parquet(tmp_path / "one.parquet", index=False)
+    src = rsrc.make_source({"kind": "poses_file", "path": "one.parquet", "session": "task1/train/b"}, root)
+    assert src.session == "task1/train/b" and src.kind == "pose" and "recorded keypoints" in src.description
+    assert src.read().frame == 0
+
+
+def test_poses_file_refuses_test_sessions_other_sessions_and_wrong_files(tmp_path):
+    root = manifest_root(tmp_path)
+    make_poses(5, session="task1/train/b").to_parquet(tmp_path / "one.parquet", index=False)
+    with pytest.raises(rsrc.SourceRefusedError, match="never used"):
+        rsrc.make_source({"kind": "poses_file", "path": "one.parquet", "session": "task1/test/c"}, root)
+    with pytest.raises(rsrc.SourceRefusedError, match="never used"):
+        rsrc.make_source({"kind": "poses_file", "path": "calms21_test_poses.parquet", "session": "task1/train/b"}, root)
+    with pytest.raises(rsrc.SourceRefusedError, match="not in the train or validation"):
+        rsrc.make_source({"kind": "poses_file", "path": "one.parquet", "session": "task1/other"}, root)
+    with pytest.raises(rsrc.SourceRefusedError, match="does not hold exactly"):
+        rsrc.make_source({"kind": "poses_file", "path": "one.parquet", "session": "task1/train/a"}, root)

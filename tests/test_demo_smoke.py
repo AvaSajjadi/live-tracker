@@ -37,7 +37,7 @@ def test_rules_to_replay_to_answer_to_summary(tmp_path, monkeypatch):
     button(at, "Propose rule").click().run()
     assert "Proposed rule R1" in " ".join(s.value for s in at.subheader)
     button(at, "Confirm").click().run()
-    assert any("Monitoring can start: 1 approved rule." in s.value for s in at.success)
+    assert at.session_state["rule_workflow"].monitoring_allowed()
 
     at.switch_page("pages/2_Replay.py").run()                    # the same session keeps the rule
     assert not at.exception and not any("not a live camera" in w.value for w in at.warning)

@@ -115,7 +115,7 @@ def test_the_page_turns_the_loose_sentence_into_a_rule_the_researcher_confirms()
     assert "Proposed rule R1" in texts(at.subheader) and "Interpreted by:** Claude (paid), checked by code" in shown
     assert "Read by Claude" in why(at) and "treated as at least 2 seconds" in why(at) and "Minimum duration:** at least 2 seconds" in shown
     [b for b in at.button if b.label == "Confirm"][0].click().run()
-    assert "approved" in texts(at.success) or "Monitoring can start" in texts(at.success)
+    assert at.session_state["rule_workflow"].monitoring_allowed()
 
 
 def test_without_a_model_the_page_says_claude_is_unavailable_and_proposes_nothing(monkeypatch):

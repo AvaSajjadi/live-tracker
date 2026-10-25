@@ -66,7 +66,7 @@ def wf(at) -> RuleWorkflow:
 def test_page_starts_with_offline_default_and_no_monitoring():
     at = start()
     assert at.radio[0].value.startswith("Smart reading (default")
-    assert "Monitoring cannot start" in texts(at.warning)
+    assert not wf(at).monitoring_allowed()
     assert not has_button(at, "Confirm")
 
 
@@ -80,12 +80,12 @@ def test_proposal_preview_shows_all_fields():
     assert "rules.py defaults are used" in why(at)                                   # in the (?), not in bullets on the page
     assert "Assumptions to check" not in body
     assert "NOT active until you click Confirm" not in texts(at.warning)           # removed on request; Confirm / Reject decide
-    assert "Untuned default thresholds: alert_threshold, ask_threshold" in why(at) and not at.warning[0].value.startswith("Untuned")
+    assert "Untuned default thresholds: alert_threshold, ask_threshold" in why(at) and not any(w.value.startswith("Untuned") for w in at.warning)
     assert EXAMPLE in texts(at.text)  # the original instruction, shown separately
     assert '"status": "proposed"' in at.code[0].value
     assert has_button(at, "Confirm") and has_button(at, "Reject")
     assert wf(at).ruleset.rules == {}  # nothing added before the decision
-    assert "Monitoring cannot start" in texts(at.warning)
+    assert not wf(at).monitoring_allowed()
 
 
 def test_implicit_minimum_assumption_is_shown():
@@ -99,9 +99,9 @@ def test_confirm_activates_and_enables_monitoring():
     assert not at.exception
     assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
     assert "Rule R1 approved" in texts(at.info)
-    assert "Monitoring can start: 1 approved rule." in texts(at.success)
+    assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 1
     assert not has_button(at, "Confirm")  # nothing left to approve twice
-    assert at.dataframe[0].value["status"].tolist() == ["approved (active)"]
+    assert [r.status for r in wf(at).ruleset.rules.values()] == ["approved"]
 
 
 def test_reject_keeps_monitoring_blocked():
@@ -110,8 +110,8 @@ def test_reject_keeps_monitoring_blocked():
     assert not at.exception
     assert wf(at).ruleset.active() == []
     assert wf(at).ruleset.rules["R1"].status == "rejected"
-    assert "Monitoring cannot start" in texts(at.warning)
-    assert at.dataframe[0].value["status"].tolist() == ["rejected (inactive)"]
+    assert not wf(at).monitoring_allowed()
+    assert [r.status for r in wf(at).ruleset.rules.values()] == ["rejected"]
 
 
 @pytest.mark.parametrize("text", [
@@ -216,7 +216,7 @@ def test_invalid_session_state_is_recovered(value):
     at = start(value)
     assert "stored rule session was invalid and has been reset" in texts(at.error)
     assert isinstance(wf(at), RuleWorkflow) and wf(at).ruleset.rules == {}
-    assert "Monitoring cannot start" in texts(at.warning)
+    assert not wf(at).monitoring_allowed()
     propose(at)  # and the page works normally afterwards
     button(at, "Confirm").click().run()
     assert not at.exception and [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
@@ -229,7 +229,7 @@ def test_valid_session_state_is_kept():
     workflow.confirm(workflow.pending.token)
     at = start(workflow)
     assert wf(at) is workflow and "invalid" not in texts(at.error)
-    assert "Monitoring can start: 1 approved rule." in texts(at.success)
+    assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 1
 
 
 @pytest.mark.parametrize("method, label", [("approve", "Confirm"), ("reject", "Reject")])
@@ -328,7 +328,7 @@ def test_corrupted_workflow_is_replaced_not_used(name):
     fresh = wf(at)
     assert fresh.ruleset.rules == {} and fresh.pending is None  # nothing carried over
     assert not has_button(at, "Confirm")
-    assert "Monitoring cannot start" in texts(at.warning)
+    assert not wf(at).monitoring_allowed()
     propose(at)
     button(at, "Confirm").click().run()  # the fresh session works normally
     assert not at.exception and [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
@@ -349,7 +349,7 @@ def test_healthy_history_survives_reruns_and_decisions():
         [("R1", "approved"), ("R2", "rejected"), ("R3", "approved")]
     at.run()
     assert "invalid" not in texts(at.error)
-    assert "Monitoring can start: 2 approved rules." in texts(at.success)
+    assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 2
 
 
 # ---- Codex2 review: missing Rule attributes, non-mapping pending data ----
@@ -362,7 +362,7 @@ def test_rule_with_a_deleted_field_resets_the_session(field_name):
     at = start(w)
     assert not at.exception
     assert "stored rule session was invalid and has been reset" in texts(at.error)
-    assert wf(at).ruleset.rules == {} and "Monitoring cannot start" in texts(at.warning)
+    assert wf(at).ruleset.rules == {} and not wf(at).monitoring_allowed()
 
 
 @pytest.mark.parametrize("make", [lambda d: list(d.items()), lambda d: tuple(d.items())])

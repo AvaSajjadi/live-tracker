@@ -152,19 +152,6 @@ if pending is not None and isinstance(pending.proposal, RuleProposal):
     except StaleActionError as exc:
         st.error(f"Ignored: {exc}.")
 
-# 4. all rules of this session
-st.subheader("Rules in this session")
-rows = wf.rules_table()
-if rows:
-    st.dataframe(rows, width="stretch", hide_index=True)
-else:
-    st.caption("No rules decided yet.")
-if wf.monitoring_allowed():
-    n = len(wf.ruleset.active())
-    st.success(f"Monitoring can start: {n} approved rule{'s' if n != 1 else ''}.")
-else:
-    st.warning("Monitoring cannot start: no rule is approved yet.")
-
 schedule_ui.render()
 
 st.divider()

@@ -490,6 +490,10 @@ def rebuild_report(run_dir):
 
 # ---- command line ----
 
+DEFAULT_SCORER_CHUNK = 5            # recorded sources are paced, so the small delay is kept
+LIVE_SCORER_CHUNK = 15              # live cameras (CameraSource.live): see build_scorer
+
+
 def build_scorer(config, source, root=ROOT):
     if source.kind != "pose":
         return None
@@ -511,8 +515,11 @@ def build_scorer(config, source, root=ROOT):
     except Exception as exc:                  # an old model file raises odd errors (for example a missing attribute)
         raise RunRefusedError(f"the model {base.name} could not be loaded with scikit-learn {sklearn.__version__} "
                               f"({type(exc).__name__}). It was probably trained with another version. {retrain}") from exc
+    # A live camera must not fall behind: the features of the last 6 s are computed again for every chunk (about 130 ms), so a chunk of 5
+    # frames (167 ms) leaves no room at 30 fps. 15 frames spread that cost; the price is up to half a second more delay for an alert.
+    chunk = LIVE_SCORER_CHUNK if getattr(source, "live", False) else DEFAULT_SCORER_CHUNK
     return LiveScorer(model, info["feature_columns"], session=source.session, features=info.get("features", "basic,motion"),
-                      fps=config.fps)
+                      fps=config.fps, chunk=chunk)
 
 
 def main(argv=None):

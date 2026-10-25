@@ -17,6 +17,8 @@ import json
 import queue
 import secrets
 import threading
+import time
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -24,6 +26,7 @@ import streamlit as st
 
 from . import investigation_agent_v1 as av1
 from . import investigation_live_v1 as lv1
+from . import investigation_tools_v1 as v1
 from . import investigation_v1_runs as runs
 from .ui_style import note
 
@@ -43,42 +46,83 @@ def _state(key, default):
     return st.session_state[key]
 
 
-# ---- a new investigation ----
+# ---- a new investigation (UI-4: a guided sequence; the settings and their checks are unchanged) ----
+
+# colours by meaning (the app's shared scheme, ui_style): grey neutral, amber asks for the researcher's decision, green
+# a check passed or a result verified, red refused / failed / not verifying; the accent marks the agent's own actions
+ACTION_BADGES = {"rehearsal": ":gray-badge[free · emulated · no model]",
+                 "preflight": ":gray-badge[free · metadata only · no model request]",
+                 "paid": ":orange-badge[paid · needs your authorization]"}
+# (question, Contract v1 behavior, Contract v1 pair feature): only what query_events and compare_windows expose
+EXAMPLE_QUESTIONS = (
+    ("Does the distance between the mice change before classifier-predicted attack bouts?", "attack", "dist_center"),
+    ("Are the mice closing the distance between them (a falling center distance) before classifier-predicted mount "
+     "bouts?", "mount", "dist_rate"),
+    ("Is the mice's relative speed different before classifier-predicted investigation bouts?", "investigation",
+     "rel_speed"))
+
+
+def _step(title):
+    box = st.container(border=True)
+    box.markdown(f"##### {title}")
+    return box
+
 
 def configure():
-    """(RunConfig, ValidationInputs) from the widgets."""
+    """(RunConfig, ValidationInputs, input problems) from the widgets: steps 1 and 2 of the guided sequence. The
+    settings, their keys and their limits are those of the reviewed configuration."""
     inputs = runs.default_inputs()
-    st.markdown("**1. Research question and data**")
-    question = st.text_area("Research question", value=runs.RunConfig.question, max_chars=500,
-                            key="live_agent_question")
-    st.selectbox("Validation inputs", [inputs.label], key="live_agent_inputs",
-                 help="The verified Phase 3B.1 inputs: the validation member only, the expected archive SHA-256, "
-                      "the verified pose cache and the tracked split manifest. The test split is never read.")
-    for p in inputs.problems():
-        st.error(f"Inputs: {p}. Nothing is substituted.")
-    st.markdown("**2. Model and budgets**")
-    c = st.columns(4)
-    model = c[0].selectbox("Model (OpenRouter)", runs.MODELS, key="live_agent_model")
-    turns = c[1].number_input("Max model turns", 1, 12, 8, key="live_agent_turns")
-    tools = c[2].number_input("Tool-call budget", 1, 12, 8, key="live_agent_tools")
-    target = c[3].number_input("Local USD target", 0.01, lv1.MAX_TARGET_USD, lv1.MAX_TARGET_USD, step=0.05,
-                               format="%.2f", key="live_agent_target")
-    mode = st.radio("Key-limit mode", ("strict", "best-effort"), horizontal=True, key="live_agent_key_mode",
-                    help="strict (default): the OpenRouter key's own limit must be at most $0.50. best-effort: an "
-                         "existing non-resetting key limited to at most $50, its limit acknowledged.")
-    ack = None
-    if mode == "best-effort":
-        ack = st.number_input("Acknowledge the key's actual limit (USD)", 0.51, lv1.MAX_BEST_EFFORT_KEY_LIMIT_USD,
-                              lv1.MAX_BEST_EFFORT_KEY_LIMIT_USD, key="live_agent_ack")
-        st.warning(f"Best-effort mode: the ${target:.2f} target is NOT a spending ceiling. Spending can exceed it, "
-                   f"potentially up to the available credit on the ${ack:g} key, subject to OpenRouter's enforcement. "
-                   "Choosing this mode does not authorize a paid run.")
-    check = st.checkbox(f"Reference compatibility check against {runs.REFERENCE_RUN} (optional, exact matching)",
-                        value=True, key="live_agent_reference")
+    problems = inputs.problems()
+    with _step("Step 1 · Your research question and the data"):
+        question = st.text_area("Research question", value=runs.RunConfig.question, max_chars=500,
+                                key="live_agent_question",
+                                help="Plain language. The agent turns it into Contract v1 tool calls. It can only "
+                                     "compare one of Contract v1's pair features (" + ", ".join(v1.WINDOW_FEATURES)
+                                     + ") before classifier-predicted attack, investigation or mount bouts with an "
+                                     "earlier baseline.")
+        st.caption("Examples: " + " · ".join(f"“{q}”" for q, _, _ in EXAMPLE_QUESTIONS))
+        st.selectbox("Validation inputs", [inputs.label], key="live_agent_inputs",
+                     help="The verified Phase 3B.1 inputs: the validation member only, the expected archive SHA-256, "
+                          "the verified pose cache and the tracked split manifest. The test split is never read.")
+        for p in problems:
+            st.error(f"Inputs: {p}. Nothing is substituted.")
+        if problems:
+            st.info("The verified validation inputs are not all present, so no rehearsal or investigation can start "
+                    "from this page. Nothing synthetic is ever substituted for them.")
+    with _step("Step 2 · Model and execution limits"):
+        c = st.columns(4)
+        model = c[0].selectbox("Model (via OpenRouter)", runs.MODELS, key="live_agent_model",
+                               help="Used only by a paid investigation; a free rehearsal uses no model.")
+        turns = c[1].number_input("Max model turns", 1, 12, 8, key="live_agent_turns",
+                                  help="How many replies the model may give before the run stops.")
+        tools = c[2].number_input("Max tool calls", 1, 12, 8, key="live_agent_tools",
+                                  help="How many Contract v1 tool calls the model may make (Contract v1 allows 12).")
+        target = c[3].number_input("Local spending target (USD)", 0.01, lv1.MAX_TARGET_USD, lv1.MAX_TARGET_USD,
+                                   step=0.05, format="%.2f", key="live_agent_target",
+                                   help="A target this app checks between requests. One request can pass it, so it "
+                                        "is not a guaranteed maximum charge.")
+        with st.expander("Advanced settings: provider key limit and reference check"):
+            mode = st.radio("Key-limit mode", ("strict", "best-effort"), horizontal=True, key="live_agent_key_mode",
+                            help="strict (default): the OpenRouter key's own limit must be at most $0.50. "
+                                 "best-effort: an existing non-resetting key limited to at most $50, its limit "
+                                 "acknowledged.")
+            ack = None
+            if mode == "best-effort":
+                ack = st.number_input("Acknowledge the key's actual limit (USD)", 0.51,
+                                      lv1.MAX_BEST_EFFORT_KEY_LIMIT_USD, lv1.MAX_BEST_EFFORT_KEY_LIMIT_USD,
+                                      key="live_agent_ack")
+            check = st.checkbox(f"Reference compatibility check against {runs.REFERENCE_RUN} (optional, exact "
+                                "matching)", value=True, key="live_agent_reference",
+                                help="Compares the investigation's first query with a recorded reference run. It "
+                                     "never changes the investigation; a mismatch does not invalidate it.")
+        if mode == "best-effort":
+            st.warning(f"Best-effort mode: the ${target:.2f} target is NOT a spending ceiling. Spending can exceed "
+                       f"it, potentially up to the available credit on the ${ack:g} key, subject to OpenRouter's "
+                       "enforcement. Choosing this mode does not authorize a paid run.")
     config = runs.RunConfig(question=question.strip(), model=model, max_model_turns=int(turns),
                             max_tool_calls=int(tools), target_usd=float(target), key_mode=mode,
                             acknowledged_key_limit_usd=ack, validation_run=runs.REFERENCE_RUN if check else None)
-    return config, inputs
+    return config, inputs, problems
 
 
 def show_preflight(report):
@@ -89,6 +133,9 @@ def show_preflight(report):
     (st.success if report["ready"] else st.error)(
         "Ready: every check passed (metadata only; no model request was made)." if report["ready"] else
         f"Not ready: {'; '.join(map(str, report['problems']))[:1500]}")
+    if not report["ready"]:
+        st.caption("Nothing was sent to a model. Fix the problems listed (for example the key, its limit or the "
+                   "chosen model), then run the readiness check again.")
     m = st.columns(4)
     m[0].metric("Key-limit mode", sp.get("authorization_mode", "?"))
     m[1].metric("Local target", f"${sp.get('local_target_usd', 0):.2f}")
@@ -289,7 +336,7 @@ class LiveProgress:
                 self.lines.append(f":red-badge[failed] {label} ({e.get('error')})")
             elif e["state"] == "started":
                 self.stage = e["stage"]
-                self.lines.append(f":blue-badge[started] {label}")
+                self.lines.append(f":gray-badge[started] {label}")
             else:
                 self.stage = None if self.stage == e["stage"] else self.stage
                 self.lines.append(f":green-badge[done] {label}")
@@ -317,7 +364,7 @@ class LiveProgress:
                 self.lines.append(f":red-badge[not used] Model reply {self.turns}: {e['outcome']}")
             else:
                 asked = ", ".join(f"`{n}`" for n in e.get("tool_names") or []) or "no tool"
-                self.lines.append(f":violet-badge[reply] Model reply {self.turns} of {self.max_turns}: asked for "
+                self.lines.append(f":primary-badge[reply] Model reply {self.turns} of {self.max_turns}: asked for "
                                   f"{asked}")
         elif k == "model_error":
             self.waiting = False
@@ -458,6 +505,127 @@ def render_progress_record(rec):
         st.markdown("  \n".join(rec["lines"]))
 
 
+def outcome_message(name, summary, saved, verdict, path):
+    """(kind, text, path to open) for the end of a run. saved: the re-VERIFIED SavedInvestigation, else None (then
+    nothing of the report is described). Only what the run recorded and what verification established."""
+    status = summary.get("status")
+    lead = f"Investigation {name} finished with recorded status `{status}`; the saved report was reloaded from disk " \
+           f"and re-verified: {verdict}."
+    if saved is None:
+        return ("error", f"{lead} None of its results are shown. Open the Saved investigations tab to see why it "
+                         "does not verify.", path)
+    d = saved.doc
+    if d["finished"]:
+        kind = "success"
+        outcome = (f"Outcome: {runs.FINDING_HEADLINES.get(d['finding'], d['finding'])} "
+                   f"(finding `{d['finding']}`, association only).")
+    else:
+        kind = "warning"
+        outcome = (f"Outcome: stopped before a finding (`{d['stopping_reason']}`); the report is verified but "
+                   "incomplete, and its evidence is partial.")
+    notes = []
+    rehearsal = saved.kind == "rehearsal"         # the emulated endpoint: its costs are simulated, nothing is spent
+    if status == "over_target":
+        kind, notes = "warning", notes + ["The simulated cost went past the local target (nothing was spent)."
+                                          if rehearsal else "The provider-reported spend went past the local target."]
+    elif status not in ("verified", "incomplete"):
+        notes.append(f"The recorded status `{status}` comes from a later check (for example the reference "
+                     "comparison); see the report's technical details.")
+    cost = summary.get("cost") or {}
+    if rehearsal:
+        notes.append("Free rehearsal: no provider was called, so actual API spending is $0; its usage and costs are "
+                     "simulated.")
+        if cost and cost.get("actual_spend_complete") is False:
+            notes.append("Some emulated replies reported no cost, so the simulated accounting is incomplete.")
+    elif cost and cost.get("actual_spend_complete") is False:
+        notes.append("Some requests reported no provider cost, so the actual spend may be higher than shown.")
+    return (kind, " ".join([lead, outcome, *notes, "Open the Saved investigations tab for its overview, evidence "
+                                                     "and activity."]), path)
+
+
+# ---- the page (shared by pages/5_Live_Agent.py and the synthetic demo) ----
+
+TAB_KEY = "live_agent_tab"                        # the selected tab (tracked, so a button can open the results)
+TABS = ("New investigation", "Saved investigations")
+
+
+def _open_saved(path):
+    """Button callback (runs before the page): select the run and open the Saved tab. Starts nothing."""
+    st.session_state[OPEN_KEY] = path
+    st.session_state[TAB_KEY] = TABS[1]
+
+
+QUERY_BEHAVIORS = tuple(next(s for s in av1.TOOL_SPECS_V1 if s["name"] == "query_events")
+                        ["input_schema"]["properties"]["behavior"]["enum"])
+INTRO_POINTS = (
+    "**What you can ask:** whether one of the pair features Contract v1 exposes to the agent ("
+    + "; ".join(f"`{f}`: {runs.FEATURE_MEANINGS.get(f, f)}" for f in v1.WINDOW_FEATURES)
+    + ") differs just before classifier-predicted "
+    + ", ".join(QUERY_BEHAVIORS) + " bouts compared with an earlier baseline. Other pose measurements in the "
+    "wider project (for example a single mouse's speed or its orientation) are not available to this agent.",
+    "**Who decides:** the agent chooses every Contract v1 tool call itself (which events to query, which windows and "
+    "feature to compare, when to finish). A paid run uses a real model; a free rehearsal uses a fixed offline "
+    "investigator instead.",
+    "**What the events are:** bouts *predicted by a classifier* (threshold crossings of its scores), not "
+    "experimentally confirmed or annotated behavior.",
+    "**What data:** the verified CalMS21 validation inputs only; the test split is never read, and nothing synthetic "
+    "is ever substituted.",
+    "**What a finding means:** a descriptive association (a median of session-paired differences). No causal claim, "
+    "no significance test, no confidence interval.",
+    "**When it counts:** only after its saved report is reloaded and verified. This is a research prototype, not a "
+    "validated scientific instrument.",
+    "**How it differs from the other pages:** Rules, Replay, Investigation and Real Session are the deterministic "
+    "workflow (researcher-approved rules, monitoring, a fixed analysis sequence). Here an agent plans the analysis "
+    "itself, within Contract v1's fixed tools and checks.")
+
+
+JOURNEY = ("Ask a question", "Set the limits", "Rehearse free, or authorize one paid run",
+           "Open the verified report")
+NOTICE_MEANINGS = ("**How to read the notices:** green means a check passed or a saved report verified; amber "
+                   "means something needs your attention or decision (an authorization, an incomplete run, a limit "
+                   "reached); red means something was refused, failed or does not verify; blue panels and grey "
+                   "labels are neutral information.")
+
+
+def render_intro():
+    st.caption("An autonomous agent investigates your question on the verified validation split. Association only; "
+               "publication not authorized.")
+    st.markdown("  ".join(f":primary-badge[{i}] {step}" for i, step in enumerate(JOURNEY, 1)))
+    with st.expander("What this page does, and what its evidence can and cannot establish"):
+        st.markdown("\n".join(f"- {x}" for x in INTRO_POINTS))
+        st.markdown(NOTICE_MEANINGS)
+
+
+def render_message(container, message):
+    kind, text = message[0], message[1]
+    show = {"success": container.success, "warning": container.warning, "error": container.error}.get(
+        kind, container.info)
+    show(text)
+    if len(message) > 2 and message[2]:
+        container.button("Open this investigation in Saved investigations", key="live_agent_open_result",
+                         on_click=_open_saved, args=(message[2],), icon=":material/folder_open:")
+
+
+def render_page(title="Live Agent", banner=None):
+    """The Live Agent page: introduction, the one-time completion message and the two tabs. The caller applies the
+    app's shared style (ui_style.apply()) first, as every page does."""
+    st.title(title)
+    if banner:
+        st.warning(banner)
+    render_intro()
+    message = st.session_state.pop(MESSAGE_KEY, None)
+    # The one-time completion message sits in a container that is ALWAYS rendered, so the tabs below never move; the
+    # tabs are also keyed, so the browser keeps (and a button can set) the selected tab.
+    notice = st.container()
+    if message:
+        render_message(notice, message)
+    tab_new, tab_saved = st.tabs(list(TABS), key=TAB_KEY, on_change="rerun")
+    with tab_new:
+        render_new()
+    with tab_saved:
+        render_open()
+
+
 # a run that is refused before it starts (documented: authorization, environment, inputs, configuration); anything
 # else from runs.execute is an unexpected failure and stays the primary one
 EXPECTED_REFUSALS = runs.script("investigation_v1_live").REFUSALS + (ValueError,)
@@ -475,21 +643,25 @@ def _run(config, inputs, paid, **kw):
                 lambda progress: runs.execute(config, inputs, paid=paid, progress=progress, **kw), view)
         except runs.RunBusy as exc:
             view.close("error", "Not started")
-            st.session_state[MESSAGE_KEY] = ("error", f"Not started: {exc}.")
+            st.session_state[MESSAGE_KEY] = ("error", f"Not started: {exc}. Only one investigation can run at a "
+                                                      "time; wait for it to finish, then start again.")
             return
         except EXPECTED_REFUSALS as exc:
             if view.started():                     # (never "not started" once the investigation's stages began)
                 raise
             view.close("error", "Not started")     # the CLI's refusals: before any request or file
-            st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}")
+            st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}. Nothing was sent "
+                                                      "to a provider and no investigation file was written.")
             return
         view.close("running", "Re-verifying the saved report from disk...",
-                   ":blue-badge[started] Re-verifying the saved report from disk")
+                   ":gray-badge[started] Re-verifying the saved report from disk")
+        saved = None
         try:
-            state, verdict = verdict_of(runs.load_saved(runs.live_dir() / name))
+            saved = runs.load_saved(runs.live_dir() / name)
+            state, verdict = verdict_of(saved)
         except Exception as exc:                   # never "verified" when the check itself failed
-            state, verdict = "error", (f"the saved report could not be loaded or checked ({type(exc).__name__}), "
-                                       "so none of its results are shown")
+            saved, state, verdict = None, "error", (f"the saved report could not be loaded or checked "
+                                                    f"({type(exc).__name__}), so none of its results are shown")
         view.close(state, f"Run {name}: recorded status {summary.get('status')}; saved report "
                           f"{verdict.split(':')[0].split(' (')[0]}",
                    (":green-badge[verified]" if state == "complete" else ":red-badge[not verified]") +
@@ -499,11 +671,8 @@ def _run(config, inputs, paid, **kw):
         # state: a dropped state falls back to a default the browser is not told about, so the selector would keep
         # showing the previous run above the new run's results
         st.session_state[OPEN_KEY] = str(runs.live_dir() / name)
-        st.session_state[MESSAGE_KEY] = (
-            ("info" if state == "complete" else "error"),
-            f"Investigation {name} finished with recorded status `{summary.get('status')}`; the saved report was "
-            f"reloaded from disk and re-verified: {verdict}. Open the Saved investigations tab for its overview, "
-            "evidence and activity.")
+        st.session_state[MESSAGE_KEY] = outcome_message(name, summary, saved if state == "complete" else None,
+                                                        verdict, str(runs.live_dir() / name))
     except BaseException as exc:
         failure = exc
         if not _is_control(exc):                   # an unexpected failure: reporting it is secondary
@@ -516,49 +685,92 @@ def _run(config, inputs, paid, **kw):
             view.deferred = None                   # the original failure stays the primary one
 
 
+def readiness(problems, pf, digest, used, confirm, phrase, busy):
+    """The paid run's requirements as (met, text), in order; the Start button needs every one."""
+    if pf is None:
+        check = (False, "Run the readiness check (step B1) for this configuration")
+    elif pf["digest"] != digest:
+        check = (False, "The configuration changed after the last readiness check: run it again")
+    elif not pf["ready"]:
+        check = (False, "The last readiness check did not pass: fix its problems and run it again")
+    elif pf["token"] in used:
+        check = (False, "That readiness check was already used for one paid run: run it again for another")
+    else:
+        check = (True, "Readiness check passed for exactly this configuration (usable once)")
+    return [(not problems, "Verified validation inputs present"), check,
+            (bool(confirm), "Spending target confirmed"),
+            (phrase == lv1.PAID_RUN_AUTHORIZATION, "Authorization text typed exactly"),
+            (not busy, "No other investigation running")]
+
+
 def render_new():
-    config, inputs = configure()
+    config, inputs, problems = configure()
     digest = config.digest(inputs)
-    st.markdown("**3. Free metadata preflight** (model list, key status, endpoint list; never a model request)")
-    st.caption(f"OPENROUTER_API_KEY is {'set' if runs.key_present() else 'NOT set'} in the app's environment "
-               "(its value is never shown or written).")
-    if st.button("Run preflight", key="live_agent_preflight_button"):
-        ready, report = runs.preflight(config, inputs)
-        st.session_state[PREFLIGHT_KEY] = {"digest": digest, "ready": ready, "report": report,
-                                           "token": secrets.token_hex(8)}
-    pf = st.session_state.get(PREFLIGHT_KEY)
-    if pf is not None:
-        if pf["digest"] != digest:
-            st.info("The configuration changed since the last preflight: run the preflight again.")
-        else:
-            show_preflight(pf["report"])
-    st.markdown("**4. Paid investigation**")
     used, gen = _state(USED_KEY, set()), _state(GEN_KEY, 0)
     busy = runs.RunLock(runs.live_dir()).holder() is not None
-    fresh = pf is not None and pf["digest"] == digest and pf["ready"] and pf["token"] not in used
-    confirm = st.checkbox(f"I confirm ONE paid investigation with a local target of ${config.target_usd:.2f} "
-                          "(a best-effort target, not a guaranteed maximum charge)", key=f"live_agent_confirm_{gen}")
-    phrase = st.text_input("Type the authorization text exactly", key=f"live_agent_phrase_{gen}",
-                           placeholder=lv1.PAID_RUN_AUTHORIZATION)
-    st.caption(f'Authorization text: "{lv1.PAID_RUN_AUTHORIZATION}"')
     if busy:
-        st.warning("Another investigation is running: wait for it to finish.")
-    elif not fresh:
-        st.caption("A paid run needs a ready preflight of exactly this configuration (one paid run per preflight).")
-    if st.button("Start paid investigation", type="primary", key=f"live_agent_start_{gen}",
-                 disabled=not (fresh and confirm and phrase == lv1.PAID_RUN_AUTHORIZATION and not busy)):
-        used.add(pf["token"])                      # consumed before anything runs: no second submission
-        st.session_state[GEN_KEY] = gen + 1
-        _run(config, inputs, True, confirm_budget_usd=config.target_usd, authorization=phrase)
-        st.rerun()
-    st.markdown("**Free rehearsal** (the same pipeline over the emulated OpenRouter endpoint: no model, no network, "
-                "no cost; the offline investigator answers)")
-    if st.button("Run free rehearsal", key=f"live_agent_rehearse_{gen}", disabled=busy):
-        st.session_state[GEN_KEY] = gen + 1
-        _run(config, inputs, False, confirm_budget_usd=None, authorization=None)
-        st.rerun()
+        st.warning("Another investigation is running: wait for it to finish. Only one investigation can run at a "
+                   "time, across every tab and session; nothing new can start until it ends.")
+    with _step("Step 3 · Choose how to run"):
+        with st.container(border=True):
+            st.markdown(f"**Option A · Free rehearsal** {ACTION_BADGES['rehearsal']}")
+            note("caption", "The same pipeline over an emulated endpoint. Nothing is spent.",
+                 "The offline deterministic investigator answers instead of a model: no network, no provider, no "
+                 "cost. Useful to check the inputs and see the report's form; its choices are scripted, not a "
+                 "model's, and its costs are simulated.")
+            if st.button("Run free rehearsal", key=f"live_agent_rehearse_{gen}", disabled=busy or bool(problems)):
+                st.session_state[GEN_KEY] = gen + 1
+                _run(config, inputs, False, confirm_budget_usd=None, authorization=None)
+                st.rerun()
+        with st.container(border=True):
+            st.markdown(f"**Option B · Paid autonomous investigation** {ACTION_BADGES['paid']}")
+            note("caption", "A real model chooses every Contract v1 call; each reply is billed. Two free steps come "
+                            "first.",
+                 "The model is reached through OpenRouter. B1 reads provider metadata only; B2 is your explicit "
+                 "authorization of exactly one run of exactly this configuration.")
+            st.markdown(f"**B1 · Readiness check** {ACTION_BADGES['preflight']}")
+            st.caption("Reads the model list, the key's status and limit and the endpoint list; never asks a model. "
+                       f"OPENROUTER_API_KEY is {'set' if runs.key_present() else 'NOT set'} in the app's environment "
+                       "(its value is never shown or written).")
+            if st.button("Run preflight", key="live_agent_preflight_button"):
+                ready, report = runs.preflight(config, inputs)
+                st.session_state[PREFLIGHT_KEY] = {"digest": digest, "ready": ready, "report": report,
+                                                   "token": secrets.token_hex(8)}
+            pf = st.session_state.get(PREFLIGHT_KEY)
+            if pf is not None:
+                if pf["digest"] != digest:
+                    st.info("The configuration changed since the last preflight: run the preflight again.")
+                else:
+                    show_preflight(pf["report"])
+            st.markdown(f"**B2 · Authorize one paid investigation** {ACTION_BADGES['paid']}")
+            fresh = pf is not None and pf["digest"] == digest and pf["ready"] and pf["token"] not in used
+            confirm = st.checkbox(f"I confirm ONE paid investigation with a local target of ${config.target_usd:.2f} "
+                                  "(a best-effort target, not a guaranteed maximum charge)",
+                                  key=f"live_agent_confirm_{gen}")
+            phrase = st.text_input("Type the authorization text exactly", key=f"live_agent_phrase_{gen}",
+                                   placeholder=lv1.PAID_RUN_AUTHORIZATION)
+            st.caption(f'Authorization text: "{lv1.PAID_RUN_AUTHORIZATION}"')
+            checks = readiness(problems, pf, digest, used, confirm, phrase, busy)
+            met = sum(ok for ok, _ in checks)
+            st.markdown(f"**Requirements for the paid run: {met} of {len(checks)} met** "
+                        + (":green-badge[ready to start]" if met == len(checks) else ":gray-badge[not ready]"))
+            st.markdown("  \n".join((":green-badge[ready]" if ok else ":gray-badge[not yet]") + f" {text}"
+                                    for ok, text in checks))
+            if not fresh and not busy:
+                st.caption("A paid run needs a ready preflight of exactly this configuration (one paid run per "
+                           "preflight).")
+            if st.button("Start paid investigation", type="primary", key=f"live_agent_start_{gen}",
+                         disabled=not (fresh and confirm and phrase == lv1.PAID_RUN_AUTHORIZATION and not busy
+                                       and not problems)):
+                used.add(pf["token"])                  # consumed before anything runs: no second submission
+                st.session_state[GEN_KEY] = gen + 1
+                _run(config, inputs, True, confirm_budget_usd=config.target_usd, authorization=phrase)
+                st.rerun()
     if st.session_state.get(PROGRESS_KEY):
-        render_progress_record(st.session_state[PROGRESS_KEY])
+        with _step("Step 4 · Review"):
+            note("caption", "The last run's live progress. Its results are in Saved investigations.",
+                 "Results are shown there only after the saved report is reloaded from disk and re-verified.")
+            render_progress_record(st.session_state[PROGRESS_KEY])
 
 
 # ---- a saved investigation ----
@@ -956,7 +1168,7 @@ def render_gate(v):
 def render_timeline(steps, who):
     st.markdown("#### Recorded investigation activity")
     st.caption(f"{who['label'].capitalize()}. The saved trace, in order (a record of a finished run, not a live "
-               f"progress stream). {who['intro']}")
+               f"progress stream). {who['intro']}")             # who chose the actions stays visible: no More info
     for s in steps:
         with st.container(border=True):
             left, right = st.columns([1, 14])
@@ -980,17 +1192,71 @@ def render_timeline(steps, who):
                                                    "supporting") if s.get(k) is not None}, expanded=False)
 
 
+def _path_value(x, digits=4):
+    return "—" if x is None else _num(x, digits)
+
+
+def evidence_path(saved, ov):
+    """The verified report's chain, question to outcome, as (title, text, anchor) lines: values read from the
+    verified report only (runs.overview and runs.evidence_view of its primary or last comparison)."""
+    d = saved.doc
+    calls = [t for t in d["trace"] if t["kind"] in ("tool_call", "finish")]
+    refused = sum(1 for t in calls if t.get("outcome") == "refused")
+    lines = [("Question", f"“{d['question']}”", "research-question"),
+             ("Agent's calls", f"{len(calls)} recorded tool calls ({refused} refused), chosen during "
+                               f"{d['usage']['model_turns']} turns", "recorded-investigation-activity")]
+    q, c = ov.get("query"), ov.get("comparison")
+    if q:
+        lines.append(("Predicted events", f"{_path_value(q['n_bouts'])} classifier-predicted `{q['behavior']}` bouts "
+                                          f"in {_path_value(q['n_sessions'])} sessions (threshold "
+                                          f"{_path_value(q['threshold'])})", "scientific-evidence"))
+    if c:
+        comps = [e for e in d["evidence"] if e["tool"] == "compare_windows"]     # as runs.overview chooses
+        primary = next((e for e in comps if e["evidence_id"] == d["primary_evidence_id"]), comps[-1])
+        v = runs.evidence_view(d, primary["evidence_id"])
+        lines += [
+            ("Windows compared", f"`{c['feature']}` in the {_seconds(c['pre_s'])} before each bout vs a "
+                                 f"{_seconds(c['baseline_s'])} baseline ({_seconds(c['baseline_gap_s'])} gap)",
+             "research-question"),
+            ("Evidence used", f"{_path_value(v['n_used'])} of {_path_value(v['n_input'])} bouts used, "
+                              f"{_path_value(v['n_excluded'])} excluded (Exclusions tab)", "scientific-evidence"),
+            ("Per-session differences", f"{len(v['sessions'])} sessions (Session comparison tab)"
+             if v["sessions"] else "none recorded (the comparison did not meet the evidence gate)",
+             "scientific-evidence"),
+            ("Aggregate", f"median of session differences {_path_value(v['mean_diff'])} {v['unit']}".rstrip()
+             if v["mean_diff"] is not None else "not reported", "scientific-evidence"),
+            ("Evidence gate", ", ".join(f"{g['gate'].lower()} {g['verdict']}" for g in v["gates"]),
+             "scientific-evidence")]
+    lines.append(("Outcome", f"{ov['headline']} (`{d['finding']}`)" if d["finished"] else
+                  f"stopped before a finding (`{d['stopping_reason']}`)", "technical-details"))
+    return lines
+
+
+def render_evidence_path(saved, ov):
+    with st.container(border=True):
+        st.markdown("#### How this result was reached")
+        note("caption", "Each step in one line, from the verified report; follow a link for its details.",
+             "Limitations, provenance, the reference check and costs are in Technical details.")
+        st.markdown("\n".join(f"{i}. **{title}:** {text} · [details](#{anchor})"
+                               for i, (title, text, anchor) in enumerate(evidence_path(saved, ov), 1)))
+
+
 def render_saved(saved):
     if not saved.verified:
         st.error("This saved investigation does NOT verify, so none of its findings, evidence or costs are shown: "
                  + "; ".join(map(str, saved.problems[:5])))
+        note("caption", "Nothing from its files is trusted. Other saved investigations are unaffected.",
+             "Its files may have been changed, moved or only partly written. A new run always creates a new "
+             "directory, so nothing here is repaired or overwritten.")
         return
     d = saved.doc
     st.markdown(f"**Showing `{saved.name}`** ({runs.KIND_LABELS.get(saved.kind, saved.kind)}); everything below is "
                 "this investigation's saved, re-verified files.")
     st.markdown(READABLE, unsafe_allow_html=True)
     ref, who = runs.reference_check(saved), runs.attribution(saved)
-    render_overview(saved, runs.overview(saved, ref))
+    ov = runs.overview(saved, ref)
+    render_overview(saved, ov)
+    render_evidence_path(saved, ov)
     render_evidence(saved)
     render_timeline(runs.timeline(d, who["replies"]), who)
     st.markdown("#### Technical details")
@@ -1034,17 +1300,116 @@ def render_saved(saved):
         st.markdown(saved.markdown)
 
 
+TYPE_LABELS = {"paid_model": "paid investigation", "emulated": "free rehearsal",
+               "offline": "offline deterministic run", "unknown": "investigation"}
+
+
+def summary_shape_problem(path):
+    """Why run.json does not have the JSON shape runs.load_saved dereferences before any verifier runs (an object;
+    its "model" an object when set; an offline run's "outputs" an object when set), or None. Shapes only: no value
+    read here is trusted or shown. An unreadable file or invalid JSON is left to load_saved, which reports it as not
+    verifying; a Live Agent run's own fields are contained by its verifier (verify_saved)."""
+    try:
+        s = json.loads((Path(path) / "run.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(s, dict):
+        return "run.json is not a JSON object"
+    if "key_policy" in s and "cost" in s:
+        return None
+    model = s.get("model") or {}
+    if not isinstance(model, dict):
+        return "run.json's model is not a JSON object"
+    if model.get("adapter") == runs.script("investigation_v1_validation").OFFLINE_MODEL and \
+            not isinstance(s.get("outputs") or {}, dict):
+        return "run.json's outputs are not a JSON object"
+    return None
+
+
+def load_verified(path):
+    """(SavedInvestigation or None, why its saved data is malformed or None), always freshly from disk. Only the
+    explicit shape check above classifies data as malformed; any exception from runs.load_saved propagates."""
+    problem = summary_shape_problem(path)
+    if problem:
+        return None, problem
+    return runs.load_saved(path), None
+
+
+def catalog_entry(path):
+    """What the selector may say about one saved run, re-verified NOW (runs.load_saved; no cache): only a run that
+    verifies is described by its content (type, outcome, question); any other is shown by its directory name only."""
+    return describe(load_verified(path)[0])
+
+
+def describe(saved):
+    """catalog_entry's description of one loaded SavedInvestigation (or None)."""
+    if saved is not None and saved.verified:
+        d = saved.doc
+        return {"verified": True, "type": TYPE_LABELS[runs.attribution(saved)["mode"]],
+                "finished": d["finished"], "question": d["question"],
+                "outcome": (runs.FINDING_HEADLINES.get(d["finding"], d["finding"]) if d["finished"] else
+                            f"incomplete: stopped before a finding ({d['stopping_reason']})")}
+    return {"verified": False, "type": None, "finished": None, "question": None,
+            "outcome": "does NOT verify: nothing of it is shown"}
+
+
+def saved_catalog():
+    """The saved runs, most recently saved first by the file system's modification time of run.json (never by the
+    order of run names, whose random suffixes say nothing about time)."""
+    out = []
+    for label, path in runs.list_saved():
+        try:
+            saved_ns = (path / "run.json").stat().st_mtime_ns
+        except OSError:
+            saved_ns = 0
+        out.append({"path": str(path), "name": path.name, "group": label.split(":")[0], "saved_ns": saved_ns,
+                    **catalog_entry(path)})
+    return sorted(out, key=lambda e: e["saved_ns"], reverse=True)
+
+
+def catalog_badges(e):
+    """The selected run's state as badges, from its fresh verification (catalog_entry): content only if it verifies."""
+    if not e["verified"]:
+        return ":red-badge[does NOT verify] nothing of it is shown"
+    state = ":green-badge[verified · finding]" if e["finished"] else ":orange-badge[verified · incomplete]"
+    return f"{state} :gray-badge[{e['type']}]"
+
+
+def catalog_label(e):
+    when = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(e["saved_ns"] / 1e9)) if e["saved_ns"] else "?"
+    if not e["verified"]:
+        return f"{when} · {e['name']} · does NOT verify"
+    q = e["question"] if len(e["question"]) <= 70 else e["question"][:67] + "..."
+    return f"{when} · {e['type']} · {e['outcome']} · “{q}”"
+
+
 def render_open():
     """Reopen a saved investigation (offline: reload and re-verify; no network, no model)."""
-    entries = runs.list_saved()
+    entries = saved_catalog()
     if not entries:
-        st.info("No saved investigation yet.")
+        st.info("No saved investigation yet. Start one in New investigation: a free rehearsal needs no key and "
+                "costs nothing. Each finished run appears here, reloaded and re-verified before it is shown.")
         return
-    label_of = {str(p): label for label, p in entries}
+    label_of = {e["path"]: catalog_label(e) for e in entries}
+    by_path = {e["path"]: e for e in entries}
     want = st.session_state.pop(OPEN_KEY, None)               # a just-completed run: selected once, explicitly
     if want in label_of:
         st.session_state[SAVED_KEY] = want
     elif st.session_state.get(SAVED_KEY) not in label_of:     # first view, or the selected run is gone
         st.session_state[SAVED_KEY] = next(iter(label_of))
+    counts = {"with a finding": sum(1 for e in entries if e["verified"] and e["finished"]),
+              "incomplete": sum(1 for e in entries if e["verified"] and not e["finished"]),
+              "not verifying": sum(1 for e in entries if not e["verified"])}
+    st.caption(f"{len(entries)} saved investigation{'s' if len(entries) != 1 else ''}, most recently saved first: "
+               + ", ".join(f"{n} {k}" for k, n in counts.items() if n) + ". Each is reloaded and re-verified when "
+               "you open it.")
     path = st.selectbox("Saved investigation", list(label_of), format_func=label_of.__getitem__, key=SAVED_KEY)
-    render_saved(runs.load_saved(path))
+    e = by_path[path]
+    saved, failure = load_verified(path)
+    st.markdown(catalog_badges(describe(saved)))                # from this load, the one shown below
+    st.caption(f"Run `{e['name']}` · {e['group']} · files in {Path(path).parent}")
+    if saved is None:
+        st.error(f"This investigation could not be loaded or verified ({failure}): its saved files are unreadable "
+                 "or malformed. Nothing from it is shown, and nothing was repaired, changed or deleted.")
+        return
+    render_saved(saved)

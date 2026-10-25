@@ -25,6 +25,7 @@ import streamlit as st
 import live_tracker.investigation_live_v1 as lv1
 import live_tracker.investigation_v1_runs as runs
 import live_tracker.investigation_v1_ui as ui
+import live_tracker.ui_style as ui_style
 import demo_network_guard
 from test_investigation_v1_validation import recorded_run
 from test_live_agent_evidence import build_gate_inputs
@@ -65,6 +66,7 @@ def synthetic_world():
 
 
 st.set_page_config(page_title="Live Agent progress demo", layout="wide")
+ui_style.apply()
 tmp, inputs, reference_runs = synthetic_world()
 for key in ("OPENROUTER_API_KEY", "OPENROUTER_MANAGEMENT_KEY", "ANTHROPIC_API_KEY"):
     os.environ.pop(key, None)
@@ -88,17 +90,6 @@ behaviour = st.sidebar.selectbox("Emulated endpoint behaviour", list(BEHAVIOURS)
 runs.REHEARSAL_EMULATOR_FACTORY = lambda: SlowEmulator(delay, BEHAVIOURS[behaviour])
 st.sidebar.caption(f"Files: {tmp}")
 
-st.title("Live Agent (progress demo)")
-st.caption("The real Live Agent page code over SYNTHETIC inputs. Click Run free rehearsal and watch the progress.")
-message = st.session_state.pop(ui.MESSAGE_KEY, None)
-# The one-time completion message sits in a container that is ALWAYS rendered: when the message is gone on the next
-# rerun, the tabs below keep their place in the page, so Streamlit keeps the selected tab (a tabs element that moves
-# up one position is a new element to the browser, which resets it to "New investigation").
-notice = st.container()
-if message:
-    (notice.error if message[0] == "error" else notice.info)(message[1])
-tab_new, tab_saved = st.tabs(["New investigation", "Saved investigations"])
-with tab_new:
-    ui.render_new()
-with tab_saved:
-    ui.render_open()
+ui.render_page("Live Agent (synthetic demo)",
+               banner="DEMO: the real Live Agent page code over SYNTHETIC inputs (five synthetic sessions, not CalMS21 "
+                      "data). Only the free rehearsal can run; paid runs are refused.")

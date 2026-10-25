@@ -238,3 +238,9 @@ Notes:
 - Tests: `tests/test_biologist_report.py` (fake client, no network) and two page tests.
 - Not tried with a real Claude key yet. The model is `$LIVE_TRACKER_CLAUDE_MODEL`, or `claude-sonnet-5-5`.
 - Lesson: patching `urllib.request.urlopen` did not stop the ntfy class (it keeps its own copy). Patch `NtfyNotifier.send` in tests. One test may have sent one harmless message to ntfy.sh topic "longrandomtopic" before the fix.
+
+## Part 6 - 2026-10-25 (Review of the demo, no code changed)
+1. Read the log, the branch commits, `docs/demo_recording.md`, `skeleton_player.py`, `pages/2_Replay.py`, `biologist_report.py`, `live_view.py`.
+2. Ran `pytest` on `test_biologist_report.py`, `test_replay_page.py`, `test_session_view.py`, `test_demo_smoke.py`: 23 passed. (Runs the tests; no files changed.)
+3. Found: `docs/demo_recording.md` is out of date (Demo mode line, Confirm button, assumptions list, video side). `save_and_notify` has no error handling for the file write. Skeleton canvas is not checked in a browser. Full test run still not done.
+4. Next: fix the doc, check Replay in a browser, full test run, Syed reviews PR #38.

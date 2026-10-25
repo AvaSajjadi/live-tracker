@@ -81,14 +81,15 @@ labels = [e.label for e in catalog]
 if not labels:
     st.error("No synthetic session is available.")
     st.stop()
-label = st.selectbox("Session", labels, key=SESSION_KEY)
+label = st.session_state.get(SESSION_KEY)            # the session picker was removed on request: the first session, or the one another page chose
+if label not in labels:
+    label = labels[0]
 entry = catalog[labels.index(label)]
 try:
     rv.check_entry(entry)
 except rp.ReplayError as exc:
     st.error(f"This session cannot be replayed: {exc}")
     st.stop()
-st.caption(f"`{entry.session}`: {entry.description}")
 
 pose_problem = rv.check_pose(entry)
 warnings = ()
@@ -143,13 +144,6 @@ if st.session_state.get(ACTIVE_RUN) != run:        # switching sessions or rules
 st.session_state.setdefault(K["frame"], replay.frames[0])
 st.session_state.setdefault(K["end"], False)
 st.session_state.setdefault(K["playing"], False)
-
-with st.expander(f"Approved rules in use ({len(replay.rules)})", expanded=False):
-    st.dataframe(pd.DataFrame([{"rule": r.rule_id, "behavior": r.behavior, "min duration (s)": r.min_duration_s,
-                                "ask threshold": r.ask_threshold, "alert threshold": r.alert_threshold,
-                                "mode": r.alert_mode, "description": r.description} for r in replay.rules]),
-                 hide_index=True, width="stretch")
-    st.caption(f"Run `{run}`. The system only alerts, asks and logs; it never acts on the experiment.")
 
 # 4. playback: the speed and the playing flag set the fragment's refresh, so changing them reruns the page
 speed_label = st.radio("Playback speed (recorded time)", list(SPEEDS), key=SPEED_KEY, horizontal=True)

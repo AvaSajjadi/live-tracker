@@ -102,12 +102,19 @@ def test_no_approved_rule_is_an_error():
     assert "No approved rule" in text(at.error)
 
 
+def pick(at, label):
+    """The session picker was removed from the page; another page (or a test) chooses the session in the state."""
+    at.session_state["replay_session"] = label
+    at.run()
+    assert not at.exception
+
+
 def test_synthetic_sessions_without_the_banner_and_the_synthetic_note():
     at = start(workflow())
     assert "Replay of a recorded session, not a live camera" not in text(at.warning)   # removed on request
     assert "SYNTHETIC test data" not in text(at.warning)                               # removed on request
-    assert at.selectbox[0].options == [DEMO, TRACK]
-    assert "SYNTHETIC_demo_01" in text(at.caption)
+    assert not at.selectbox and "Approved rules in use" not in " ".join(e.label for e in at.expander)   # removed on request
+    assert "SYNTHETIC_demo_01" not in text(at.caption)
     assert at.slider[0].value == 0 and at.slider[0].min == 0 and at.slider[0].max == 719
 
 
@@ -237,7 +244,7 @@ def test_a_stale_button_cannot_write_a_conflicting_answer():
 
 def test_tracking_warnings_panel():
     at = start(workflow())
-    at.selectbox(key="replay_session").set_value(TRACK).run()
+    pick(at, TRACK)
     at = seek(at, 100)
     assert "No tracking warning so far." in text(at.caption)
     at = seek(at, 125)
@@ -274,14 +281,14 @@ def test_sessions_keep_their_own_state():
     at = seek(start(workflow()), 280)
     click(at, "Confirm")
     demo_run = run_id(at)
-    at.selectbox(key="replay_session").set_value(TRACK).run()
+    pick(at, TRACK)
     assert run_id(at) != demo_run and frame(at) == 0
     assert "Answered" not in text(at.markdown) and table(at, "fired") is None
     at = seek(at, 280)
     track = next(r for r in at.session_state["replay_cache"].values() if r.session == rv.TRACKING_SESSION)
     assert track.run_id == run_id(at) and all(e["evidence"]["run_id"] == run_id(at) for e in track.state_at(280).events)
     assert "Answered: confirmed" not in text(at.markdown)
-    at.selectbox(key="replay_session").set_value(DEMO).run()
+    pick(at, DEMO)
     assert run_id(at) == demo_run and frame(at) == 280 and "Answered: confirmed at frame 280" in text(at.markdown)
 
 
@@ -290,7 +297,7 @@ def test_switching_sessions_stops_playback(monkeypatch):
     at = start(workflow())
     click(at, "Play")
     demo_run = run_id(at)
-    at.selectbox(key="replay_session").set_value(TRACK).run()
+    pick(at, TRACK)
     assert at.session_state[f"replay_playing_{demo_run}"] is False and "Play" in labels(at)
 
 
@@ -494,7 +501,7 @@ def test_the_summary_includes_answers_and_only_this_run():
     click(at, "End of session")
     md = text(at.markdown)
     assert "1 confirmed, 0 rejected, 0 unanswered" in md and "confirmed (frame 280)" in md
-    at.selectbox(key="replay_session").set_value(TRACK).run()
+    pick(at, TRACK)
     click(at, "End of session")
     md = text(at.markdown)
     assert "# Session summary: SYNTHETIC_tracking_02" in md and "confirmed (frame 280)" not in md

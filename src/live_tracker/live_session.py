@@ -40,18 +40,20 @@ def run_spec(source):
             "session": source.session}
 
 
-def live_schedule(seconds, now=None, tz="America/New_York"):
-    """An approved schedule that starts now and lasts the recording plus a margin. Starting the session is the approval."""
+def live_schedule(seconds, now=None, tz="America/New_York", limit_s=None):
+    """An approved schedule that starts now. It lasts the recording plus a margin, or exactly `limit_s` seconds when
+    the researcher chose a shorter time on the Rules page. Starting the session is the approval."""
     now = now or datetime.now(timezone.utc)
-    return rs.for_hours((seconds + EXTRA_S) / 3600.0, now=now, tz=tz, schedule_id=SCHEDULE_ID,
+    total = limit_s if limit_s is not None and limit_s < seconds else seconds + EXTRA_S
+    return rs.for_hours(total / 3600.0, now=now, tz=tz, schedule_id=SCHEDULE_ID,
                         description="Live session").approve()
 
 
-def start_live(source, rules, *, wait_for_go, now=None, launcher=None):
+def start_live(source, rules, *, wait_for_go, now=None, launcher=None, limit_s=None):
     """Start the run for this source with the researcher's approved rules. Returns the run folder."""
     now = now or datetime.now(timezone.utc)
     run_dir = rc.new_run_dir(SCHEDULE_ID, now)
-    config = rc.build_config(run_dir, live_schedule(length_s(source.poses, source.fps), now), rules, run_spec(source),
+    config = rc.build_config(run_dir, live_schedule(length_s(source.poses, source.fps), now, limit_s=limit_s), rules, run_spec(source),
                              model=MODEL, speed=1.0, fps=source.fps)
     config.wait_for_go = bool(wait_for_go)
     return rc.start_run(config, launcher=launcher)

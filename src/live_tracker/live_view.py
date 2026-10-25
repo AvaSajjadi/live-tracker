@@ -21,6 +21,7 @@ from . import live_session as ls
 from . import monitor_runner as mr
 from . import run_control as rc
 from . import run_schedule as rs
+from . import schedule_workflow as sw
 from . import video_web as vw
 from .run_ui import approved_rules
 from .uploads import SessionSource
@@ -34,6 +35,13 @@ CHART_SECONDS = 30
 def _mmss(seconds):
     seconds = max(0, int(round(seconds)))
     return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def chosen_limit_s():
+    """The length in seconds of the schedule the researcher confirmed on the Rules page, or None."""
+    wf = st.session_state.get("schedule_workflow")
+    approved = wf.approved() if isinstance(wf, sw.ScheduleWorkflow) else []
+    return approved[-1].planned_s if approved else None
 
 
 def _reset():
@@ -114,6 +122,9 @@ def render_intro(source, rules):
             note("caption", "No video converter is installed.",
                  "Install the optional package imageio-ffmpeg in the project's Python, then press the button that appears here "
                  "to make a browser-friendly copy next to the original. The original is never changed.")
+    limit = chosen_limit_s()
+    if limit is not None and limit < seconds:
+        st.markdown(f"- **Time limit:** the analysis stops after {_mmss(limit)} (the time you confirmed on the Rules page).")
     with st.expander("Sync"):
         st.number_input("Wait before the run starts, after the video is drawn (seconds)", min_value=0.0, max_value=3.0,
                         value=DEFAULT_OFFSET_S, step=0.1, key="live_offset",
@@ -121,7 +132,8 @@ def render_intro(source, rules):
     label = "Start the live session" if (playable or not source.has_video) else "Start without the picture"
     if st.button(label, type="primary", key="live_start"):
         try:
-            run_dir = ls.start_live(source, rules, wait_for_go=playable is not None)
+            run_dir = ls.start_live(source, rules, wait_for_go=playable is not None,
+                                 limit_s=limit)
         except (mr.RunRefusedError, rs.ScheduleError, ValueError, OSError) as exc:
             st.error(f"Not started: {exc}.")
             return
@@ -213,7 +225,11 @@ def panel(run_dir, length_s, fps):
         st.dataframe(rows, hide_index=True, width="stretch", height=240)
 
     if status.get("state") == "finished":
-        st.success("The session has finished. The full report is on the Run page.")
+        if status.get("message") == "The schedule ended.":
+            st.success("The chosen time is over, so the analysis has stopped. The report is ready. "
+                       "The video may still be playing.")
+        else:
+            st.success("The session has finished. The report is ready. The full report is on the Run page.")
         report = rc.read_report(run_dir)
         if report is not None:
             with st.expander("Report"):

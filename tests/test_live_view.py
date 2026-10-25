@@ -245,6 +245,15 @@ def test_a_finished_session_shows_the_report(env):
     assert "The session has finished" in texts(at.success) and "Run report: S1" in texts(at.markdown)
 
 
+def test_when_the_chosen_time_is_over_the_page_says_the_report_is_ready(env):
+    root, _ = env
+    src = source(root)
+    run_dir = demo_run(root)
+    write_status(run_dir, "finished", frames=5400, alerts=1, asks=0, max_lag_s=0.0, message="The schedule ended.")
+    at = open_view(running_state(src, run_dir))
+    assert "chosen time is over" in texts(at.success) and "report is ready" in texts(at.success)
+
+
 def test_stop_leaves_a_stop_file(env):
     root, _ = env
     src = source(root)

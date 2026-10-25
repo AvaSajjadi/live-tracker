@@ -65,6 +65,11 @@ def test_the_schedule_covers_the_recording_plus_a_margin_and_is_approved():
     assert s.status == "approved" and s.schedule_id == "LIVE" and s.planned_s == pytest.approx(238.3 + ls.EXTRA_S, abs=1.0)
 
 
+def test_a_shorter_chosen_time_ends_the_schedule_at_that_time():
+    assert ls.live_schedule(238.3, limit_s=180).planned_s == pytest.approx(180, abs=1.0)
+    assert ls.live_schedule(238.3, limit_s=900).planned_s == pytest.approx(238.3 + ls.EXTRA_S, abs=1.0)   # longer than the recording: no change
+
+
 def test_start_live_writes_a_config_with_the_researchers_rules(tmp_path, monkeypatch):
     monkeypatch.setenv(rc.RUNS_ENV, str(tmp_path / "runs"))
     launched = []

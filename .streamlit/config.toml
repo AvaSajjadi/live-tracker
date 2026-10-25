@@ -1,10 +1,11 @@
-# Live Tracker look: one calm teal accent, light background, rounded corners.
+# Live Tracker look: light page, sage-grey panels, one terracotta accent, rounded corners.
 [theme]
 base = "light"
-primaryColor = "#0F766E"
+primaryColor = "#B76A54"
 backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F1F5F4"
 textColor = "#1F2933"
+borderColor = "#DDE6E3"
 font = "sans serif"
 baseRadius = "0.6rem"
 

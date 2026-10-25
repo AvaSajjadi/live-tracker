@@ -32,6 +32,8 @@ class Recorder:
     def __init__(self, path, corners=None, fps=RECORD_FPS):
         self.path, self.corners, self.fps = str(path), corners, float(fps)
         self.writer, self.t0, self.written, self.size = None, None, 0, None
+        self._lock = threading.Lock()                   # the camera thread writes while the page thread closes: never at the same time
+        self._closed = False
 
     def _output(self, image):
         if self.corners is None:
@@ -40,6 +42,12 @@ class Recorder:
         return sm.warp(image, self.corners)
 
     def add(self, image, t):
+        with self._lock:
+            if self._closed:
+                return
+            self._add(image, t)
+
+    def _add(self, image, t):
         import cv2
         frame = self._output(image)
         if self.writer is None:
@@ -55,9 +63,11 @@ class Recorder:
             self.written += 1
 
     def close(self):
-        if self.writer is not None:
-            self.writer.release()
-            self.writer = None
+        with self._lock:
+            self._closed = True
+            if self.writer is not None:
+                self.writer.release()
+                self.writer = None
         return {"path": self.path, "frames": self.written, "seconds": self.written / self.fps, "fps": self.fps,
                 "width": self.size[0] if self.size else None, "height": self.size[1] if self.size else None}
 

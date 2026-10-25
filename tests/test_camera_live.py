@@ -96,3 +96,26 @@ def test_a_second_recording_cannot_start_and_stopping_twice_is_harmless(tmp_path
         g.start_recording(tmp_path / "b.mp4")
     assert g.stop_recording() is not None and g.stop_recording() is None
     g.stop()
+
+
+def test_stopping_a_recording_while_the_camera_thread_is_writing_never_crashes(tmp_path):
+    """The camera thread writes pictures while the page stops the recording: used to be an 'access violation' that killed Python."""
+    cap = FakeCapture(interval=0.001)                                    # a very fast camera, so the thread is nearly always inside add()
+    g = cl.Grabber("0", cap)
+    assert wait_for(lambda: g.latest() is not None)
+    for i in range(25):
+        g.start_recording(tmp_path / f"r{i}.mp4")
+        time.sleep(0.02)
+        info = g.stop_recording()                                        # closes the file at a random moment of the thread's writing
+        assert info is not None and info["frames"] >= 1
+    g.stop()
+    assert cap.released
+
+
+def test_a_closed_recorder_ignores_more_pictures(tmp_path):
+    rec = cl.Recorder(tmp_path / "x.mp4", None)
+    img = np.full((60, 80, 3), 90, np.uint8)
+    rec.add(img, 1.0)
+    info = rec.close()
+    rec.add(img, 1.1)                                                    # after the close: nothing happens, nothing breaks
+    assert rec.close()["frames"] == info["frames"]

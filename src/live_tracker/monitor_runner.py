@@ -41,7 +41,7 @@ from pathlib import Path
 from . import notify as notify_mod
 from . import run_schedule as rs
 from . import summary as summary_mod
-from .event_log import JournalIntegrityError
+from .event_log import JournalIntegrityError, JournalState, read_journal
 from .monitor import Monitor, MonitorInputError
 from .rules import RuleSet
 from .run_sources import SourceInterrupted
@@ -172,6 +172,8 @@ class Runner:
         if self.schedule.status_at(self.clock.now()) == "finished":
             raise RunRefusedError("the schedule has already ended")
         self.run_dir.mkdir(parents=True, exist_ok=True)
+        if not (self.run_dir / "config.json").exists():          # a run folder is self-contained (rebuild_report needs it)
+            (self.run_dir / "config.json").write_text(config.to_json(), encoding="utf-8")
         self.notifier = notifier or notify_mod.from_env(self.run_dir / "notifications.log")
         self.wall_now = wall_now
         self.run_id = _safe_id(f"{self.schedule.schedule_id}_{self.schedule.start.astimezone(timezone.utc):%Y%m%dT%H%M%SZ}"
@@ -388,45 +390,72 @@ class Runner:
                 "rows": self.n_rows, "rejected_rows": self.n_rejected, "interruptions": len(self.interruptions)}
 
     def _write_report(self, reason, completeness):
-        run_info = {"reason": reason, "outcome": self.outcome, "plan": self.schedule.describe(),
-                    "completeness": completeness, "source": getattr(self.source, "description", ""),
-                    "interruptions": [{"start": e["start"].isoformat(), "end": e["end"].isoformat() if e["end"] else None,
-                                       "reason": e["reason"]} for e in self.interruptions],
-                    "rejected_rows": self.n_rejected, "ignored_answers": self.ignored_answers}
-        summary = None
+        recording = None
         if self.n_rows:
             recording = {"n_rows": self.n_rows, "first_frame": self.first_frame, "last_frame": self.last_frame,
                          "first_time_s": self.first_time_s, "last_time_s": self.last_time_s, "fps": self.cfg.fps,
-                         "source": run_info["source"] or "run"}
-            answered = {e["event_id"]: None for e in self.monitor.journal.events(self.run_id)
-                        if e.get("researcher_answer") is not None}
-            summary = summary_mod.build_summary(self.monitor.journal.records, run_id=self.run_id,
-                                                session=self.source.session, rules=self.rules,
-                                                recording=recording, answer_positions=answered)
-        (self.run_dir / "report.md").write_text(self._markdown(summary, run_info), encoding="utf-8")
-        _write_json(self.run_dir / "report.json", {"run": run_info, "summary": summary.as_dict() if summary else None})
+                         "source": getattr(self.source, "description", "") or "run"}
+        run_info = {"reason": reason, "outcome": self.outcome, "message": self.message, "run_id": self.run_id,
+                    "session": self.source.session, "plan": self.schedule.describe(), "completeness": completeness,
+                    "source": getattr(self.source, "description", ""), "recording": recording,
+                    "interruptions": [{"start": e["start"].isoformat(), "end": e["end"].isoformat() if e["end"] else None,
+                                       "reason": e["reason"]} for e in self.interruptions],
+                    "rejected_rows": self.n_rejected, "ignored_answers": self.ignored_answers}
+        markdown, body = build_report(schedule=self.schedule, rules=self.rules, run_id=self.run_id,
+                                      session=self.source.session, records=self.monitor.journal.records if self.monitor else [], run_info=run_info)
+        (self.run_dir / "report.md").write_text(markdown, encoding="utf-8")
+        _write_json(self.run_dir / "report.json", body)
 
-    def _markdown(self, summary, info):
-        c = info["completeness"]
-        label = {"complete": "COMPLETE", "partial": "PARTIAL", "stopped": "STOPPED EARLY", "no_data": "NO DATA",
-                 "failed": "FAILED"}[info["outcome"]]
-        lines = [f"# Run report: {self.schedule.schedule_id}", "", f"**Outcome: {label}.** {self.message}", "",
-                 "## Run", "", f"- Plan: {info['plan']}", f"- Source: {info['source'] or 'unknown'}",
-                 f"- Planned length: {_duration(c['planned_s'])}; recorded span: {_duration(c['recorded_s'])}",
-                 f"- Missing at the start: {_duration(c['missing_at_start_s'])}; missing at the end: {_duration(c['missing_at_end_s'])}"]
-        if info["interruptions"]:
-            lines += ["- Interruptions of the video source (no frames were seen; this is not a still mouse):"]
-            for e in info["interruptions"]:
-                lines.append(f"  - from {e['start']} to {e['end'] or 'the end'}: {e['reason']}")
-        else:
-            lines.append("- No interruptions of the video source.")
-        if info["rejected_rows"]:
-            lines.append(f"- {info['rejected_rows']} frame(s) were refused by the monitor (bad timing or scores) and skipped.")
-        if info["ignored_answers"]:
-            lines.append(f"- {len(info['ignored_answers'])} answer(s) could not be applied.")
-        lines += ["", "---", ""]
-        lines.append(summary.to_markdown() if summary else "_No frames reached the monitor, so there is no event summary._")
-        return "\n".join(lines) + "\n"
+
+# ---- the report (also rebuilt after a late answer) ----
+
+def build_report(*, schedule, rules, run_id, session, records, run_info):
+    """(markdown, json dict) from the event log's records and what the program knew about the run."""
+    summary = None
+    if run_info.get("recording"):
+        answered = {e["event_id"]: None for e in JournalState.from_records(records).events(run_id)
+                    if e.get("researcher_answer") is not None}
+        summary = summary_mod.build_summary(records, run_id=run_id, session=session, rules=rules,
+                                            recording=run_info["recording"], answer_positions=answered)
+    return (_markdown(schedule.schedule_id, summary, run_info),
+            {"run": run_info, "summary": summary.as_dict() if summary else None})
+
+
+def _markdown(schedule_id, summary, info):
+    c = info["completeness"]
+    label = {"complete": "COMPLETE", "partial": "PARTIAL", "stopped": "STOPPED EARLY", "no_data": "NO DATA",
+             "failed": "FAILED"}[info["outcome"]]
+    lines = [f"# Run report: {schedule_id}", "", f"**Outcome: {label}.** {info.get('message', '')}", "",
+             "## Run", "", f"- Plan: {info['plan']}", f"- Source: {info['source'] or 'unknown'}",
+             f"- Planned length: {_duration(c['planned_s'])}; recorded span: {_duration(c['recorded_s'])}",
+             f"- Missing at the start: {_duration(c['missing_at_start_s'])}; missing at the end: {_duration(c['missing_at_end_s'])}"]
+    if info["interruptions"]:
+        lines += ["- Interruptions of the video source (no frames were seen; this is not a still mouse):"]
+        for e in info["interruptions"]:
+            lines.append(f"  - from {e['start']} to {e['end'] or 'the end'}: {e['reason']}")
+    else:
+        lines.append("- No interruptions of the video source.")
+    if info["rejected_rows"]:
+        lines.append(f"- {info['rejected_rows']} frame(s) were refused by the monitor (bad timing or scores) and skipped.")
+    if info["ignored_answers"]:
+        lines.append(f"- {len(info['ignored_answers'])} answer(s) could not be applied.")
+    lines += ["", "---", ""]
+    lines.append(summary.to_markdown() if summary else "_No frames reached the monitor, so there is no event summary._")
+    return "\n".join(lines) + "\n"
+
+
+def rebuild_report(run_dir):
+    """Write the report again from the run's files, for example after the researcher answered a question
+    once the run was over. Needs config.json, report.json and journal.jsonl; returns the new markdown."""
+    run_dir = Path(run_dir)
+    cfg = RunConfig.load(run_dir / "config.json")
+    info = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))["run"]
+    markdown, body = build_report(schedule=rs.RunSchedule.from_dict(cfg.schedule), rules=rules_from_dicts(cfg.rules),
+                                  run_id=info["run_id"], session=info["session"],
+                                  records=read_journal(run_dir / "journal.jsonl"), run_info=info)
+    (run_dir / "report.md").write_text(markdown, encoding="utf-8")
+    _write_json(run_dir / "report.json", body)
+    return markdown
 
 
 # ---- command line ----

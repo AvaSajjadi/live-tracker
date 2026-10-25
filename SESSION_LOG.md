@@ -324,3 +324,22 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
 Later: the smaller headings still looked big (the theme in `ui_style.py` sizes all headings). Now `_small_headings` turns heading lines into bold lines. Dashboard on 8766 restarted.
 
 Later: the report table was wider than the box (screenshot). New `_show_report` in `live_view.py` shows the Markdown table as a small data table (`st.dataframe`, full width). The text parts stay Markdown.
+
+## Part 9 - 2026-10-25 (Real camera, step 3)
+1. What we did
+   1. The user said the demo is basically fake and wants the real camera. Answers: they have a trained pose model (file not given yet), the camera is the Nikon D7500, and we restart from the old camera code.
+   2. Reapplied the old camera work with `git revert` on the three revert commits (`e675814`, `7415198`, `bdcddc2`). Pose model slot, camera check, scan script and USB camera choice are back.
+   3. Installed OpenCV (`pip install opencv-python-headless`) and ran `scripts/find_cameras.py`. Camera 0 (USB webcam) works. Camera 1 is the infrared camera (flat picture). No Nikon found.
+   4. Step 3 done: the Real session page can start a camera run. `live_session.py` has `camera_spec`, `camera_limit_s`, `start_camera`. `live_view.py` has `render_camera`. It shows the pose model error when there is none.
+2. Commands
+   - `git revert --no-edit <commit>`: undoes an earlier undo.
+   - `python scripts/find_cameras.py`: lists cameras and checks if the Nikon is a webcam.
+   - `pytest tests/test_live_view.py tests/test_live_session.py ...`: 82 passed.
+3. Files changed: `src/live_tracker/live_session.py`, `src/live_tracker/live_view.py`, `tests/test_live_view.py`, `tests/test_live_session.py`, this log.
+4. Problems: I again wrote a line break inside an f-string (syntax error). Fixed with `\n`.
+5. Not finished
+   - The pose model backend: needs the user's model file and its type. Then `register_backend` + `models/pose/pose_model.json`.
+   - The Nikon is not a webcam. Needs HDMI + capture card, or Nikon Webcam Utility working.
+   - No real camera run has been tried. A camera run time is the Rules time, else 30 minutes.
+   - Model B was trained on CalMS21 top-down view: a different view gives weak scores.
+6. Next time: get the pose model file, write the backend, test with the USB webcam (camera 0), then the Nikon.

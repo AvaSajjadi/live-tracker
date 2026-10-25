@@ -25,7 +25,8 @@ from .event_log import EventJournal, JournalIntegrityError, load_journal
 ROOT = Path(__file__).resolve().parents[2]
 RUNS_ENV = "LIVE_TRACKER_RUNS_DIR"
 ANSWERS = ("confirmed", "rejected")
-ACTIVE_STATES = ("waiting", "running", "finishing")
+ACTIVE_STATES = ("waiting", "ready", "running", "finishing")
+GO_FILE = mr.GO_FILE
 STALE_AFTER_S = 30.0                  # heartbeats come every few seconds; this long without one is a warning
 
 
@@ -85,6 +86,11 @@ def start_run(config, launcher=None):
     pid = (launcher or LAUNCHER)(path)
     (run_dir / "pid.txt").write_text(str(pid) + "\n", encoding="utf-8")
     return run_dir
+
+
+def send_go(run_dir):
+    """Tell a run that is 'ready' to start now."""
+    (Path(run_dir) / GO_FILE).write_text("go\n", encoding="utf-8")
 
 
 def stop_run(run_dir):

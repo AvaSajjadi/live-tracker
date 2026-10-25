@@ -316,3 +316,73 @@ def test_a_camera_run_is_refused_because_no_pose_model_exists(tmp_path, monkeypa
     path.write_text(cfg.to_json(), encoding="utf-8")
     assert mr.main(["--config", str(path)]) == 2
     assert "pose model" in capsys.readouterr().err
+
+
+# ---- start on a signal (a video that must begin at the same moment) ----
+
+class GoClock(mr.ManualClock):
+    """Creates the GO file once the program has waited `after_s` seconds."""
+
+    def __init__(self, start, run_dir, after_s):
+        super().__init__(start)
+        self.run_dir, self.after_s = run_dir, after_s
+
+    def sleep(self, seconds):
+        super().sleep(seconds)
+        if self.real_seconds() >= self.after_s:
+            (self.run_dir / mr.GO_FILE).write_text("go", encoding="utf-8")
+
+
+def go_runner(tmp_path, after_s, **kw):
+    cfg = config(tmp_path, wait_for_go=True, **kw)
+    run_dir = tmp_path / "run1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    runner = mr.Runner(cfg, rsrc.synthetic_source(), clock=GoClock(T0, run_dir, after_s), notifier=ListNotifier(),
+                       wall_now=lambda: datetime(2026, 10, 24, 18, 0, tzinfo=timezone.utc))
+    states = []
+    original = runner.write_status
+
+    def spy(force=False):
+        states.append(runner.state)
+        original(force)
+
+    runner.write_status = spy
+    return runner, states
+
+
+def test_a_run_that_waits_for_go_is_ready_first_and_starts_after_the_signal(tmp_path):
+    runner, states = go_runner(tmp_path, after_s=3.0)
+    result = runner.run()
+    assert "ready" in states and states.index("ready") < states.index("running")
+    assert runner.first_at >= T0 + timedelta(seconds=3.0)                       # nothing was processed before GO
+    assert result["outcome"] == "complete" and result["alerts"] == 1
+
+
+def test_stop_while_ready_ends_the_run_without_frames(tmp_path):
+    runner, _ = go_runner(tmp_path, after_s=10 ** 9)
+    (runner.run_dir / "STOP").write_text("", encoding="utf-8")
+    result = runner.run()
+    assert result["outcome"] == "stopped" and result["rows"] == 0 and result["state"] == "finished"
+
+
+def test_a_missing_go_ends_the_run_at_the_window_end(tmp_path):
+    runner, _ = go_runner(tmp_path, after_s=10 ** 9)
+    result = runner.run()
+    assert result["outcome"] == "no_data" and result["rows"] == 0 and "The schedule ended." in result["message"]
+
+
+# ---- the delay meter ----
+
+def test_a_run_that_keeps_up_says_so_and_a_slow_moment_is_reported(tmp_path):
+    runner, _ = make_runner(tmp_path)
+    runner.run()
+    assert runner.max_lag_s == 0.0
+    assert "Processing kept up with real time (slowest moment: 0.0 s behind)" in (runner.run_dir / "report.md").read_text(encoding="utf-8")
+    assert read_status(runner)["max_lag_s"] == 0.0
+
+    slow, _ = hooked(tmp_path / "slow", lambda f, r: r.clock.sleep(2.0) if f == 100 else None)
+    slow.run()
+    assert 1.9 <= slow.max_lag_s <= 2.1
+    report = (slow.run_dir / "report.md").read_text(encoding="utf-8")
+    assert "Processing FELL BEHIND real time at times (slowest moment: 2.0 s behind)" in report
+    assert read_status(slow)["max_lag_s"] >= 1.9 and json.loads((slow.run_dir / "report.json").read_text())["run"]["max_lag_s"] >= 1.9

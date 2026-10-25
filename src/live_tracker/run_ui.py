@@ -21,7 +21,7 @@ from .rule_workflow import is_valid_workflow
 RULE_WORKFLOW_KEY = "rule_workflow"            # set by the Rules page
 SCHEDULE_WORKFLOW_KEY = "schedule_workflow"    # set by the Rules page, run schedule part
 SELECTED_KEY = "run_selected"
-STATE_TEXT = {"waiting": ":orange[Waiting for the start time]", "running": ":green[Running]",
+STATE_TEXT = {"waiting": ":orange[Waiting for the start time]", "ready": ":orange[Ready, waiting for GO]", "running": ":green[Running]",
               "finishing": ":orange[Writing the report]", "finished": ":blue[Finished]", "failed": ":red[Failed]"}
 OUTCOME_TEXT = {"complete": "complete", "partial": "partial: part of the planned time is missing",
                 "stopped": "stopped early", "no_data": "no data", "failed": "failed"}

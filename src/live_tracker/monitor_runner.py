@@ -47,7 +47,8 @@ from .rules import RuleSet
 from .run_sources import SourceInterrupted
 
 ROOT = Path(__file__).resolve().parents[2]
-STATES = ("waiting", "running", "finishing", "finished", "failed")
+STATES = ("waiting", "ready", "running", "finishing", "finished", "failed")
+GO_FILE = "GO"                      # with wait_for_go, the run starts when this file appears
 OUTCOMES = ("complete", "partial", "stopped", "no_data", "failed")
 
 
@@ -104,6 +105,7 @@ class RunConfig:
     fps: float = 30.0
     status_every_s: float = 5.0         # real seconds between heartbeats
     reconnect_wait_s: float = 2.0       # first wait before a reconnect attempt; doubles up to 60 s
+    wait_for_go: bool = False           # get ready, then wait for the GO file (a video that must start at the same moment)
 
     def to_json(self):
         return json.dumps(asdict(self), indent=2) + "\n"
@@ -189,6 +191,7 @@ class Runner:
         self.ignored_answers = []
         self._answers_offset = 0
         self._anchor = None
+        self.lag_s = self.max_lag_s = 0.0   # how far behind the recording's own time the program is, for recorded sources
         self._last_beat = None
         self.monitor = None
 
@@ -218,6 +221,7 @@ class Runner:
             "answered": self.answered, "unanswered": max(0, self.asks - self.answered),
             "interruptions": len(self.interruptions), "interrupted_now": bool(self.interruptions and self.interruptions[-1]["end"] is None),
             "seconds_left": self.schedule.seconds_left(self.clock.now()),
+            "lag_s": round(self.lag_s, 3), "max_lag_s": round(self.max_lag_s, 3),
         })
 
     # ---- answers from the dashboard ----
@@ -269,10 +273,20 @@ class Runner:
             self.write_status()
             self.clock.sleep(min(1.0, self.schedule.seconds_to_start(self.clock.now())))
 
-        self.state = "running"
         self.monitor = Monitor(self.rules, fps=self.cfg.fps, journal_path=self.run_dir / "journal.jsonl", run_id=self.run_id)
-        self.write_status(force=True)
         reason = "window_end"
+        if self.cfg.wait_for_go:                                          # loaded and ready; wait for the signal
+            self.state = "ready"
+            self.write_status(force=True)
+            while not (self.run_dir / GO_FILE).exists():
+                if self._should_stop():
+                    return self._finish("stopped")
+                if self.schedule.status_at(self.clock.now()) == "finished":
+                    return self._finish("window_end")
+                self.write_status()
+                self.clock.sleep(0.05)
+        self.state = "running"
+        self.write_status(force=True)
         while True:
             if self._should_stop():
                 reason = "stopped"
@@ -289,6 +303,7 @@ class Runner:
             if frame is None:
                 reason = "source_ended"
                 break
+            due = None
             if getattr(self.source, "paced", False):
                 if self._anchor is None:                        # recorded sources play at their own speed from here
                     self._anchor = (frame.frame, self.clock.now())
@@ -300,6 +315,9 @@ class Runner:
                 if self.schedule.status_at(self.clock.now()) == "finished":
                     break
             self._process(frame)
+            if due is not None:                                           # how late was this frame, in recording time
+                self.lag_s = max(0.0, (self.clock.now() - due).total_seconds())
+                self.max_lag_s = max(self.max_lag_s, self.lag_s)
             self.write_status()
             self.apply_answers()
         return self._finish(reason)
@@ -400,7 +418,8 @@ class Runner:
                     "source": getattr(self.source, "description", ""), "recording": recording,
                     "interruptions": [{"start": e["start"].isoformat(), "end": e["end"].isoformat() if e["end"] else None,
                                        "reason": e["reason"]} for e in self.interruptions],
-                    "rejected_rows": self.n_rejected, "ignored_answers": self.ignored_answers}
+                    "rejected_rows": self.n_rejected, "ignored_answers": self.ignored_answers,
+                    "max_lag_s": self.max_lag_s if getattr(self.source, "paced", False) else None}
         markdown, body = build_report(schedule=self.schedule, rules=self.rules, run_id=self.run_id,
                                       session=self.source.session, records=self.monitor.journal.records if self.monitor else [], run_info=run_info)
         (self.run_dir / "report.md").write_text(markdown, encoding="utf-8")
@@ -435,6 +454,10 @@ def _markdown(schedule_id, summary, info):
             lines.append(f"  - from {e['start']} to {e['end'] or 'the end'}: {e['reason']}")
     else:
         lines.append("- No interruptions of the video source.")
+    lag = info.get("max_lag_s")
+    if lag is not None:
+        lines.append(f"- Processing kept up with real time (slowest moment: {lag:.1f} s behind)." if lag < 1.0
+                     else f"- Processing FELL BEHIND real time at times (slowest moment: {lag:.1f} s behind); alerts were late by that much.")
     if info["rejected_rows"]:
         lines.append(f"- {info['rejected_rows']} frame(s) were refused by the monitor (bad timing or scores) and skipped.")
     if info["ignored_answers"]:

@@ -12,7 +12,6 @@ on_click callbacks, which would run before that check), and their keys carry
 the proposal's token, so a stale or repeated click cannot act twice.
 """
 
-import json
 import os
 
 import streamlit as st
@@ -116,10 +115,6 @@ elif isinstance(result, Clarification):
 
 pending = wf.pending
 if pending is not None and isinstance(pending.proposal, RuleProposal):
-    p = preview(pending)
-    with st.expander("Rule JSON"):
-        st.code(json.dumps(p["rule_json"], indent=2), language="json")
-
     col_confirm, col_reject = st.columns(2)
     confirm = col_confirm.button("Confirm", key=f"confirm_{pending.token}", type="primary")
     reject = col_reject.button("Reject", key=f"reject_{pending.token}")

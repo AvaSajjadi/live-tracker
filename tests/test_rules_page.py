@@ -82,7 +82,7 @@ def test_proposal_preview_shows_all_fields():
     assert "NOT active until you click Confirm" not in texts(at.warning)           # removed on request; Confirm / Reject decide
     assert "Untuned default thresholds: alert_threshold, ask_threshold" in why(at) and not any(w.value.startswith("Untuned") for w in at.warning)
     assert "Your instruction" not in body and EXAMPLE not in texts(at.text)       # section removed on request
-    assert '"status": "proposed"' in at.code[0].value
+    assert not at.expander and not at.code                                          # Rule JSON removed on request
     assert has_button(at, "Confirm") and has_button(at, "Reject")
     assert wf(at).ruleset.rules == {}  # nothing added before the decision
     assert not wf(at).monitoring_allowed()

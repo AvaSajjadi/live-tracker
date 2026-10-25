@@ -373,3 +373,8 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 3. Upload page: after "Test the camera" it shows live video (`live_preview`, a fragment that runs about 10 times a second) with the screen outline and the stretched screen. "Stop the camera" releases it. Real camera speed measured: 15 pictures per second at 640 x 480.
 4. Tests: 93 passed (upload camera, live view, screen map, uploads, flow), with a fake camera. Real webcam checked only for speed, not through the page.
 5. Not done (not chosen): saving the camera as a video file in the run folder; smoother live video on the Real session page (it still refreshes about twice a second).
+
+### Part 9, later: camera doc (2026-10-25)
+1. Wrote `docs/camera.md` (the whole camera chain, the three ways the camera is used, which file does what, presentation setup, video quality needed, what is real). A copy is on the Desktop as `camera.md`.
+2. Restarted the dashboard on port 8766 after the live video work (it was running old code). Fresh page: press Ctrl+F5.
+3. Not finished: real test of the staged demo with the camera on the iPad; MARS test; optional camera video file and smoother live video on the Real session page.

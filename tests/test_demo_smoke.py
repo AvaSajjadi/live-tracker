@@ -36,7 +36,6 @@ def test_rules_to_replay_to_answer_to_summary(tmp_path, monkeypatch):
     at.text_area(key="rule_instruction").input(INSTRUCTION).run()
     button(at, "Propose rule").click().run()
     assert "Proposed rule" not in " ".join(s.value for s in at.subheader)
-    button(at, "Confirm").click().run()
     assert at.session_state["rule_workflow"].monitoring_allowed()
 
     at.switch_page("pages/2_Replay.py").run()                    # the same session keeps the rule

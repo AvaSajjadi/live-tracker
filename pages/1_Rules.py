@@ -46,8 +46,8 @@ st.title("Monitoring rules")
 if recovered:
     st.error("The stored rule session was invalid and has been reset. No rules are approved; "
              "please enter and confirm your rules again.")
-st.caption("Write what you want to monitor in your own words. A rule is only a proposal until you click Confirm; "
-           "only confirmed rules are used for monitoring.")
+st.caption("Write what you want to monitor in your own words. Click Propose rule: the rule is then confirmed "
+           "and used for monitoring.")
 
 backend_label = st.radio("Interpretation", list(BACKEND_LABELS), index=0)
 backend = BACKEND_LABELS[backend_label]
@@ -67,6 +67,9 @@ if backend == "claude_interpret":
 def why_text():
     """The reasons and assumptions behind the last answer, for the hover help (?) next to the instruction box."""
     lines = []
+    kept = st.session_state.get("rule_why")             # the reasons kept when the rule was confirmed
+    if kept and kept[0] == st.session_state.get(TEXT_KEY) and wf.pending is None and wf.last_result is None:
+        return kept[1]
     if isinstance(wf.last_result, Clarification):
         lines += [f"- {issue.message}" for issue in wf.last_result.issues]
     if wf.pending is not None and isinstance(wf.pending.proposal, RuleProposal):
@@ -88,6 +91,16 @@ wf.sync_instruction(text)
 if st.button("Propose rule", type="primary"):
     with st.spinner("Interpreting..."):
         wf.submit(text, backend=backend)
+        st.session_state.pop("rule_why", None)
+        st.session_state.pop("rule_error", None)
+        if wf.pending is not None and isinstance(wf.pending.proposal, RuleProposal):
+            st.session_state["rule_why"] = (text, why_text())           # the (?) keeps the reasons
+            try:
+                wf.confirm(wf.pending.token)                            # Propose rule is the confirmation
+            except DuplicateRuleError as exc:
+                st.session_state["rule_error"] = f"Not approved: {exc}."
+            except (DecisionError, StaleActionError) as exc:
+                st.session_state["rule_error"] = str(exc)
     st.rerun()                                       # so the (?) next to the box shows the new reasons
 
 if wf.notice:
@@ -113,27 +126,11 @@ elif isinstance(result, Clarification):
         else:
             st.caption("Claude can read looser wording, but needs an API key. See docs/claude_interpreter.md.")
 
-pending = wf.pending
-if pending is not None and isinstance(pending.proposal, RuleProposal):
-    col_confirm, col_reject = st.columns(2)
-    confirm = col_confirm.button("Confirm", key=f"confirm_{pending.token}", type="primary")
-    reject = col_reject.button("Reject", key=f"reject_{pending.token}")
-    try:
-        if confirm:
-            wf.confirm(pending.token)
-            st.rerun()
-        elif reject:
-            wf.reject(pending.token)
-            st.rerun()
-    except DuplicateRuleError as exc:
-        st.error(f"Not approved: {exc}.")
-    except DecisionError as exc:  # nothing changed; the proposal is still pending
-        st.error(str(exc))
-    except StaleActionError as exc:
-        st.error(f"Ignored: {exc}.")
+if st.session_state.get("rule_error"):
+    st.error(st.session_state["rule_error"])
 
 schedule_ui.render()
 
 st.divider()
 flow.render_nav("rules", can_next=wf.monitoring_allowed(),
-                next_hint="Confirm a rule first, then press Next.")
+                next_hint="Propose a rule first, then press Next.")

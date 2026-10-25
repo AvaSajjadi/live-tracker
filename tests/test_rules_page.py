@@ -83,9 +83,9 @@ def test_proposal_preview_shows_all_fields():
     assert "Untuned default thresholds: alert_threshold, ask_threshold" in why(at) and not any(w.value.startswith("Untuned") for w in at.warning)
     assert "Your instruction" not in body and EXAMPLE not in texts(at.text)       # section removed on request
     assert not at.expander and not at.code                                          # Rule JSON removed on request
-    assert has_button(at, "Confirm") and has_button(at, "Reject")
-    assert wf(at).ruleset.rules == {}  # nothing added before the decision
-    assert not wf(at).monitoring_allowed()
+    assert not has_button(at, "Confirm") and not has_button(at, "Reject")           # removed on request
+    assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]                    # Propose rule is the confirmation
+    assert wf(at).monitoring_allowed()
 
 
 def test_implicit_minimum_assumption_is_shown():
@@ -93,25 +93,14 @@ def test_implicit_minimum_assumption_is_shown():
     assert "Interpreted duration as at least 2 seconds." in why(at)
 
 
-def test_confirm_activates_and_enables_monitoring():
+def test_propose_rule_confirms_it_and_enables_monitoring():
     at = propose(start())
-    button(at, "Confirm").click().run()
     assert not at.exception
     assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
     assert "Rule R1 approved" in texts(at.info)
     assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 1
-    assert not has_button(at, "Confirm")  # nothing left to approve twice
+    assert not has_button(at, "Confirm")
     assert [r.status for r in wf(at).ruleset.rules.values()] == ["approved"]
-
-
-def test_reject_keeps_monitoring_blocked():
-    at = propose(start())
-    button(at, "Reject").click().run()
-    assert not at.exception
-    assert wf(at).ruleset.active() == []
-    assert wf(at).ruleset.rules["R1"].status == "rejected"
-    assert not wf(at).monitoring_allowed()
-    assert [r.status for r in wf(at).ruleset.rules.values()] == ["rejected"]
 
 
 @pytest.mark.parametrize("text", [
@@ -129,31 +118,18 @@ def test_clarification_has_no_confirm_button(text):
     assert wf(at).ruleset.rules == {}
 
 
-def test_editing_the_instruction_discards_the_proposal():
+def test_editing_the_instruction_after_proposing_keeps_the_rule_and_drops_its_reasons():
     at = propose(start())
+    assert why(at)
     at.text_area(key="rule_instruction").input(EXAMPLE + " with alert threshold 0.9").run()
     assert not at.exception
-    assert "proposal was discarded" in texts(at.info)
-    assert not has_button(at, "Confirm")
-    assert wf(at).ruleset.rules == {} and wf(at).pending is None
-
-
-def test_confirm_clicked_together_with_an_edit_is_not_applied():
-    """The edit and the click arrive in the same rerun: the edit wins."""
-    at = propose(start())
-    at.text_area(key="rule_instruction").set_value("Log mounts of 5+ seconds")
-    button(at, "Confirm").click()
-    at.run()
-    assert not at.exception
-    assert wf(at).ruleset.rules == {} and wf(at).ruleset.active() == []
-    assert "proposal was discarded" in texts(at.info)
+    assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"] and wf(at).pending is None
+    assert not why(at)
 
 
 def test_identical_rule_cannot_be_approved_twice():
     at = propose(start())
-    button(at, "Confirm").click().run()
     button(at, "Propose rule").click().run()
-    button(at, "Confirm").click().run()
     assert not at.exception
     assert "Not approved: identical to approved rule R1" in texts(at.error)
     assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
@@ -162,10 +138,9 @@ def test_identical_rule_cannot_be_approved_twice():
 def test_state_survives_reruns():
     at = propose(start())
     workflow = wf(at)
-    token = workflow.pending.token
     at.run()
     at.run()
-    assert wf(at) is workflow and workflow.pending.token == token
+    assert wf(at) is workflow and [r.rule_id for r in workflow.ruleset.active()] == ["R1"]
 
 
 def test_claude_option_explains_its_limits():
@@ -197,7 +172,6 @@ def test_claude_cross_checked_proposal_can_be_confirmed():
     propose(at)
     assert "offline parser + Claude cross-check" not in texts(at.markdown)           # the section was removed on request
     assert "Cross-checked with the Claude API" in why(at)
-    button(at, "Confirm").click().run()
     assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
 
 
@@ -218,7 +192,6 @@ def test_invalid_session_state_is_recovered(value):
     assert isinstance(wf(at), RuleWorkflow) and wf(at).ruleset.rules == {}
     assert not wf(at).monitoring_allowed()
     propose(at)  # and the page works normally afterwards
-    button(at, "Confirm").click().run()
     assert not at.exception and [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
     assert "invalid" not in texts(at.error)  # the recovery message is shown once
 
@@ -232,28 +205,26 @@ def test_valid_session_state_is_kept():
     assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 1
 
 
-@pytest.mark.parametrize("method, label", [("approve", "Confirm"), ("reject", "Reject")])
 @pytest.mark.parametrize("after", [False, True])
-def test_failed_decision_shows_a_controlled_error(monkeypatch, method, label, after):
+def test_failed_decision_shows_a_controlled_error(monkeypatch, after):
     from live_tracker.rules import RuleSet
-    real = getattr(RuleSet, method)
+    real = RuleSet.approve
 
     def faulty(self, rule_id):
         if after:
             real(self, rule_id)
         raise RuntimeError("injected sk-ant-secret")
 
-    at = propose(start())
-    monkeypatch.setattr(RuleSet, method, faulty)
-    button(at, label).click().run()
+    at = start()
+    monkeypatch.setattr(RuleSet, "approve", faulty)
+    propose(at)
     assert not at.exception
-    assert f"{label} failed (RuntimeError)" in texts(at.error)
+    assert "Confirm failed (RuntimeError)" in texts(at.error)
     assert "sk-ant-secret" not in texts(at.error)
     assert wf(at).ruleset.rules == {} and wf(at).ruleset.active() == []
-    assert has_button(at, label)  # still pending
     monkeypatch.undo()
-    button(at, label).click().run()  # retry works
-    assert not at.exception and "R1" in wf(at).ruleset.rules
+    button(at, "Propose rule").click().run()  # retry works
+    assert not at.exception and len(wf(at).ruleset.active()) == 1 and "Confirm failed" not in texts(at.error)
 
 
 def test_backend_exception_is_shown_without_details():
@@ -329,12 +300,11 @@ def test_corrupted_workflow_is_replaced_not_used(name):
     assert fresh.ruleset.rules == {} and fresh.pending is None  # nothing carried over
     assert not has_button(at, "Confirm")
     assert not wf(at).monitoring_allowed()
-    propose(at)
-    button(at, "Confirm").click().run()  # the fresh session works normally
+    propose(at)  # the fresh session works normally
     assert not at.exception and [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
 
 
-def test_healthy_history_survives_reruns_and_decisions():
+def test_healthy_history_survives_reruns():
     workflow = _history_workflow()
     at = AppTest.from_file(PAGE, default_timeout=30)
     at.session_state["rule_workflow"] = workflow
@@ -342,14 +312,10 @@ def test_healthy_history_survives_reruns_and_decisions():
     at.run()
     assert not at.exception
     assert wf(at) is workflow and "invalid" not in texts(at.error)
-    assert has_button(at, "Confirm")  # R3 still pending after restore
-    button(at, "Confirm").click().run()
-    assert not at.exception
-    assert [(r.rule_id, r.status) for r in wf(at).ruleset.rules.values()] == \
-        [("R1", "approved"), ("R2", "rejected"), ("R3", "approved")]
+    assert not has_button(at, "Confirm") and not has_button(at, "Reject")
     at.run()
-    assert "invalid" not in texts(at.error)
-    assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 2
+    assert [(r.rule_id, r.status) for r in wf(at).ruleset.rules.values()] == [("R1", "approved"), ("R2", "rejected")]
+    assert wf(at).monitoring_allowed() and len(wf(at).ruleset.active()) == 1
 
 
 # ---- Codex2 review: missing Rule attributes, non-mapping pending data ----
@@ -380,7 +346,7 @@ def test_pending_pairs_reset_the_session_instead_of_crashing(make):
     assert wf(at).pending is None and wf(at).ruleset.rules == {}
 
 
-def test_read_only_mapping_pending_still_renders_and_confirms():
+def test_read_only_mapping_pending_still_renders():
     from types import MappingProxyType
     from dataclasses import replace
     w = _history_workflow()
@@ -391,7 +357,4 @@ def test_read_only_mapping_pending_still_renders_and_confirms():
     at.session_state["rule_instruction"] = p.instruction
     at.run()
     assert not at.exception and "invalid" not in texts(at.error)
-    assert "Minimum duration" not in texts(at.markdown) and has_button(at, "Confirm")
-    button(at, "Confirm").click().run()
-    assert [(r.rule_id, r.status) for r in wf(at).ruleset.rules.values()] == \
-        [("R1", "approved"), ("R2", "rejected"), ("R3", "approved")]
+    assert not has_button(at, "Confirm") and why(at)

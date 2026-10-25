@@ -114,7 +114,6 @@ def test_the_page_turns_the_loose_sentence_into_a_rule_the_researcher_confirms()
     shown = texts(at.markdown)
     assert "Proposed rule" not in texts(at.subheader) and "Interpreted by:" not in shown
     assert "Read by Claude" in why(at) and "treated as at least 2 seconds" in why(at)
-    [b for b in at.button if b.label == "Confirm"][0].click().run()
     assert at.session_state["rule_workflow"].monitoring_allowed()
 
 

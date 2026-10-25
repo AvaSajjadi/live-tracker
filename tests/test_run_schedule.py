@@ -231,3 +231,9 @@ def test_time_left_is_real_time_across_the_fall_back_night():
     assert s.seconds_left(one_real_hour_before_the_end.astimezone(timezone.utc)) == 3600
     assert s.status_at(one_real_hour_before_the_end.astimezone(timezone.utc)) == "running"
     assert s.seconds_left(s.start.astimezone(timezone.utc)) == 12 * 3600
+
+
+def test_seconds_to_start():
+    s = make()
+    assert s.seconds_to_start(s.start - timedelta(minutes=5)) == 300
+    assert s.seconds_to_start(s.start) == 0.0 and s.seconds_to_start(s.end) == 0.0

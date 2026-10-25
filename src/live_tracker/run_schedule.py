@@ -105,6 +105,10 @@ class RunSchedule:
             return "pending"
         return "running" if now < _utc(self.end) else "finished"
 
+    def seconds_to_start(self, now):
+        """Seconds until the start (0 once it has started)."""
+        return max(0.0, (_utc(self.start) - _utc(_aware(now, "now"))).total_seconds())
+
     def seconds_left(self, now):
         """Seconds until the end (0 once finished)."""
         return max(0.0, (_utc(self.end) - _utc(_aware(now, "now"))).total_seconds())

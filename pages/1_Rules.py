@@ -20,7 +20,7 @@ import streamlit as st
 from live_tracker.agent import Clarification, RuleProposal
 from live_tracker.ui_style import apply as apply_style
 from live_tracker.ui_style import note
-from live_tracker import flow, schedule_ui
+from live_tracker import flow
 from live_tracker.claude_agent import ClaudeUnavailable
 from live_tracker.rule_workflow import (BackendFailure, DecisionError, DuplicateRuleError, RuleWorkflow,
                                         StaleActionError, is_valid_workflow, preview)
@@ -138,8 +138,6 @@ if pending is not None and isinstance(pending.proposal, RuleProposal):
         st.error(str(exc))
     except StaleActionError as exc:
         st.error(f"Ignored: {exc}.")
-
-schedule_ui.render()
 
 st.divider()
 flow.render_nav("rules", can_next=wf.monitoring_allowed(),

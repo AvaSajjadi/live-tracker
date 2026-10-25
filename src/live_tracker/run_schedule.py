@@ -109,10 +109,13 @@ class RunSchedule:
         """Seconds until the end (0 once finished)."""
         return max(0.0, (_utc(self.end) - _utc(_aware(now, "now"))).total_seconds())
 
-    def describe(self):
+    def length_text(self):
         hours, rest = divmod(round(self.planned_s), 3600)
+        return f"{hours} h {rest // 60:02d} min"
+
+    def describe(self):
         return (f"From {self.start:%a %d %b %H:%M} to {self.end:%a %d %b %H:%M} "
-                f"({hours} h {rest // 60:02d} min, {self.tz})")
+                f"({self.length_text()}, {self.tz})")
 
     # ---- the approval gate ----
 
@@ -154,6 +157,8 @@ def for_hours(hours, *, now, tz, start=None, schedule_id="S1", description=""):
     zone = _zone(tz)
     if isinstance(hours, bool) or not isinstance(hours, (int, float)) or hours != hours:
         raise ScheduleError("hours must be a number")
+    if hours <= 0:
+        raise ScheduleError("hours must be more than 0")
     begin = _aware(start if start is not None else now, "start").astimezone(zone)
     return RunSchedule(schedule_id, "duration", tz, begin, _plus_hours(begin, hours, zone),
                        description=description or f"Run for {hours:g} hours")

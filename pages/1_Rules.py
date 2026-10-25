@@ -17,6 +17,7 @@ import json
 import streamlit as st
 
 from live_tracker.agent import Clarification, RuleProposal
+from live_tracker import schedule_ui
 from live_tracker.claude_agent import ClaudeUnavailable
 from live_tracker.rule_workflow import (BackendFailure, DecisionError, DuplicateRuleError, RuleWorkflow,
                                         StaleActionError, is_valid_workflow, preview)
@@ -128,3 +129,5 @@ if wf.monitoring_allowed():
     st.success(f"Monitoring can start: {n} approved rule{'s' if n != 1 else ''}.")
 else:
     st.warning("Monitoring cannot start: no rule is approved yet.")
+
+schedule_ui.render()

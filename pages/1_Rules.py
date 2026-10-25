@@ -69,7 +69,21 @@ if backend == "offline":
     st.caption("The smart reading copes with typos and everyday wording (\"let me know if the mice fight for more than 2 "
                "seconds\") and shows what it understood. It runs on this computer: nothing is sent anywhere.")
 
-text = st.text_area("Instruction", key=TEXT_KEY,
+def why_text():
+    """The reasons and assumptions behind the last answer, for the hover help (?) next to the instruction box."""
+    lines = []
+    if isinstance(wf.last_result, Clarification):
+        lines += [f"- {issue.message}" for issue in wf.last_result.issues]
+    if wf.pending is not None and isinstance(wf.pending.proposal, RuleProposal):
+        info = preview(wf.pending)
+        if info["uses_default_thresholds"]:
+            lines.append("- Untuned default thresholds: " + ", ".join(info["uses_default_thresholds"])
+                         + ". These are example values from rules.py, not chosen on data.")
+        lines += [f"- {a}" for a in info["assumptions"]]
+    return "\n".join(lines) or None
+
+
+text = st.text_area("Instruction", key=TEXT_KEY, help=why_text(),
                     placeholder="For example: let me know if the mice fight for more than 2 seconds")
 
 # 1. a changed instruction invalidates the pending proposal before any click is handled
@@ -79,6 +93,7 @@ wf.sync_instruction(text)
 if st.button("Propose rule", type="primary"):
     with st.spinner("Interpreting..."):
         wf.submit(text, backend=backend)
+    st.rerun()                                       # so the (?) next to the box shows the new reasons
 
 if wf.notice:
     st.info(wf.notice)
@@ -92,8 +107,6 @@ elif isinstance(result, BackendFailure):
     st.error(result.message)
 elif isinstance(result, Clarification):
     st.warning("This instruction cannot be turned into a rule yet. Nothing was proposed.")
-    for issue in result.issues:
-        st.markdown(f"- {issue.message}")
     if wf.last_backend == "offline":
         st.caption("Try other words, and say how long the behavior must last, in seconds. For example: "
                    "\"Let me know if the mice fight for at least 2 seconds\".")
@@ -117,12 +130,6 @@ if pending is not None and isinstance(pending.proposal, RuleProposal):
         f"- **Ask threshold:** {p['ask_threshold']}\n"
         f"- **Interpreted by:** {INTERPRETED_BY[p['backend']]}"
     )
-    if p["uses_default_thresholds"]:
-        st.warning("Untuned default thresholds: " + ", ".join(p["uses_default_thresholds"])
-                   + ". These are example values from rules.py, not chosen on data.")
-    st.markdown("**Assumptions to check before confirming:**")
-    for a in p["assumptions"]:
-        st.markdown(f"- {a}")
     st.markdown("**Your instruction:**")
     st.text(p["instruction"])
     with st.expander("Rule JSON"):

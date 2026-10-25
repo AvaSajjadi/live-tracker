@@ -100,6 +100,11 @@ def test_the_page_offers_the_reading_as_a_third_choice_and_explains_it():
     assert "refused, not dropped" in texts(at.caption) and "ANTHROPIC_API_KEY" in texts(at.caption)
 
 
+def why(at):
+    """The hover help (?) next to the instruction box."""
+    return at.text_area[0].help or ""
+
+
 def test_the_page_turns_the_loose_sentence_into_a_rule_the_researcher_confirms():
     at = open_page(RuleWorkflow(interpret_fn=fake_interpreter()))
     at.radio[0].set_value(THIRD).run()
@@ -108,7 +113,7 @@ def test_the_page_turns_the_loose_sentence_into_a_rule_the_researcher_confirms()
     assert not at.exception
     shown = texts(at.markdown)
     assert "Proposed rule R1" in texts(at.subheader) and "Interpreted by:** Claude (paid), checked by code" in shown
-    assert "Read by Claude" in shown and "treated as at least 2 seconds" in shown and "Minimum duration:** at least 2 seconds" in shown
+    assert "Read by Claude" in why(at) and "treated as at least 2 seconds" in why(at) and "Minimum duration:** at least 2 seconds" in shown
     [b for b in at.button if b.label == "Confirm"][0].click().run()
     assert "approved" in texts(at.success) or "Monitoring can start" in texts(at.success)
 
@@ -131,7 +136,7 @@ def test_a_constraint_the_rule_cannot_express_is_shown_as_a_refusal_with_the_rea
     at.text_area(key="rule_instruction").set_value(text).run()
     [b for b in at.button if b.label == "Propose rule"][0].click().run()
     assert "cannot be turned into a rule yet" in texts(at.warning)
-    assert "location condition ('near the wall')" in texts(at.markdown)
+    assert "location condition ('near the wall')" in why(at)
 
 
 # ---- the smart reading is the default on the page ----
@@ -144,8 +149,8 @@ def test_the_first_choice_is_the_smart_reading_and_it_understands_a_loose_senten
     assert not at.exception
     shown = texts(at.markdown)
     assert "Interpreted by:** smart reading (offline, free)" in shown
-    assert "Your sentence was read as: 'let me know if the mice are attacking for at least 2 seconds'." in shown
-    assert "Read 'fighting' as attack" in shown and "inclusive minimum" in shown
+    assert "Your sentence was read as: 'let me know if the mice are attacking for at least 2 seconds'." in why(at)
+    assert "Read 'fighting' as attack" in why(at) and "inclusive minimum" in why(at)
     assert "Minimum duration:** at least 2 seconds" in shown and "Behavior:** attack" in shown
 
 
@@ -154,7 +159,7 @@ def test_a_refusal_is_shown_in_plain_words_with_an_example_and_no_code_names():
     at.text_area(key="rule_instruction").set_value("alert me when mice attack for less than 2 seconds").run()
     [b for b in at.button if b.label == "Propose rule"][0].click().run()
     assert "cannot be turned into a rule yet" in texts(at.warning)
-    assert "unsupported_duration" not in texts(at.markdown) and "Try other words" in texts(at.caption)
+    assert "unsupported_duration" not in texts(at.markdown) and "unsupported_duration" not in why(at) and "Try other words" in texts(at.caption)
     assert "Proposed rule" not in texts(at.subheader)
 
 

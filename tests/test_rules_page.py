@@ -54,6 +54,11 @@ def texts(elements):
     return " ".join(e.value for e in elements)
 
 
+def why(at):
+    """The hover help (?) next to the instruction box: the reasons and the assumptions."""
+    return at.text_area[0].help or ""
+
+
 def wf(at) -> RuleWorkflow:
     return at.session_state["rule_workflow"]
 
@@ -70,10 +75,12 @@ def test_proposal_preview_shows_all_fields():
     body = texts(at.markdown)
     for expected in ("**Behavior:** attack", "**Minimum duration:** at least 2 seconds",
                      "**Alert mode:** alert:", "**Alert threshold:** 0.8 (untuned example default",
-                     "**Ask threshold:** 0.5 (untuned example default", "rules.py defaults are used"):
+                     "**Ask threshold:** 0.5 (untuned example default"):
         assert expected in body, expected
+    assert "rules.py defaults are used" in why(at)                                   # in the (?), not in bullets on the page
+    assert "Assumptions to check" not in body
     assert "NOT active until you click Confirm" not in texts(at.warning)           # removed on request; Confirm / Reject decide
-    assert "Untuned default thresholds: alert_threshold, ask_threshold" in texts(at.warning)
+    assert "Untuned default thresholds: alert_threshold, ask_threshold" in why(at) and not at.warning[0].value.startswith("Untuned")
     assert EXAMPLE in texts(at.text)  # the original instruction, shown separately
     assert '"status": "proposed"' in at.code[0].value
     assert has_button(at, "Confirm") and has_button(at, "Reject")
@@ -83,7 +90,7 @@ def test_proposal_preview_shows_all_fields():
 
 def test_implicit_minimum_assumption_is_shown():
     at = propose(start(), "Alert me if they attack for 2 s")
-    assert "Interpreted duration as at least 2 seconds." in texts(at.markdown)
+    assert "Interpreted duration as at least 2 seconds." in why(at)
 
 
 def test_confirm_activates_and_enables_monitoring():
@@ -116,7 +123,8 @@ def test_clarification_has_no_confirm_button(text):
     at = propose(start(), text)
     assert "cannot be turned into a rule yet" in texts(at.warning)
     for issue in parse_rule(text, "R1").issues:  # every reason is shown to the researcher, in plain words (no code names)
-        assert f"- {issue.message}" in texts(at.markdown) and issue.code not in texts(at.markdown)
+        assert f"- {issue.message}" in why(at) and issue.code not in why(at)
+        assert issue.message not in texts(at.markdown)                                # not shown as bullets on the page
     assert not has_button(at, "Confirm") and not has_button(at, "Reject")
     assert wf(at).ruleset.rules == {}
 
@@ -188,7 +196,7 @@ def test_claude_cross_checked_proposal_can_be_confirmed():
     at.radio[0].set_value(at.radio[0].options[1]).run()
     propose(at)
     assert "offline parser + Claude cross-check" in texts(at.markdown)
-    assert "Cross-checked with the Claude API" in texts(at.markdown)
+    assert "Cross-checked with the Claude API" in why(at)
     button(at, "Confirm").click().run()
     assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
 

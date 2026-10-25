@@ -17,6 +17,7 @@ import streamlit as st
 
 from . import camera_check as cc
 from . import camera_live
+from . import mars_job
 from . import demo
 from . import flow
 from . import uploads as up
@@ -145,14 +146,18 @@ def render_usb_camera():
             st.error("These corners cannot be used. Press Reset the corners.")
         elif not live:
             png = _marked_png(state["png"], screen)
-    mode = st.radio("What should the program analyze?", [REAL_POSE, STAGED], key="upload_cam_mode",
-                    help="Real: a pose model finds the mice in the camera picture (none is set up yet). "
-                         "Staged: the camera shows the iPad, but the numbers come from saved keypoints of the demo video.")
+    mode = st.radio("What should the program analyze?", [OFFLINE, STAGED, REAL_POSE], key="upload_cam_mode",
+                    help="Record then analyze: real pose from your recording, with MARS, not live (about 25 minutes for each minute "
+                         "of video). Staged: the camera shows the iPad live, but the numbers come from saved keypoints of the demo "
+                         "video. Live real pose: needs a pose model fast enough for live video (none yet).")
     staged = mode == STAGED
     current = flow.get_source()                                  # another camera, corners or mode than the saved ones: choose again
     if current is not None and current.device is not None and (
             current.device != device.strip() or current.screen != screen or current.staged_camera != staged):
         st.session_state.pop(flow.SOURCE_KEY, None)
+    if mode == OFFLINE:
+        render_record_and_analyze(device, live, screen_on, screen)
+        return ("live", device.strip()) if live else ("image", png)
     if staged:
         render_staged_choice(device, screen)
         return ("live", device.strip()) if live else ("image", png)
@@ -164,7 +169,9 @@ def render_usb_camera():
     return ("live", device.strip()) if live else ("image", png)
 
 
-REAL_POSE, STAGED = "Real pose model (needs a pose model)", "Staged demo (saved keypoints of the demo video)"
+OFFLINE = "Record, then analyze with MARS (real pose, not live)"
+STAGED = "Staged demo (saved keypoints of the demo video)"
+REAL_POSE = "Live real pose (needs a fast pose model)"
 
 
 def render_staged_choice(device, screen):
@@ -180,6 +187,93 @@ def render_staged_choice(device, screen):
     if st.button("Use the staged demo", type="primary", key="upload_use_staged"):
         flow.set_source(up.SessionSource("demo", f"Staged demo: camera {device} films the screen", video=str(d.video),
                                          poses=str(d.poses), session=d.session, device=device.strip(), screen=screen))
+
+
+def recordings_root():
+    import os
+    from pathlib import Path
+    return Path(os.environ.get("LIVE_TRACKER_RECORDINGS") or up.ROOT / "outputs" / "recordings")
+
+
+def render_record_and_analyze(device, live, screen_on, screen):
+    """Record the camera (the screen stretched to 1024 x 570), run MARS on the recording in the background, use the result."""
+    from datetime import datetime, timezone
+    st.info("Real pose, offline. The camera is recorded with the screen stretched to 1024 x 570. Then MARS finds the mice in the "
+            "recording. This laptop needs about 25 minutes for each minute of video, so record 10 to 20 seconds first. "
+            "MARS needs a top view with one black and one white mouse.")
+    ok, why = mars_job.available()
+    if not ok:
+        st.error(why)
+    g = None
+    if live:
+        try:
+            g = camera_live.grabber(device)              # opens the camera now, so the buttons below can use it
+        except camera_live.rsrc.CameraUnavailableError as exc:
+            st.error(f"The camera cannot be used: {exc}.")
+    if g is None:
+        st.caption("Press Test the camera first, so the live video runs. Then you can record.")
+    elif g.recording:
+        st.error("RECORDING. Play the video on the screen now. Press Stop recording when it is over.")
+        if st.button("Stop recording", type="primary", key="upload_rec_stop"):
+            st.session_state["upload_recording"] = g.stop_recording()
+            st.session_state.pop("upload_job", None)
+            st.rerun()
+    else:
+        blocked = screen_on and screen is None
+        if st.button("Start recording", type="primary", key="upload_rec_start", disabled=blocked):
+            folder = recordings_root() / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            folder.mkdir(parents=True, exist_ok=True)
+            try:
+                g.start_recording(folder / "camera.mp4", screen if screen_on else None)
+            except (RuntimeError, OSError) as exc:
+                st.error(f"Not started: {exc}")
+            else:
+                st.session_state.pop("upload_recording", None)
+                st.session_state.pop("upload_job", None)
+                st.rerun()
+    rec = st.session_state.get("upload_recording")
+    if not rec:
+        return
+    st.success(f"Recorded {rec['seconds']:.0f} s ({rec['frames']} frames, {rec['width']} x {rec['height']}). Saved in {rec['path']}.")
+    if "upload_job" not in st.session_state:
+        minutes = mars_job.estimate_minutes(rec["frames"])
+        if st.button(f"Analyze with MARS (about {minutes:.0f} min)", type="primary", key="upload_mars_start", disabled=not ok):
+            from pathlib import Path
+            job = Path(rec["path"]).parent / "mars"
+            try:
+                mars_job.start(rec["path"], job, fps=rec["fps"])
+            except (RuntimeError, OSError) as exc:
+                st.error(f"Not started: {exc}")
+            else:
+                camera_live.release()                           # the camera is not needed now; the CPU is
+                st.session_state["upload_live"] = False
+                st.session_state["upload_job"] = str(job)
+                st.rerun()
+    else:
+        job_panel(st.session_state["upload_job"], rec)
+
+
+@st.fragment(run_every=2)
+def job_panel(job_dir, rec):
+    s = mars_job.status(job_dir)
+    if s["state"] == "running":
+        total = s["total"] or rec["frames"]
+        st.progress(min(1.0, s["done"] / total) if total else 0.0,
+                    text=f"MARS: {s['done']} of {total} frames ({s['message']}). You can leave this page; the job goes on.")
+    elif s["state"] == "failed":
+        st.error(f"The analysis did not finish: {s['message']}. The log is in {job_dir}.")
+    elif s["state"] == "finished":
+        st.success(f"MARS finished ({s['message']}).")
+        if st.button("Use this recording", type="primary", key="upload_use_recording"):
+            from pathlib import Path
+            try:
+                source = up.build_keypoints_source(("keypoints.parquet", mars_job.result(job_dir).read_bytes()),
+                                                   (Path(rec["path"]).name, Path(rec["path"]).read_bytes()), fps=rec["fps"])
+            except (up.UploadError, OSError) as exc:
+                st.error(f"Not used: {exc}")
+            else:
+                flow.set_source(source)
+                st.rerun()
 
 
 STRETCHED_CAPTION = "The screen stretched to 1024 x 570. The whole video should fill this picture, with no border."
@@ -218,6 +312,10 @@ def live_preview(device):
         st.error(f"The camera cannot be shown: {why}.")
         return
     import cv2
+    g = camera_live.current()
+    status = g.recording_status() if g is not None else None
+    if status is not None:
+        st.error(f"RECORDING  {status['seconds']:.0f} s  ({status['frames']} frames)")
     if not st.session_state.get("upload_screen_on", True):
         st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera video", width="stretch")
         return

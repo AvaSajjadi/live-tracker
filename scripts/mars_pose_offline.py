@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import sys
 import time
@@ -245,7 +246,19 @@ def main(argv=None):
         return 0
     if not a.video:
         raise SystemExit("give a video file")
-    process(a.video, a.out, a.models_dir, parse_corners(a.corners), a.start_frame, a.max_frames, a.batch, a.session, a.fps, a.save_video)
+    done_path = a.out + ".done.json"                         # the app looks for this file to know the job ended
+    if os.path.exists(done_path):
+        os.remove(done_path)
+    t0 = time.time()
+    try:
+        df = process(a.video, a.out, a.models_dir, parse_corners(a.corners), a.start_frame, a.max_frames, a.batch, a.session, a.fps,
+                     a.save_video)
+    except BaseException as exc:                              # a failed job must say so, not just stop
+        with open(done_path, "w", encoding="utf-8") as f:
+            json.dump({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500]}, f)
+        raise
+    with open(done_path, "w", encoding="utf-8") as f:
+        json.dump({"ok": True, "frames": int(df["frame"].nunique()), "seconds": round(time.time() - t0, 1)}, f)
     return 0
 
 

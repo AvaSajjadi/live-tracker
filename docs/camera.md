@@ -104,11 +104,25 @@ Live pose on this laptop is too slow, so a recorded video is analyzed afterwards
 **Where things are (outside the project, not in Git):** `%USERPROFILE%\mars_local` holds the MARS models (`models\`, 328 MB of `.pb`
 files) and a Python environment with TensorFlow (`env\`). MARS models: CC BY-NC 4.0, from Caltech Data record 801be-66057.
 
-**Speed on this laptop (CPU, 8 cores):** about 1.2 frames per second after a 20 s warm-up. So 300 frames (10 s of video) take
+**Speed on this laptop (CPU, 8 cores):** about 1.2 frames per second after a start-up of about 45 s. So 300 frames (10 s of video) take
 about 5 minutes, and 1 minute of video takes about 25 minutes. Start with a short clip.
 
+**In the app (recommended):**
+
+1. Upload step, "Connect a camera", "USB camera", press **Test the camera**. The live video starts.
+2. Drag the 4 red corners onto the 4 corners of the video on the screen. Check the stretched view.
+3. Mode **"Record, then analyze with MARS"** (the default). Press **Start recording**, play the video on the screen, press
+   **Stop recording** (10 to 20 seconds first). The recording is saved as 1024 x 570 at 30 frames per second in
+   `outputs/recordings/<time>/camera.mp4` (not in Git).
+4. Press **Analyze with MARS (about N min)**. It runs in the background with a progress bar; you can leave the page.
+5. When it says finished, press **Use this recording**. Then Rules and Real session as usual.
+
+About 45 s of the time is start-up, then about 1.2 frames per second.
+
+**On the command line (same result):**
+
 1. Record the camera video (for example with the Windows Camera app). Keep the screen steady in the picture.
-2. In the app, Upload step, "USB camera": drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook"
+2. In the app, Upload step: drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook"
    (it works for the local command too).
 3. Run, from the project folder (keypoints.parquet and stretched.mp4 appear in the folder you run it from):
 
@@ -116,6 +130,9 @@ about 5 minutes, and 1 minute of video takes about 25 minutes. Start with a shor
 
 4. In the app: Upload > "Upload a video and its keypoints", choose `stretched.mp4` and `keypoints.parquet`. Then Rules and
    Real session as usual.
+
+Note: OpenCV on this laptop cannot write H.264, so the recording is an older mp4 format. It is fine for the analysis. To see it in
+the browser, the project's optional converter (`imageio-ffmpeg`) must be installed (the page then shows a "Prepare the video" button).
 
 The script (`scripts/mars_pose_offline.py`) does the same steps as MARS: stretch the screen, two detectors for the black and the
 white mouse, crop, hourglass heatmaps, brightest point. It only reads the `.pb` model files. It never opens the `.pkl` files in the

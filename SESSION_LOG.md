@@ -298,3 +298,9 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
 4. Problems: 2 tests in `test_session_view.py` fail when run together with the others. They fail the same way before our change. They pass when run alone. So it is a test order problem, not new.
 5. Not finished: the camera code is still in the project but no page uses it: `pose_model.py`, `camera_check.py`, `make_source` camera, `scripts/find_cameras.py`. Nikon is still not a webcam.
 6. Next time: find out why the 2 tests fail in a group. Camera work waits until the user wants it back (`git revert` the revert to get the USB page back).
+
+### Part 8, later: all camera work removed
+1. The user said the camera option was still there. We also reverted `d934f6e` (pose model slot, camera check, camera in `make_source`) and `427a437` (camera scan script).
+2. Code, pages, tests and docs now match commit `53278e2` (the demo before the real camera work). Only the session log is different.
+3. The old dashboard on port 8766 is the demo version. The test dashboard on port 8767 is gone. Restart `streamlit run app.py` and press Ctrl+F5 in the browser.
+4. To get camera work back: `git revert` the three revert commits.

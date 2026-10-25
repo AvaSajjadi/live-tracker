@@ -69,7 +69,10 @@ def camera_spec(source):
     """The run_sources description of a real camera. No GO signal: the camera is already live."""
     if source.kind != "camera":
         raise mr.RunRefusedError("this source is not a camera")
-    return {"kind": "camera", "device": (source.device or "0").strip(), "session": "camera"}
+    spec = {"kind": "camera", "device": (source.device or "0").strip(), "session": "camera"}
+    if source.screen is not None:
+        spec["screen"] = [list(p) for p in source.screen]
+    return spec
 
 
 def start_camera(source, rules, *, now=None, launcher=None, limit_s=None):

@@ -20,6 +20,17 @@ The answer is checked on every frame (`pose_model.check_output`). A wrong layout
 Warning: Model B was trained on a top-down view like CalMS21. A camera with another view or another cage gives
 scores that mean little, even if the keypoints are right.
 
+## A camera that films a screen (the presentation setup)
+
+If the camera is on a holder and films an iPad that plays a CalMS21 video, choose "The camera films a screen" on the
+Upload step and set the 4 corners of the video (`src/live_tracker/screen_map.py`). Every picture is then stretched so the
+video fills a 1024 x 570 frame **before** the pose model sees it. In that case the model does not have to map the picture
+itself: it only has to find the mice and give keypoints in the picture it receives. Without a screen, the model still must
+do the mapping itself.
+
+Tips: iPad brightness high, no light shining on the screen, camera still and facing the screen straight on, and the whole
+video visible. The screen setup page shows the stretched picture so the corners can be checked.
+
 ## How to plug one in
 
 1. Write a backend: `factory(settings, root)` returns the function above.

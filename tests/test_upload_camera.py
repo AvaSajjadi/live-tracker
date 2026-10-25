@@ -58,3 +58,16 @@ def test_changing_the_number_asks_for_a_new_test(monkeypatch):
 def test_choosing_a_usb_camera_drops_the_demo_camera(monkeypatch):
     at = open_usb(monkeypatch, lambda device, opener=None: (PNG, None))
     assert "flow_source" not in at.session_state
+
+
+def test_the_screen_corners_are_saved_with_the_camera_and_shown_stretched(monkeypatch):
+    from live_tracker import screen_map as sm
+    big = cv2.imencode(".png", np.full((480, 640, 3), 80, dtype=np.uint8))[1].tobytes()
+    at = open_usb(monkeypatch, lambda device, opener=None: (big, None))
+    button(at, "upload_test_camera").click().run()
+    assert not at.exception
+    button(at, "upload_use_camera").click().run()
+    assert at.session_state["flow_source"].screen == sm.check_corners(sm.DEFAULT_CORNERS)
+    at.checkbox(key="upload_screen_on").set_value(False).run()
+    button(at, "upload_use_camera").click().run()
+    assert at.session_state["flow_source"].screen is None

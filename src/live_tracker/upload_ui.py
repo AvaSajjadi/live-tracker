@@ -124,12 +124,47 @@ def render_usb_camera():
         st.error(f"The camera cannot be used: {state['why']}.")
         return None
     st.success("The camera works.")
+    screen, png = screen_setup(state["png"])
     _, reason = cc.pose_model.load()
     if reason:
         st.warning(f"{reason} You can choose this camera now, but the analysis cannot start until a pose model is set up.")
+    current = flow.get_source()                                  # other corners than the saved ones: choose again
+    if current is not None and current.kind == "camera" and current.screen != screen:
+        st.session_state.pop(flow.SOURCE_KEY, None)
     if st.button("Use this camera", type="primary", key="upload_use_camera"):
-        flow.set_source(up.SessionSource("camera", f"USB camera {device}", device=device.strip()))
-    return ("image", state["png"])
+        flow.set_source(up.SessionSource("camera", f"USB camera {device}", device=device.strip(), screen=screen))
+    return ("image", png)
+
+
+CORNER_NAMES = ("top-left", "top-right", "bottom-right", "bottom-left")
+
+
+def screen_setup(png):
+    """The camera films a screen (for example an iPad playing the video)? Choose its 4 corners.
+    Returns (the corners or None, the PNG to show). The stretched result is shown so it can be checked."""
+    if not st.checkbox("The camera films a screen (for example an iPad that plays the video)", value=True, key="upload_screen_on"):
+        return None, png
+    import cv2
+    import numpy as np
+    from . import screen_map as sm
+    st.caption("Move the 4 corners until the green shape sits on the edge of the video. Numbers are percent of the picture.")
+    corners = []
+    for i, (name, (dx, dy)) in enumerate(zip(CORNER_NAMES, sm.DEFAULT_CORNERS)):
+        a, b = st.columns(2)
+        x = a.slider(f"{i + 1} {name}: left to right", 0, 100, int(dx * 100), key=f"upload_corner_{i}_x")
+        y = b.slider(f"{i + 1} {name}: top to bottom", 0, 100, int(dy * 100), key=f"upload_corner_{i}_y")
+        corners.append((x / 100.0, y / 100.0))
+    image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    try:
+        corners = sm.check_corners(corners)
+        marked = sm.outline(image, corners)
+        stretched = sm.warp(image, corners)
+    except sm.ScreenError as exc:
+        st.error(f"These corners cannot be used: {exc}.")
+        return None, png
+    st.image(cv2.cvtColor(stretched, cv2.COLOR_BGR2RGB), caption="What the pose model will see (1024 x 570). "
+             "The whole video should fill this picture, with no border.", width="stretch")
+    return corners, cv2.imencode(".png", marked)[1].tobytes()
 
 
 def render_camera():

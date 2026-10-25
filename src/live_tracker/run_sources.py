@@ -224,6 +224,7 @@ def make_source(spec, root=ROOT):
     {"kind": "poses_file", "path": "data/raw/calms21_video/mouse064_poses.parquet", "session": "..."}
     {"kind": "upload_poses", "path": "outputs/uploads/<time>/mice_poses.parquet", "session": "UPLOAD_mice"}
     {"kind": "camera", "device": 0}
+    {"kind": "camera", "device": 0, "screen": [[0.15, 0.15], [0.85, 0.15], [0.85, 0.85], [0.15, 0.85]]}
     """
     root = Path(root)
     kind = spec.get("kind")
@@ -274,6 +275,12 @@ def make_source(spec, root=ROOT):
             estimator, reason = pose_model.load(root)
             if estimator is None:
                 raise NoPoseModelError(reason)
+        if spec.get("screen") is not None:      # the camera films a screen: stretch the video part to the CalMS21 frame first
+            from .screen_map import ScreenError, with_screen
+            try:
+                estimator = with_screen(estimator, spec["screen"])
+            except ScreenError as exc:
+                raise SourceRefusedError(f"the screen corners cannot be used: {exc}") from exc
         device = camera_device(spec.get("device", 0))
         return CameraSource(open_camera(device), estimator, session=spec.get("session", "camera"), fps=fps,
                             reopen=lambda: open_camera(device), description=f"camera {device}")

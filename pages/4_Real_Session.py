@@ -102,7 +102,5 @@ with st.expander("Feature table (first 200 rows)"):
 
 # --- context: ground-truth annotation -------------------------------------------------------
 st.subheader("Annotation (ground truth, context only)")
-st.caption("CalMS21's own labels for this session. No feature or warning above uses them. "
-           "Not a model prediction.")
 bouts = sv.label_bouts(view.labels)
 st.dataframe(bouts.drop(columns="session").round(2), hide_index=True, width="stretch")

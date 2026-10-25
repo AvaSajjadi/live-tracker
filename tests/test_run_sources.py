@@ -235,3 +235,22 @@ def test_poses_file_refuses_test_sessions_other_sessions_and_wrong_files(tmp_pat
         rsrc.make_source({"kind": "poses_file", "path": "one.parquet", "session": "task1/other"}, root)
     with pytest.raises(rsrc.SourceRefusedError, match="does not hold exactly"):
         rsrc.make_source({"kind": "poses_file", "path": "one.parquet", "session": "task1/train/a"}, root)
+
+
+# ---- an uploaded keypoints file ----
+
+def test_make_source_upload_poses_plays_an_uploaded_session(tmp_path):
+    make_poses(20, seed=2, session="UPLOAD_mice").to_parquet(tmp_path / "mice_poses.parquet", index=False)
+    src = rsrc.make_source({"kind": "upload_poses", "path": "mice_poses.parquet", "session": "UPLOAD_mice"}, tmp_path)
+    assert src.session == "UPLOAD_mice" and src.kind == "pose" and "uploaded keypoints" in src.description
+    assert src.read().frame == 0
+
+
+def test_upload_poses_refuses_test_sessions_and_the_wrong_file(tmp_path):
+    root = manifest_root(tmp_path)
+    make_poses(5, session="UPLOAD_mice").to_parquet(tmp_path / "m.parquet", index=False)
+    for session in ("task1/test/c", "x/test/y", None):
+        with pytest.raises(rsrc.SourceRefusedError, match="never used"):
+            rsrc.make_source({"kind": "upload_poses", "path": "m.parquet", "session": session}, root)
+    with pytest.raises(rsrc.SourceRefusedError, match="does not hold exactly"):
+        rsrc.make_source({"kind": "upload_poses", "path": "m.parquet", "session": "UPLOAD_other"}, root)

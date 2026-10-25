@@ -216,6 +216,7 @@ def make_source(spec, root=ROOT):
     {"kind": "scores", "path": "outputs/scores_validation_model_b.csv", "session": "..."}
     {"kind": "keypoints", "json": "data/raw/calms21/calms21_task1_train.json", "session": "..."}
     {"kind": "poses_file", "path": "data/raw/calms21_video/mouse064_poses.parquet", "session": "..."}
+    {"kind": "upload_poses", "path": "outputs/uploads/<time>/mice_poses.parquet", "session": "UPLOAD_mice"}
     {"kind": "camera", "device": 0}
     """
     root = Path(root)
@@ -243,6 +244,22 @@ def make_source(spec, root=ROOT):
             if set(poses["session"]) != {session}:
                 raise SourceRefusedError(f"{path.name} does not hold exactly the session {session!r}")
         return KeypointFileSource(poses, session, fps, description=f"recorded keypoints of {session}")
+    if kind == "upload_poses":                  # a keypoints file the researcher uploaded (already checked by uploads.py)
+        import re
+        session = spec.get("session")
+        path = Path(spec["path"])
+        path = path if path.is_absolute() else root / path
+        if not session or re.search(r"(^|/)test(/|$)", session):
+            raise SourceRefusedError("test-split sessions are never used by the agent")
+        try:
+            if session in check_manifest(json.loads((root / "splits/split_manifest.json").read_text(encoding="utf-8")))["test"]:
+                raise SourceRefusedError("test-split sessions are never used by the agent")
+        except (OSError, ValueError):
+            pass                                # no manifest here: the name check above is all there is
+        poses = pd.read_parquet(path)
+        if set(poses["session"]) != {session}:
+            raise SourceRefusedError(f"{path.name} does not hold exactly the session {session!r}")
+        return KeypointFileSource(poses, session, fps, description=f"uploaded keypoints ({path.name})")
     if kind == "camera":
         # a pose model is the missing piece; nothing is opened before it exists
         return CameraSource(None, spec.get("pose_estimator"), session=spec.get("session", "camera"), fps=fps)

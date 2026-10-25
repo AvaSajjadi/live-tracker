@@ -320,3 +320,5 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
 1. Problem: on the Real session page the report headings were huge (screenshot from the user).
 2. Fix: `_small_headings` in `live_view.py` makes `#` into `####` and `##` into `#####` for the page only. The saved and downloaded file is not changed.
 3. Not finished: the user may want more changes to the look (spacing, table, shorter text).
+
+Later: the smaller headings still looked big (the theme in `ui_style.py` sizes all headings). Now `_small_headings` turns heading lines into bold lines. Dashboard on 8766 restarted.

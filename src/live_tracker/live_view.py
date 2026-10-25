@@ -178,13 +178,11 @@ def counts(run_dir):
 
 
 def _small_headings(text):
-    """Page view only: the big Markdown headings are too large here, so '#' becomes '####' and '##' becomes '#####'."""
+    """Page view only: the theme makes Markdown headings very large, so a heading line becomes a bold line."""
     lines = []
     for line in text.split("\n"):
-        if line.startswith("## "):
-            line = "#####" + line[2:]
-        elif line.startswith("# "):
-            line = "####" + line[1:]
+        if line.startswith("# ") or line.startswith("## "):
+            line = f"**{line.lstrip('#').strip()}**"
         lines.append(line)
     return "\n".join(lines)
 

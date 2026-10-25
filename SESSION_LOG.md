@@ -208,3 +208,25 @@ Notes:
 5. Docs still mention the removed notices in places (`docs/demo_recording.md` talks about the demo-mode line, the "Chosen" box and the assumptions list). Update them.
 6. Open from before: camera needs a mouse pose model (none exists); real-key test of the Claude reader; real-data Replay run; backup video, slides, report, rehearsal; record the screen video and screenshots for Canvas.
 7. Demo models: both retrained with the project Python (scikit-learn 1.9.1). Old ones are in `models/backup_sklearn_1.7.2/`. Demo session now gives 44 events.
+
+## Part 5 - 2026-10-25 (Real session layout, new Replay page)
+
+### 1. What we did
+1. Real session page: run details on the left, small live video (1/4 width) on the right (`live_view.py`). Commit `88cdb61`.
+2. Replay page: removed all run details. It now shows only the real video and a skeleton drawing of the mice that follows the video time. Purpose: check that the model finds the mice.
+3. New file `src/live_tracker/skeleton_player.py` (reads the poses, builds a small canvas page). `pages/2_Replay.py` rewritten.
+
+### 2. Commands
+- `pytest` on the live view, flow, replay, investigation and run view tests.
+
+### 3. Files changed
+`pages/2_Replay.py`, `src/live_tracker/skeleton_player.py` (new), `tests/test_replay_page.py` (rewritten, keeps helpers `DEMO`, `TRACK`, `workflow`, `start`), and old Replay page tests removed in `test_replay_investigation.py`, `test_validation_run_view.py`, `test_investigation_page.py`, `test_demo_smoke.py`.
+
+### 4. Problems
+- Two `test_session_view.py` tests fail only when run together with other test files. They pass alone. Cause not found.
+- The skeleton canvas finds the video through the parent page. I could not check it in a browser (no browser tool).
+
+### 5. Not finished
+- Look at the Replay page in the browser. The skeletons must move with the video.
+- Skeleton lines are still PROVISIONAL. Full test run on the final code.
+- The video is not drawn under the skeletons (side by side only).

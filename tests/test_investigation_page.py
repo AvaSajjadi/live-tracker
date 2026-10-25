@@ -97,19 +97,6 @@ def test_displayed_provenance_is_the_cached_records():
     assert at.get("download_button")[0].label == "Download investigation record (JSON)"
 
 
-def test_replay_and_investigation_share_one_record(monkeypatch):
-    calls = []
-    real = ri.investigate_replay
-    monkeypatch.setattr(ri, "investigate_replay", lambda *a: calls.append(1) or real(*a))
-    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
-    at.run()
-    at.session_state["rule_workflow"] = workflow()
-    at.switch_page("pages/2_Replay.py").run()
-    next(b for b in at.button if b.label == "End of session").click().run()
-    assert not at.exception and len(calls) == 1                       # Replay's end view computed it
-    at.switch_page(PAGE).run()
-    rerun(at)
-    assert not at.exception and len(calls) == 1 and len(cached(at)) == 1   # reused: same identity, same record
 
 
 # ---- insufficient evidence, exclusions, quality ----

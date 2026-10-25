@@ -89,15 +89,6 @@ def end_of_session(at):
     return at
 
 
-def test_the_end_view_shows_the_investigation_evidence_labelled_synthetic():
-    at = end_of_session(start(workflow()))
-    exp = section(at)
-    assert any("not a scientific finding" in w.value for w in exp.warning)
-    text = " ".join(c.value for c in exp.caption)
-    assert "query_events: 2 bout(s)" in text and "insufficient_evidence" in text and "too_few_bouts" in text
-    assert "Association only: True" in text
-    assert any(b.label == "Download investigation record (JSON)" for b in at.get("download_button")
-               if hasattr(b, "label"))
 
 
 def test_the_investigation_section_appears_only_at_the_end():
@@ -105,11 +96,6 @@ def test_the_investigation_section_appears_only_at_the_end():
     assert not [e for e in at.expander if "Investigation evidence" in e.label]
 
 
-def test_the_section_follows_the_selected_session():
-    at = start(workflow(), replay_session=TRACK)
-    at = end_of_session(at)
-    text = " ".join(c.value for c in section(at).caption)
-    assert "query_events:" in text and "insufficient_evidence" in text
 
 
 # ---- cache identity: pose, scores, rules, session and configuration (Codex review) ----
@@ -125,58 +111,14 @@ def with_nan_pose(entry, t0, t1):
     return dataclasses.replace(entry, pose=pose)
 
 
-def test_a_changed_pose_recomputes_the_evidence_codex_reproduction(monkeypatch):
-    at = end_of_session(start(workflow(), replay_session=TRACK))
-    assert "17.00 s baseline_window_unreliable" in excluded_text(at)   # the stuck tracker inside the baseline
-    demo, track = rv.synthetic_catalog()
-    changed = with_nan_pose(track, 15.0, 17.0)                          # same scores, session and rules
-    monkeypatch.setattr(rv, "synthetic_catalog", lambda: (demo, changed))
-    at.run()
-    assert not at.exception, at.exception
-    assert "17.00 s pre_window_unreliable" in excluded_text(at)          # recomputed, not the stale result
-    fresh = ri.investigate_replay(changed, workflow().ruleset.active(), at.session_state["replay_active_run"])
-    shown = [v for k, v in at.session_state["replay_investigation_cache"].items()
-             if v["inputs"]["pose_sha256"] == rv.content_digest(changed.pose)]
-    assert len(shown) == 1 and shown[0]["rules"] == fresh["rules"]      # the panel's (and download's) result
-    assert any(rv.content_digest(changed.pose)[:12] in c.value for c in section(at).caption)
 
 
 def compare_caption(at):
     return " ".join(c.value for c in section(at).caption if c.value.startswith("compare_windows"))
 
 
-def test_unchanged_inputs_reuse_the_result_and_a_real_preset_change_recomputes(monkeypatch):
-    calls = []
-    real = ri.investigate_replay
-    monkeypatch.setattr(ri, "investigate_replay", lambda *a: calls.append(1) or real(*a))
-    at = end_of_session(start(workflow()))
-    at.run()
-    at.run()
-    assert len(calls) == 1 and "pre 2 s" in compare_caption(at)        # ordinary reruns reuse
-    monkeypatch.setitem(ri.PRESET, "pre_s", 1.0)                       # an actual change of the effective settings
-    at.run()
-    assert len(calls) == 2 and "pre 1 s" in compare_caption(at)
 
 
-def test_an_effective_quality_policy_change_invalidates_and_is_recorded(monkeypatch):
-    at = end_of_session(start(workflow(), replay_session=TRACK))
-    cache = at.session_state["replay_investigation_cache"]
-    (first_key,) = list(cache)
-    assert cache[first_key]["inputs"]["config"]["quality_policy"] == "quality_v1"
-    monkeypatch.setattr(v1, "DEFAULT_QUALITY_POLICY", "quality_v1_strict90")
-    at.run()
-    assert not at.exception, at.exception
-    cache = at.session_state["replay_investigation_cache"]
-    (new_key,) = [k for k in cache if k != first_key]                  # a new identity, a new computation
-    new = cache[new_key]
-    cfg = new["inputs"]["config"]
-    assert cfg["quality_policy"] == "quality_v1_strict90"
-    assert cfg["quality_policy_definition"] == v1.QUALITY_POLICIES["quality_v1_strict90"].to_json()
-    assert new["inputs"]["config_sha256"] == ri.config_digest(cfg) == new_key[1]
-    (item,) = new["rules"]
-    assert item["compare"]["quality_policy"] == "quality_v1_strict90"   # executed with the recorded policy
-    assert cache[first_key]["rules"][0]["compare"]["quality_policy"] == "quality_v1"   # the old result is intact
-    assert any(new["inputs"]["config_sha256"][:12] in c.value for c in section(at).caption)
 
 
 def test_a_saved_result_never_changes_when_module_settings_change(monkeypatch):
@@ -241,11 +183,6 @@ def test_a_zero_threshold_rule_is_disclosed_not_substituted():
     assert run_monitor(rv.synthetic_catalog()[0].scores, approved(rule))      # monitoring still runs the rule
 
 
-def test_the_page_discloses_a_zero_threshold_rule():
-    at = end_of_session(start(workflow(ZERO)))
-    infos = " ".join(i.value for i in section(at).info)
-    assert "Rule R1: ask threshold 0 is not supported by Contract v1 investigation" in infos
-    assert "Deterministic monitoring still runs this rule" in infos
 
 
 # ---- the recorded overlap policy must be the one executed (Codex review: provenance) ----
@@ -360,13 +297,6 @@ def test_a_mismatch_is_never_cached(monkeypatch):
     assert cache == {}
 
 
-def test_the_replay_page_refuses_a_mismatch_with_no_record_and_no_download(tmp_path, monkeypatch):
-    monkeypatch.setenv(rv.REPLAY_DIR_ENV, str(tmp_path / "replay"))      # isolated journals
-    spy_compare(monkeypatch, before=lambda: pre_only_registry(monkeypatch))
-    at = end_of_session(start(workflow(), replay_session=TRACK))
-    assert any("The investigation was refused" in e.value for e in section(at).error)
-    assert not [b for b in at.get("download_button") if b.label == "Download investigation record (JSON)"]
-    assert at.session_state["replay_investigation_cache"] == {}
 
 
 # ---- every execution-defining field of the snapshot must be what the tools execute (Codex review 2) ----
@@ -520,18 +450,6 @@ def test_a_canonical_snapshot_matches_the_executed_metadata_field_by_field():
     assert {k: c["evidence_gate"][k] for k in cfg["evidence_gate"]} == cfg["evidence_gate"]
 
 
-def test_a_quality_mismatch_is_never_cached_or_exported(tmp_path, monkeypatch):
-    drift = iter([0.95, 0.96, 0.97, 0.98])                            # every execution sees a NEW definition
-    spy_compare(monkeypatch, before=lambda: strict_registry(monkeypatch, min_usable_fraction=next(drift)))
-    cache = {}
-    with pytest.raises(ri.PolicyMismatch):
-        ri.cached_investigation(cache, ("identity",), ENTRY, approved(ATTACK).active(), "review")
-    assert cache == {}
-    monkeypatch.setenv(rv.REPLAY_DIR_ENV, str(tmp_path / "replay"))      # isolated journals
-    at = end_of_session(start(workflow(), replay_session=TRACK))
-    assert any("The investigation was refused" in e.value for e in section(at).error)
-    assert not [b for b in at.get("download_button") if b.label == "Download investigation record (JSON)"]
-    assert at.session_state["replay_investigation_cache"] == {}
 
 
 # ---- the executed query must be the approved rule's query (Codex review 3) ----
@@ -641,10 +559,3 @@ def test_a_mismatch_in_a_later_rule_refuses_the_whole_investigation(monkeypatch)
         ri.investigate_replay(ENTRY, approved(ATTACK, MOUNT).active(), "review")    # nor returned
 
 
-def test_a_query_mismatch_is_never_cached_or_exported(tmp_path, monkeypatch):
-    monkeypatch.setenv(rv.REPLAY_DIR_ENV, str(tmp_path / "replay"))      # isolated journals
-    query_with(monkeypatch, request={"min_duration_s": 0.5})
-    at = end_of_session(start(workflow(), replay_session=TRACK))
-    assert any("The investigation was refused" in e.value for e in section(at).error)
-    assert not [b for b in at.get("download_button") if b.label == "Download investigation record (JSON)"]
-    assert at.session_state["replay_investigation_cache"] == {}

@@ -108,11 +108,11 @@ video, slides and poster for the submission.
 | File | What it does | Tests |
 |---|---|---|
 | `src/live_tracker/run_schedule.py`, `schedule_workflow.py`, `schedule_ui.py` | Run schedule: for N hours or from A to B, approval, clock changes, completeness; the form on the Rules page | `test_run_schedule.py` (39), `test_schedule_workflow.py` (12), `test_schedule_page.py` (8) |
-| `src/live_tracker/live_scoring.py` | Pose frames to Model B scores from a short moving buffer | `test_live_scoring.py` (8, +1 opt-in on real data) |
-| `src/live_tracker/run_sources.py` | Score file, recorded keypoints, camera reader (fake-camera tests only), pose-model slot | `test_run_sources.py` |
+| `src/live_tracker/live_scoring.py` | Pose frames to Model B scores from a short moving buffer | `test_live_scoring.py` (9, the last one opt-in on real data) |
+| `src/live_tracker/run_sources.py` | Score file, recorded keypoints, camera reader (fake-camera tests only), pose-model slot | `test_run_sources.py` (17) |
 | `src/live_tracker/notify.py` | Log file and optional ntfy phone messages | `test_notify.py` (13) |
 | `src/live_tracker/monitor_runner.py` | The program: wait, run, log, answers, interruptions, report, stop | `test_monitor_runner.py` (21) |
-| `src/live_tracker/run_control.py`, `run_ui.py`, `pages/6_Run.py` | Start, stop, watch, answer (also after the run), report | `test_run_control.py`, `test_run_page.py` (12) |
+| `src/live_tracker/run_control.py`, `run_ui.py`, `pages/6_Run.py` | Start, stop, watch, answer (also after the run), report | `test_run_control.py` (22), `test_run_page.py` (12) |
 
 Measured on one validation session: live scores equal whole-session scores (largest difference 5e-13); the program,
 run as its own process, produced the same 46 events as the whole-session calculation. Details and limits:

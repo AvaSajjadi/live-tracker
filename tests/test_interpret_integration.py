@@ -112,8 +112,8 @@ def test_the_page_turns_the_loose_sentence_into_a_rule_the_researcher_confirms()
     [b for b in at.button if b.label == "Propose rule"][0].click().run()
     assert not at.exception
     shown = texts(at.markdown)
-    assert "Proposed rule R1" in texts(at.subheader) and "Interpreted by:** Claude (paid), checked by code" in shown
-    assert "Read by Claude" in why(at) and "treated as at least 2 seconds" in why(at) and "Minimum duration:** at least 2 seconds" in shown
+    assert "Proposed rule" not in texts(at.subheader) and "Interpreted by:" not in shown
+    assert "Read by Claude" in why(at) and "treated as at least 2 seconds" in why(at)
     [b for b in at.button if b.label == "Confirm"][0].click().run()
     assert at.session_state["rule_workflow"].monitoring_allowed()
 
@@ -148,10 +148,10 @@ def test_the_first_choice_is_the_smart_reading_and_it_understands_a_loose_senten
     [b for b in at.button if b.label == "Propose rule"][0].click().run()
     assert not at.exception
     shown = texts(at.markdown)
-    assert "Interpreted by:** smart reading (offline, free)" in shown
+    assert "Interpreted by:" not in shown
     assert "Your sentence was read as: 'let me know if the mice are attacking for at least 2 seconds'." in why(at)
     assert "Read 'fighting' as attack" in why(at) and "inclusive minimum" in why(at)
-    assert "Minimum duration:** at least 2 seconds" in shown and "Behavior:** attack" in shown
+    assert "Minimum duration:" not in shown and "Behavior:" not in shown
 
 
 def test_a_refusal_is_shown_in_plain_words_with_an_example_and_no_code_names():

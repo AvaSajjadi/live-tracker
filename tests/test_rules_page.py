@@ -73,10 +73,10 @@ def test_page_starts_with_offline_default_and_no_monitoring():
 def test_proposal_preview_shows_all_fields():
     at = propose(start())
     body = texts(at.markdown)
-    for expected in ("**Behavior:** attack", "**Minimum duration:** at least 2 seconds",
-                     "**Alert mode:** alert:", "**Alert threshold:** 0.8 (untuned example default",
-                     "**Ask threshold:** 0.5 (untuned example default"):
-        assert expected in body, expected
+    assert "Proposed rule" not in texts(at.subheader)                                # section removed on request
+    for removed in ("**Behavior:**", "**Minimum duration:**", "**Alert mode:**", "**Alert threshold:**",
+                    "**Ask threshold:**", "**Interpreted by:**"):
+        assert removed not in body, removed
     assert "rules.py defaults are used" in why(at)                                   # in the (?), not in bullets on the page
     assert "Assumptions to check" not in body
     assert "NOT active until you click Confirm" not in texts(at.warning)           # removed on request; Confirm / Reject decide
@@ -195,7 +195,7 @@ def test_claude_cross_checked_proposal_can_be_confirmed():
     at = start(RuleWorkflow(claude_fn=fake_claude))
     at.radio[0].set_value(at.radio[0].options[1]).run()
     propose(at)
-    assert "offline parser + Claude cross-check" in texts(at.markdown)
+    assert "offline parser + Claude cross-check" not in texts(at.markdown)           # the section was removed on request
     assert "Cross-checked with the Claude API" in why(at)
     button(at, "Confirm").click().run()
     assert [r.rule_id for r in wf(at).ruleset.active()] == ["R1"]
@@ -391,7 +391,7 @@ def test_read_only_mapping_pending_still_renders_and_confirms():
     at.session_state["rule_instruction"] = p.instruction
     at.run()
     assert not at.exception and "invalid" not in texts(at.error)
-    assert "**Minimum duration:** at least 3 seconds" in texts(at.markdown)
+    assert "Minimum duration" not in texts(at.markdown) and has_button(at, "Confirm")
     button(at, "Confirm").click().run()
     assert [(r.rule_id, r.status) for r in wf(at).ruleset.rules.values()] == \
         [("R1", "approved"), ("R2", "rejected"), ("R3", "approved")]

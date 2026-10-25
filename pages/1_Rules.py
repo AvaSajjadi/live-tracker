@@ -117,15 +117,6 @@ elif isinstance(result, Clarification):
 pending = wf.pending
 if pending is not None and isinstance(pending.proposal, RuleProposal):
     p = preview(pending)
-    st.subheader(f"Proposed rule {p['rule_id']}")
-    st.markdown(
-        f"- **Behavior:** {p['behavior']}\n"
-        f"- **Minimum duration:** {p['min_duration']}\n"
-        f"- **Alert mode:** {p['alert_mode']}\n"
-        f"- **Alert threshold:** {p['alert_threshold']}\n"
-        f"- **Ask threshold:** {p['ask_threshold']}\n"
-        f"- **Interpreted by:** {INTERPRETED_BY[p['backend']]}"
-    )
     st.markdown("**Your instruction:**")
     st.text(p["instruction"])
     with st.expander("Rule JSON"):

@@ -106,7 +106,7 @@ def render_demo_camera():
 
 
 def render_usb_camera():
-    """A real camera: test it, watch live video from it, then use it. Analysing it also needs a pose model."""
+    """A real camera: test it, watch live video from it, drag the screen corners, then use it."""
     if not cc.opencv_available():
         st.error("OpenCV is not installed, so a camera cannot be opened. Run: pip install opencv-python-headless")
         return None
@@ -133,7 +133,18 @@ def render_usb_camera():
     if live and st.button("Stop the camera", key="upload_stop_camera"):
         camera_live.release()
         st.session_state["upload_live"] = live = False
-    screen, png = screen_setup(state["png"], show_stretched=not live)
+    screen_on = st.checkbox("The camera films a screen (for example an iPad that plays the video)", value=True, key="upload_screen_on")
+    screen, png = None, state["png"]
+    if screen_on:
+        st.caption("Drag the 4 red corners on the video until the green shape sits on the edge of the video: 1 = top-left, "
+                   "2 = top-right, 3 = bottom-right, 4 = bottom-left.")
+        if st.button("Reset the corners", key="upload_reset_corners"):
+            st.session_state[KEY_VERSION] = st.session_state.get(KEY_VERSION, 0) + 1   # a new picker starts at the default corners
+        screen = _corners_now()
+        if screen is None:
+            st.error("These corners cannot be used. Press Reset the corners.")
+        elif not live:
+            png = _marked_png(state["png"], screen)
     mode = st.radio("What should the program analyze?", [REAL_POSE, STAGED], key="upload_cam_mode",
                     help="Real: a pose model finds the mice in the camera picture (none is set up yet). "
                          "Staged: the camera shows the iPad, but the numbers come from saved keypoints of the demo video.")
@@ -172,66 +183,52 @@ def render_staged_choice(device, screen):
 
 
 STRETCHED_CAPTION = "The screen stretched to 1024 x 570. The whole video should fill this picture, with no border."
-CORNER_NAMES = ("top-left", "top-right", "bottom-right", "bottom-left")
+KEY_VERSION = "upload_corner_version"
 
 
-def screen_setup(png, show_stretched=True):
-    """The camera films a screen (for example an iPad playing the video)? Choose its 4 corners.
-    Returns (the corners or None, the PNG to show). The stretched result is shown so it can be checked."""
-    if not st.checkbox("The camera films a screen (for example an iPad that plays the video)", value=True, key="upload_screen_on"):
-        return None, png
-    import cv2
-    import numpy as np
-    from . import screen_map as sm
-    st.caption("Move the 4 corners until the green shape sits on the edge of the video. Numbers are percent of the picture.")
-    corners = []
-    for i, (name, (dx, dy)) in enumerate(zip(CORNER_NAMES, sm.DEFAULT_CORNERS)):
-        a, b = st.columns(2)
-        x = a.slider(f"{i + 1} {name}: left to right", 0, 100, int(dx * 100), key=f"upload_corner_{i}_x")
-        y = b.slider(f"{i + 1} {name}: top to bottom", 0, 100, int(dy * 100), key=f"upload_corner_{i}_y")
-        corners.append((x / 100.0, y / 100.0))
-    image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-    try:
-        corners = sm.check_corners(corners)
-        marked = sm.outline(image, corners)
-        stretched = sm.warp(image, corners)
-    except sm.ScreenError as exc:
-        st.error(f"These corners cannot be used: {exc}.")
-        return None, png
-    if show_stretched:
-        st.image(cv2.cvtColor(stretched, cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch")
-    return corners, cv2.imencode(".png", marked)[1].tobytes()
+def _picker_key():
+    """A new key makes a new picker, which starts at the default corners (the Reset button)."""
+    return f"upload_corner_picker_{st.session_state.get(KEY_VERSION, 0)}"
 
 
 def _corners_now():
-    """The corners the sliders show right now, or None when the screen option is off or the corners are not usable."""
-    if not st.session_state.get("upload_screen_on", True):
-        return None
+    """The corners the researcher dragged to (the default ones before any drag), or None when they cannot be used."""
+    from . import corner_picker as cp
     from . import screen_map as sm
-    defaults = sm.DEFAULT_CORNERS
-    pts = [(st.session_state.get(f"upload_corner_{i}_x", int(dx * 100)) / 100.0,
-            st.session_state.get(f"upload_corner_{i}_y", int(dy * 100)) / 100.0) for i, (dx, dy) in enumerate(defaults)]
     try:
-        return sm.check_corners(pts)
+        return sm.check_corners(cp.current_corners(_picker_key(), sm.DEFAULT_CORNERS))
     except sm.ScreenError:
         return None
 
 
+def _marked_png(png, corners):
+    import cv2
+    import numpy as np
+    from . import screen_map as sm
+    image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    return cv2.imencode(".png", sm.outline(image, corners))[1].tobytes()
+
+
 @st.fragment(run_every=0.1)
 def live_preview(device):
-    """The camera as live video (about 10 pictures a second): the outline of the screen, and the stretched screen."""
+    """The camera as live video (about 10 pictures a second). With a screen: the corners can be dragged on it, and the
+    stretched screen is shown below."""
     image, why = camera_live.read(device)
     if image is None:
         st.error(f"The camera cannot be shown: {why}.")
         return
     import cv2
-    corners = _corners_now()
-    if corners is None:
+    if not st.session_state.get("upload_screen_on", True):
         st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera video", width="stretch")
         return
+    from . import corner_picker as cp
     from . import screen_map as sm
-    st.image(cv2.cvtColor(sm.outline(image, corners), cv2.COLOR_BGR2RGB), caption="Live camera video, with the screen outline",
-             width="stretch")
+    key = _picker_key()
+    cp.corner_picker(image, cp.current_corners(key, sm.DEFAULT_CORNERS), key=key)
+    corners = _corners_now()
+    if corners is None:
+        st.error("These corners cannot be used. Press Reset the corners.")
+        return
     st.image(cv2.cvtColor(sm.warp(image, corners), cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch")
 
 

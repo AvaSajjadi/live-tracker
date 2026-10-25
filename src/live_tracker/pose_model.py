@@ -92,3 +92,13 @@ def load(root=None, env=None):
     except Exception as exc:                                  # a backend can fail in many ways; say which one
         return None, f"The pose model could not be loaded ({type(exc).__name__})."
     return (lambda image: check_output(function(image))), None
+
+
+def _register_builtin_backends():
+    """The backends that ship with the program (their heavy imports happen only when one is loaded)."""
+    from . import pose_backends
+    register_backend("yolo", pose_backends.yolo_factory)
+    register_backend("stub", pose_backends.stub_factory)
+
+
+_register_builtin_backends()

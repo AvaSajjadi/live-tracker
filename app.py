@@ -27,13 +27,19 @@ DEMO_CSV = Path(__file__).parent / 'example_pose_demo.csv'
 st.set_page_config(page_title='Live Tracker', layout='wide')
 apply_style()
 st.title('Live Tracker | Motion Engine')
-fps = st.number_input('Frame rate (fps)', min_value=1.0, value=30.0)
+fps = st.number_input(
+    'Camera frame rate (frames per second)', min_value=1.0, value=30.0,
+    help='Frames per second (fps): how many pictures of the recording there are in each second. '
+         'The page uses it to turn row numbers into seconds, so speeds and times are only right if '
+         'this number is right. Check your camera or recording settings. 30 is common.')
 
 # --- added: data source choice -------------------------------------------
-use_demo = st.checkbox('Use built-in synthetic demo data (not CalMS21)')
+use_demo = st.checkbox('Try demo data', help='A small made-up recording, so you can try the page without a file.')
 upload = None if use_demo else st.file_uploader(
-    'Pose CSV (columns x_a, y_a, x_b, y_b; one row per frame)', type='csv',
-    help='One row per frame. Columns: x_a, y_a, x_b, y_b = pixel positions of mouse a and mouse b.')
+    'Pose CSV (one row per frame)', type='csv',
+    help='Four columns, in pixels: x_a, y_a = position of mouse a; x_b, y_b = position of mouse b.')
+if not use_demo:
+    st.caption('Columns: x_a, y_a (mouse a) and x_b, y_b (mouse b), in pixels.')
 
 # --- fixed values: the engine does the quality check and the smoothing by itself ----------------
 # (chosen on CalMS21 train data, see live_tracker/params.py; the window length is a placeholder)

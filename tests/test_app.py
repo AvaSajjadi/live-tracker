@@ -56,3 +56,13 @@ def test_upload_box_carries_the_file_format_and_no_extra_intro_lines():
     page_text = " ".join(m.value for m in at.markdown) + " " + " ".join(c.value for c in at.caption)
     assert "Milestone 1" not in page_text and "Upload a CSV with columns" not in page_text
     assert "OFFLINE ONLY: never for live" not in page_text
+
+
+def test_input_labels_are_in_plain_words():
+    at = AppTest.from_file(APP, default_timeout=30).run()
+    assert at.number_input[0].label == "Camera frame rate (frames per second)"
+    assert "how many pictures of the recording there are in each second" in at.number_input[0].help
+    assert at.checkbox[0].label == "Try demo data"
+    assert any("x_a, y_a (mouse a) and x_b, y_b (mouse b)" in c.value for c in at.caption)
+    labels = " ".join(m.value for m in at.markdown) + " ".join(c.value for c in at.caption)
+    assert "CalMS21" not in labels

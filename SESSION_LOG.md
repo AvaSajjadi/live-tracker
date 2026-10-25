@@ -174,3 +174,37 @@
 1. Run the full tests, then fix anything that fails.
 2. Ask Syed to review PR #38 and try the steps in `docs/run_on_another_computer.md`.
 3. Record the screen video and screenshots for Canvas.
+
+### Part 4, later in the day: one-by-one removals (2026-10-25)
+
+The project manager sends screenshots. Each one is removed, tested, and committed alone. All are on `ava/demo-integration` and in PR #38.
+
+| # | What was removed or moved | Commit message |
+|---|---|---|
+| 1 | Green "Chosen: Demo camera ..." box at the bottom of the Upload page | Upload page: remove the green 'Chosen' box |
+| 2 | Grey "Keypoints present ..." notice at the bottom of the Upload page | Upload page: remove the grey 'Keypoints present' notice |
+| 3 | Assumptions bullets, "Untuned default thresholds" warning and the refusal reasons on the Rules page. They now show in a hover "?" next to the instruction box (`help=` on the text box). The page reruns after "Propose rule" so the "?" is fresh | Rules page: reasons and assumptions move into a hover (?) |
+| 4 | Whole "Rules in this session" section (table, "No rules decided yet", "Monitoring cannot start" / "Monitoring can start" box). Next stays locked until a rule is confirmed | Rules page: remove the 'Rules in this session' section |
+| 5 | "Demo mode: no physical camera is attached ..." line under "Camera connected successfully!" | Upload page: remove the 'Demo mode' line |
+
+Notes:
+- The green "Camera connected successfully!" message stays. The project manager asked for it, and knows there is no camera.
+- Tests were changed to match: they now check the hover text (`at.text_area[0].help`) and the rule state, not the removed text.
+- Test runs after each change: 377 passed (rule and flow tests), then 82, then 55. **No full-suite run on the final code yet.**
+- The project manager mentioned `photo_...465_y.jpg`. That file did not exist. We used `...467` for the "Rules in this session" removal.
+- The tool call for item 5 was interrupted by the user; the edit was already on disk, tests were run afterwards (55 passed), then committed.
+
+### How to start the next chat
+1. Read `SESSION_LOG.md` (parts 1 to 4), then tell the user in 3 to 5 short lines where we stopped.
+2. Dashboard: `cd C:\Users\AnTiC\Downloads\live-tracker\live-tracker`, `$env:PYTHONPATH="src"`, `.\.venv\Scripts\python.exe -m streamlit run app.py --server.port 8766 --server.address localhost`. Restart it to see code changes.
+3. Branch `ava/demo-integration`, PR #38 to `main` (not merged; Syed must review). Dev copy: `C:\Users\AnTiC\Downloads\live-tracker\work-guided-flow` (branch `ava/flex-rules-upload`, older).
+4. User rules: very simple English; do what is asked directly; one commit per small change; never push to `main`; never commit videos, data or keys; no `git push --force`.
+
+### Still to do
+1. More removals from the user (they send them one by one).
+2. Full test run (about 45 minutes) on the final code; play a beep when done.
+3. Ask Syed to review PR #38 and try `docs/run_on_another_computer.md`.
+4. The demo video is NOT in Git (200 MB and 89 MB; GitHub limit 100 MB; our rule). Syed uses `python scripts/fetch_demo_video.py`. The user has not answered if they still want it committed.
+5. Docs still mention the removed notices in places (`docs/demo_recording.md` talks about the demo-mode line, the "Chosen" box and the assumptions list). Update them.
+6. Open from before: camera needs a mouse pose model (none exists); real-key test of the Claude reader; real-data Replay run; backup video, slides, report, rehearsal; record the screen video and screenshots for Canvas.
+7. Demo models: both retrained with the project Python (scikit-learn 1.9.1). Old ones are in `models/backup_sklearn_1.7.2/`. Demo session now gives 44 events.

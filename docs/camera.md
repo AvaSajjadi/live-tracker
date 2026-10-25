@@ -144,8 +144,33 @@ MARS zip (pickle can run code). The models are not stored in Git (they are big; 
 `tensorflow numpy opencv-python-headless pandas pyarrow` into it, then run
 `python scripts\mars_pose_offline.py --download-only --models-dir %USERPROFILE%\mars_local\models` (543 MB, md5 checked).
 
-## 9. Next steps
+## 9. Acceptance test of the live camera path
 
-1. Test the staged demo with the camera on the iPad.
-2. Measure MARS on a Colab GPU. If it is fast enough, a GPU computer could run it live.
-3. If a live pose model works, the real path (C) uses the same screen stretch, scorer and monitor with no other changes.
+`scripts/live_camera_acceptance.py` starts the real run program (the one the app starts) on a camera, lets it run, and checks every step with
+PASS, WARN or FAIL. Run it when the camera is connected and the trained model is set up in `models/pose/pose_model.json` (docs/pose_model.md):
+
+    python scripts/live_camera_acceptance.py --camera 0 --seconds 30 --corners 0.23,0.22,0.81,0.22,0.81,0.65,0.23,0.65
+
+It checks: the pose model loads; the pose model needs 33 ms or less per picture (measured on 60 pictures); the camera gives pictures (25 or more per
+second is a PASS, a 15 fps webcam is a WARN); the run program starts, does not crash and has no camera interruption; it keeps up with 30 frames per
+second (25 or more is a PASS); the scores reach the monitor; alerts or questions appear (with `--expect-events`). Add `--expect-mice` when the
+camera sees the mice. The exit code is 0 only when nothing FAILED.
+
+**Rehearsal without a trained model** (a stub gives perfect keypoints, so the pose speed check is SKIPPED and the result is NOT a test of the model):
+
+    python scripts/live_camera_acceptance.py --camera 0 --stub-poses data/raw/calms21_video/mouse064_task1_annotator1_poses.parquet --start 1800 --seconds 40 --expect-events
+    python scripts/live_camera_acceptance.py --video data/raw/calms21_video/mouse064_task1_annotator1.mp4 --start 1800 --stub-poses <same poses file> --seconds 40 --expect-events
+
+**What the rehearsals found and fixed (2026-10-25):** even with an instant stub the chain reached only 17 frames per second. (1) The camera was read
+only when the program asked, so every slow moment dropped pictures: a reader thread with a half-second queue now reads it all the time. (2) Frame
+numbers came from the clock, so timing wobble made gaps that end alerts, and a 15 fps webcam made a gap on every picture: small gaps (up to 3
+numbers) are now filled with repeated keypoints. (3) The scorer recomputes the features of the last 6 s for every chunk (about 130 ms): live cameras
+are scored in chunks of 15 frames (up to half a second more delay). (4) A crash when "Stop recording" closed the video while the camera thread was
+writing: a lock now prevents it. Result with the real USB webcam and the stub: camera 25.3 pictures per second, run program 29.5 frames per second
+over 40 s (slowest 10 s: 29.9), all scores reached the monitor, 8 alerts and 1 question.
+
+## 10. Next steps
+
+1. Train the fast model (Colab notebook), put it in `models/pose/`, and run the acceptance test above WITHOUT `--stub-poses`. This is the real test.
+2. Run it with the Nikon (camera number of the Nikon Webcam Utility) when it is charged.
+3. Test the staged demo and the recording in the browser with the real camera and the iPad.

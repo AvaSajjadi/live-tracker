@@ -31,6 +31,24 @@ do the mapping itself.
 Tips: iPad brightness high, no light shining on the screen, camera still and facing the screen straight on, and the whole
 video visible. The screen setup page shows the stretched picture so the corners can be checked.
 
+## Backends that ship with the program
+
+`src/live_tracker/pose_backends.py` registers two backends. The settings go in `models/pose/pose_model.json` (not in Git).
+
+**`yolo`** is the small fast model trained with `scripts/train_yolo_pose.py` on the MARS hand-labeled set (see
+`colab/train_yolo_pose_colab.ipynb`). Class 0 is the black mouse (mouse a), class 1 the white mouse (mouse b), 7 keypoints each.
+
+    {"backend": "yolo", "weights": "models/pose/mouse_pose_openvino_model", "device": "intel:gpu", "imgsz": [384, 640], "conf": 0.25}
+
+Export the trained `best.pt` first: `yolo export model=best.pt format=openvino imgsz=384,640` (Intel laptop; the folder is the weights path).
+On a Mac use `format=coreml` and `"device": "mps"` or leave the device out. A picture that is not 1024 x 570 is resized to it.
+
+**`stub`** is NOT a model. It returns the saved keypoints of a recording, following the clock. Only for rehearsals:
+
+    {"backend": "stub", "poses": "data/raw/calms21_video/mouse064_task1_annotator1_poses.parquet", "start_frame": 1800}
+
+Test the whole live path with `scripts/live_camera_acceptance.py` (see `docs/camera.md`, section 9).
+
 ## How to plug one in
 
 1. Write a backend: `factory(settings, root)` returns the function above.

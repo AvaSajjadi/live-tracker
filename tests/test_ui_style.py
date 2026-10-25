@@ -44,3 +44,30 @@ def test_note_without_more_has_no_expander():
 
     at = AppTest.from_function(app).run()
     assert [c.value for c in at.caption] == ["Only a short line."] and len(at.expander) == 0
+
+
+def test_badge_escapes_file_names_and_other_untrusted_labels():
+    html = ui_style.badge('<script>"unsafe"</script>')
+    assert "<script>" not in html and "&lt;script&gt;" in html
+
+
+def test_event_notice_preserves_severity_and_scientific_meaning():
+    def app():
+        from live_tracker.ui_style import event_notice
+        for action in ("alert", "ask", "log"):
+            event_notice({"action": action, "behavior": "attack", "confidence": 0.84}, "0:12")
+
+    at = AppTest.from_function(app).run()
+    assert not at.exception
+    for elements, label in ((at.error, "ALERT"), (at.warning, "ASK"), (at.caption, "LOG")):
+        assert len(elements) == 1
+        message = elements[0].value
+        assert label in message and "possible attack at 0:12" in message
+        assert "0.84" in message and "model score, not verified behavior" in message
+
+
+def test_action_cells_use_red_amber_and_quiet_log_colors():
+    df = pd.DataFrame({"action": ["alert", "ask", "log"]})
+    css = ui_style.color_actions(df)._compute().ctx
+    for row, kind in enumerate(("alert", "ask", "neutral")):
+        assert ("color", ui_style.COLORS[kind]) in css[(row, 0)]

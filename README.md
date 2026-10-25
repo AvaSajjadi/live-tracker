@@ -44,7 +44,7 @@ Live Tracker is built around those three constraints.
 | **Researcher approval** | Every rule starts as `proposed`; only an explicit Confirm approves it. The workflow is UI-independent and tested without a browser | `src/live_tracker/rules.py`, `src/live_tracker/rule_workflow.py` |
 | **Streaming monitor** | Deterministic: approved rules + per-frame scores → alert / ask / log events. Decisions use only past and current frames; tracking loss ends a bout | `src/live_tracker/monitor.py` |
 | **Event journal** | Append-only lifecycle journal with crash recovery, plus the `INTERFACES.md` §4 event-log export | `src/live_tracker/event_log.py` |
-| **Streamlit dashboard** | Six pages: the motion engine on a CSV (tracking quality and smoothing), Rules (propose → Confirm / Reject), Replay (synthetic sessions, or a verified real validation run), Investigation (evidence behind a replayed session), Real Session (the motion engine on one real CalMS21 validation session), and Live Agent (an AI agent investigates the validation data; see [Live Agent](#live-agent)) | `app.py`, `pages/1_Rules.py` to `pages/5_Live_Agent.py` |
+| **Streamlit dashboard** | Eight pages: Upload, Rules, Replay, Real session (recorded-data simulation and optional validation motion measurements), Investigation, Live Agent, Run and Motion tool | `app.py`, `pages/` |
 | **Synthetic test data** | A labeled synthetic pose CSV and a synthetic per-frame score generator. Every synthetic session id starts with `SYNTHETIC_` | `example_pose_demo.csv`, `src/live_tracker/fake_scores.py` |
 
 ## How the parts fit together
@@ -149,17 +149,26 @@ $env:PYTHONPATH = "src"
 
 ## Using the application
 
-### Motion engine (main page, `app.py`)
+### Guided flow (front page, `app.py`)
+
+Upload → Rules → Replay → Real session. Upload accepts recorded video with matching keypoints or a positions CSV.
+**Simulated camera (recorded video)** uses a local recording; its success message explicitly says no physical camera
+is connected. It requires the video and matching pose artifact described in [demo readiness](docs/demo_readiness.md).
+A positions CSV gives motion only, without behavior alerts. Rules are proposed, reviewed and explicitly confirmed.
+Replay's data selector chooses its own synthetic demonstration or saved validation run; it does not score the Upload
+video. Real session uses the Upload source and approved rules. No camera-image inference is implemented.
+
+### Motion tool (`pages/8_Motion_Tool.py`)
 
 Explores tracked positions and tracking quality. It makes **no behavior claims**.
 
 **Inputs:**
-- **Built-in demo:** tick **"Use built-in synthetic demo data (not CalMS21)"** to load `example_pose_demo.csv`. It is
+- **Built-in demo:** tick **"Try synthetic demo data"** to load `example_pose_demo.csv`. It is
   made-up test data, and the page labels it as such.
 - **Your own data:** a CSV with columns `x_a, y_a, x_b, y_b` (two mouse-centre positions in pixels), one row per frame.
   Missing points are left blank. No physical scale is assumed.
-- **Sidebar:** quality thresholds and the causal smoothing settings. These are placeholder values, and the page says
-  so. **"Inject fake tracking failures"** shows how the warnings react.
+- **Advanced settings:** warning window quality, loss duration and optional failure injection; the engine uses the
+  shared fixed settings. **"Inject fake tracking failures"** shows how the warnings react.
 
 **Outputs:**
 - **Tracking quality warnings**, e.g. tracking lost for a mouse, or a tracker that looks stuck.
@@ -171,7 +180,7 @@ Explores tracked positions and tracking quality. It makes **no behavior claims**
 
 This page turns a sentence into a monitoring rule, and nothing is approved without you.
 
-1. Pick **Interpretation**. The default is **"Offline parser (default, no API key, no cost)"**; the Claude cross-check
+1. Pick **Interpretation**. The default is **"Smart reading (default, no API key, no cost)"**; the Claude cross-check
    is optional.
 2. Type an instruction, for example:
    ```
@@ -188,7 +197,12 @@ This page turns a sentence into a monitoring rule, and nothing is approved witho
 
 ### Real Session (`pages/4_Real_Session.py`)
 
-Shows the motion engine on one real CalMS21 **validation** session: tracking quality and warnings, the causal
+Runs a **recorded-data simulation** using saved keypoints and Model B; the video is a synchronized preview,
+not input to camera inference. Start/stop controls operate the separate run program; closing the browser does not
+stop it. Questions are answered on Run. Optional Claude report wording is a clearly labelled paid call.
+
+Select **Explore validation motion measurements** for the motion engine on one real CalMS21 **validation** session:
+tracking quality and warnings, the causal
 features, the keypoint features, and the dataset's own annotation as context (never used by a feature). It reads only
 the hash-verified validation cache. Build it once from the official train file, then pick a session:
 
@@ -200,7 +214,7 @@ Without the cache, the page says so and shows this command. Test sessions cannot
 
 ### Monitor (Python API)
 
-The monitor runs behind the Replay page (synthetic sessions only). It can also be run from Python on synthetic scores:
+The monitor powers synthetic Replay and recorded-keypoint runs; saved real validation runs can also be browsed without re-running it. It can also be run from Python on synthetic scores:
 
 ```python
 from live_tracker.fake_scores import demo_scores
@@ -306,8 +320,11 @@ The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.p
 
 ## Investigation, replay and session summary
 
-Merged into `main` on 2026-10-22. The replay uses synthetic sessions only; nothing here has been run on a held-out
-test session.
+Replay and Investigation offer synthetic demonstrations and saved real **validation** runs. The documented real
+validation run is described in [validation_run_v1.md](docs/validation_run_v1.md); browsing checks consistency of local
+records, not independent authenticity, and does not re-score data. This does not complete H5 on the held-out test set:
+that work remains subject to team agreement and Ava's approved run. See [demo readiness](docs/demo_readiness.md) for
+required local artifacts and an offline backup.
 
 | Work | Status |
 |---|---|
@@ -315,7 +332,7 @@ test session.
 | **Contract v1 investigation tools:** `query_events`, `get_window_features`, `check_tracking_quality` and `compare_windows`, with versioned tracking-quality policies, session-aware counts and evidence gates | merged, [PR #20](https://github.com/AvaSajjadi/live-tracker/pull/20) |
 | **Evidence-grounded claims and reports:** structured claims checked against evidence, association-only wording, and a bounded agent loop (12 tool calls, at most 2 follow-up comparisons) | merged, [PR #21](https://github.com/AvaSajjadi/live-tracker/pull/21) |
 | **Offline integration and docs:** a deterministic, synthetic, offline integration run and a Contract v1 demo | merged, [PR #22](https://github.com/AvaSajjadi/live-tracker/pull/22) |
-| **Replay page and session summary** for recorded sessions (synthetic sessions only; not a live camera), with a Contract v1 evidence panel | merged, [PR #24](https://github.com/AvaSajjadi/live-tracker/pull/24) |
+| **Replay page and session summary** for recorded sessions (initial synthetic implementation; now also saved validation runs), with a Contract v1 evidence panel | merged, [PR #24](https://github.com/AvaSajjadi/live-tracker/pull/24) |
 | **Investigation page:** the bouts, windows, tracking status and comparison outcome behind a replayed session | merged, [PR #25](https://github.com/AvaSajjadi/live-tracker/pull/25) |
 
 Investigation results are designed to be **association-only** ("precedes / is associated with"), never causal.
@@ -324,8 +341,7 @@ They report insufficient evidence when the data cannot support a comparison. The
 
 ## Live Agent
 
-Page `pages/5_Live_Agent.py` (not yet on `main` when this section was written; it arrives with the integration pull
-request). Full launch and demo steps, including Windows PowerShell: `docs/live_agent_demo.md`.
+Page `pages/5_Live_Agent.py` is included in the application. Full launch and demo steps, including Windows PowerShell: `docs/live_agent_demo.md`.
 
 - A researcher asks a question. A language model chooses the Contract v1 tool calls; every number in the answer comes
   from those tools, not from the model.
@@ -358,9 +374,9 @@ live analysis runs on the other (a simulated live stream from a recording, not a
 ```
 app.py                     Streamlit front door: the menu (guided flow first); the old home page is pages/8_Motion_Tool.py
 pages/1_Rules.py           Streamlit page: plain-English rules with researcher approval
-pages/2_Replay.py          Streamlit page: replay of synthetic sessions with events, warnings and summary
+pages/2_Replay.py          Streamlit page: synthetic replay or saved real validation run
 pages/3_Investigation.py   Streamlit page: the evidence behind a replayed session
-pages/4_Real_Session.py    Streamlit page: the motion engine on one real validation session
+pages/4_Real_Session.py    Streamlit page: recorded-data simulation and optional validation motion measurements
 src/live_tracker/          the package (quality, filters, features, calms21, classify, evaluate,
                            agent, claude_agent, rules, rule_workflow, monitor, event_log, ...)
 tests/                     pytest suite (synthetic fixtures only)
@@ -413,7 +429,7 @@ validation sessions, and validation shares animals with train, so the numbers ar
 
 Deliberately not transferred or not done:
 - ScopeScore's surgical thresholds, and any clinical meaning; attack is not claimed from speed alone;
-- Savitzky-Golay smoothing uses future frames, so it stays in the starter section of `app.py`, labeled offline only;
+- Savitzky-Golay smoothing uses future frames, so it stays in the Motion tool, labeled offline only;
   the starter's `movement_bouts` finds whole runs after the fact and no live code calls it (the causal `in_pause`
   feature replaces it);
 - SPARC / log dimensionless jerk: never built;

@@ -7,7 +7,7 @@ Models, data and videos are **not in Git**. You make or download them on your ow
 ```
 git clone <the repository address>
 cd live-tracker
-git checkout ava/demo-integration
+git checkout main
 ```
 
 ## 2. Make the project's Python
@@ -49,8 +49,9 @@ checksum. It refuses test videos. Then make its keypoints file:
 .\.venv\Scripts\python.exe scripts\prepare_demo_session.py --session task1/train/mouse064_task1_annotator1 --out data/raw/calms21_video/mouse064_task1_annotator1_poses.parquet
 ```
 
-The video format (`mp4v`) does not play in browsers. On Windows the page can make a browser copy with the built-in
-converter (`scripts/win_transcode.ps1`). Nothing needs to be installed. See `docs/demo_recording.md`.
+The video format (`mp4v`) does not play in browsers. Prepare and test a browser-friendly copy before the offline demo;
+the page offers conversion when an available converter is detected (Windows built-in support or optional
+`imageio-ffmpeg`). See `docs/demo_recording.md` and the artifact inventory in `docs/demo_readiness.md`.
 
 ## 6. Start the dashboard
 

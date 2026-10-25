@@ -31,14 +31,12 @@ from streamlit.errors import StreamlitPageNotFoundError
 WORKFLOW_KEY = "rule_workflow"
 REPLAY_SESSION_KEY = "replay_session"
 SESSION_KEY = "investigation_session"
-STATUS_BOX = {"supported": st.info, "insufficient": st.warning, "no_bouts": st.info, "unsupported": st.info,
+STATUS_BOX = {"supported": st.success, "insufficient": st.warning, "no_bouts": st.info, "unsupported": st.info,
               "error": st.error}
 
 ui_style.apply()
 st.title("Investigation")
-ui_style.note("caption", "The evidence behind a replayed session.",
-              "The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
-              "what the Contract v1 tools can and cannot conclude.")
+st.caption("Inspect bouts, tracking quality and association-only evidence behind a replay.")
 nav = st.columns([2, 1, 4])
 try:
     nav[0].page_link("pages/2_Replay.py", label="Back to Replay", icon=":material/arrow_back:")

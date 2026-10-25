@@ -99,5 +99,4 @@ def render():
         st.dataframe(rows, hide_index=True, width="stretch")
     else:
         st.caption("No schedule decided yet.")
-    st.caption("A confirmed schedule is saved as a file for the monitor. "
-               "Starting and stopping a run from it is not connected yet.")
+    st.caption("A confirmed schedule sets the Real session time limit and can be started on the Run page.")

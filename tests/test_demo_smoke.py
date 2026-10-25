@@ -35,6 +35,8 @@ def test_rules_then_replay_page_opens(tmp_path, monkeypatch):
     at.switch_page("pages/1_Rules.py").run()                     # sentence -> proposal -> Confirm
     at.text_area(key="rule_instruction").input(INSTRUCTION).run()
     button(at, "Propose rule").click().run()
+    assert not at.session_state["rule_workflow"].monitoring_allowed()
+    button(at, "Confirm").click().run()
     assert at.session_state["rule_workflow"].monitoring_allowed()
 
     at.switch_page("pages/2_Replay.py").run()                    # the Replay page shows only video and skeletons

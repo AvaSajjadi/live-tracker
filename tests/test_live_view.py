@@ -201,7 +201,7 @@ def test_the_panel_shows_alert_counts_table_and_the_motion_chart_next_to_the_vid
     write_status(run_dir, "running", frames=240, alerts=1, asks=1, max_lag_s=0.1)
     at = open_view(running_state(src, run_dir))
     assert len(at.get("video")) == 1
-    assert {m.label: m.value for m in at.metric} == {"Alerts": "1", "Questions": "1"}
+    assert "Alerts <b>1</b>" in texts(at.markdown) and "Questions <b>1</b>" in texts(at.markdown)
     assert "Question" in texts(at.warning) and "possible attack" in texts(at.warning)
     assert list(at.dataframe[0].value["action"]) == ["ask", "alert"]
     assert len(at.get("vega_lite_chart")) == 1 and "Motion, last 30 s" in texts(at.markdown)
@@ -214,7 +214,7 @@ def test_a_session_without_a_picture_still_shows_the_analysis(env):
     run_dir = demo_run(root)
     write_status(run_dir, "running", frames=240, alerts=1, asks=1, max_lag_s=0.0)
     at = open_view(running_state(src, run_dir))
-    assert not at.get("video") and {m.label for m in at.metric} == {"Alerts", "Questions"}
+    assert not at.get("video") and "Alerts <b>1</b>" in texts(at.markdown)
 
 
 def test_falling_behind_is_a_warning(env):

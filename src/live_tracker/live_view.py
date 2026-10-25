@@ -1,4 +1,4 @@
-"""The live session view on the Real session page: the analysis on the left, a small video (1/4 of the width) on the right (new file).
+"""The live session view on the Real session page: the analysis on the left, the video (about 45% of the width) on the right, with two small count boxes above it (new file).
 
 Rendering only; the logic is in live_session.py, run_control.py and video_web.py. The run is the real run program,
 so closing the page does not stop it. The page says plainly that this is a simulated live stream from a recording.
@@ -137,10 +137,12 @@ def render_running(run_dir, source):
         st.session_state[KEY_SERIES] = ls.motion_series(source.poses, source.fps)
     length = ls.length_s(source.poses, source.fps)
     if playable is None:
+        counts(run_dir)
         panel(run_dir, length, source.fps)
         return
-    left, right = st.columns([3, 1])                          # run details on the left, a small video (1/4) on the right
+    left, right = st.columns([11, 9])                         # run details on the left, the video (about 45%) on the right
     with right:
+        counts(run_dir)
         if st.session_state.get(KEY_VIDEO):
             st.video(str(playable), autoplay=True, muted=True)
             if not st.session_state.get(KEY_SENT):             # the video element is drawn; now start the run
@@ -151,6 +153,15 @@ def render_running(run_dir, source):
             st.info("Getting ready: loading the model and the keypoints.")
     with left:
         panel(run_dir, length, source.fps)
+
+
+@st.fragment(run_every=1)
+def counts(run_dir):
+    """Two small boxes with the number of alerts and questions (above the video)."""
+    status = rc.read_status(Path(run_dir)) or {}
+    a, q = st.columns(2)
+    a.markdown(f"<div style='background:#DDE6E3;border-radius:6px;padding:2px 10px;font-size:0.9rem'>Alerts <b>{status.get('alerts', 0)}</b></div>", unsafe_allow_html=True)
+    q.markdown(f"<div style='background:#DDE6E3;border-radius:6px;padding:2px 10px;font-size:0.9rem'>Questions <b>{status.get('asks', 0)}</b></div>", unsafe_allow_html=True)
 
 
 @st.fragment(run_every=1)
@@ -169,9 +180,15 @@ def panel(run_dir, length_s, fps):
 
     frames = status.get("frames", 0)
     st.progress(min(1.0, frames / fps / length_s), text=f"{_mmss(frames / fps)} of {_mmss(length_s)}")
-    c = st.columns(2)
-    c[0].metric("Alerts", status.get("alerts", 0))
-    c[1].metric("Questions", status.get("asks", 0))
+    series = st.session_state.get(KEY_SERIES)
+    if series is not None and frames:
+        now = frames / fps
+        view = series[(series["time_s"] <= now) & (series["time_s"] >= now - CHART_SECONDS)]
+        if len(view):
+            st.markdown(f"**Motion, last {CHART_SECONDS} s** (px/s, px)")
+            st.line_chart(view.set_index("time_s")[["speed_a", "speed_b", "distance"]], height=260)
+            if not bool(view["tracking_ok"].iloc[-1]):
+                st.warning("Tracking is lost for at least one mouse right now. A gap is not a still mouse.")
 
     events = rc.read_events(run_dir)
     last = ls.latest_alert(events)
@@ -181,16 +198,6 @@ def panel(run_dir, length_s, fps):
         (st.error if last["action"] == "alert" else st.warning)(text)
     elif status.get("state") == "running":
         st.caption("No alert yet.")
-
-    series = st.session_state.get(KEY_SERIES)
-    if series is not None and frames:
-        now = frames / fps
-        view = series[(series["time_s"] <= now) & (series["time_s"] >= now - CHART_SECONDS)]
-        if len(view):
-            st.markdown(f"**Motion, last {CHART_SECONDS} s** (px/s, px)")
-            st.line_chart(view.set_index("time_s")[["speed_a", "speed_b", "distance"]], height=170)
-            if not bool(view["tracking_ok"].iloc[-1]):
-                st.warning("Tracking is lost for at least one mouse right now. A gap is not a still mouse.")
 
     lag = status.get("max_lag_s", 0.0)
     if status.get("state") in ("running", "finished") and frames:

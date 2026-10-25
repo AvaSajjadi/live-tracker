@@ -197,12 +197,6 @@ class CameraSource:
             pass
 
 
-def camera_device(value):
-    """A camera number (0, 1, ...) or a stream address. Digits become a number."""
-    text = str(value).strip()
-    return int(text) if text.isdigit() else text
-
-
 def open_camera(device=0):
     """An OpenCV capture for a camera index or a stream address. OpenCV is imported only here."""
     try:
@@ -267,14 +261,6 @@ def make_source(spec, root=ROOT):
             raise SourceRefusedError(f"{path.name} does not hold exactly the session {session!r}")
         return KeypointFileSource(poses, session, fps, description=f"uploaded keypoints ({path.name})")
     if kind == "camera":
-        # the pose model is checked first: no camera is opened when there is no model to read its pictures
-        from . import pose_model
-        estimator = spec.get("pose_estimator")
-        if estimator is None:
-            estimator, reason = pose_model.load(root)
-            if estimator is None:
-                raise NoPoseModelError(reason)
-        device = camera_device(spec.get("device", 0))
-        return CameraSource(open_camera(device), estimator, session=spec.get("session", "camera"), fps=fps,
-                            reopen=lambda: open_camera(device), description=f"camera {device}")
+        # a pose model is the missing piece; nothing is opened before it exists
+        return CameraSource(None, spec.get("pose_estimator"), session=spec.get("session", "camera"), fps=fps)
     raise SourceRefusedError(f"unknown source kind {kind!r}")

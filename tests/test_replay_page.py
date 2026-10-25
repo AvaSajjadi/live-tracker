@@ -102,10 +102,10 @@ def test_no_approved_rule_is_an_error():
     assert "No approved rule" in text(at.error)
 
 
-def test_banner_and_synthetic_sessions():
+def test_synthetic_sessions_without_the_banner_and_the_synthetic_note():
     at = start(workflow())
-    assert at.warning[0].value == "Replay of a recorded session, not a live camera"
-    assert "SYNTHETIC test data" in text(at.warning)
+    assert "Replay of a recorded session, not a live camera" not in text(at.warning)   # removed on request
+    assert "SYNTHETIC test data" not in text(at.warning)                               # removed on request
     assert at.selectbox[0].options == [DEMO, TRACK]
     assert "SYNTHETIC_demo_01" in text(at.caption)
     assert at.slider[0].value == 0 and at.slider[0].min == 0 and at.slider[0].max == 719

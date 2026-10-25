@@ -40,7 +40,7 @@ def test_rules_to_replay_to_answer_to_summary(tmp_path, monkeypatch):
     assert any("Monitoring can start: 1 approved rule." in s.value for s in at.success)
 
     at.switch_page("pages/2_Replay.py").run()                    # the same session keeps the rule
-    assert not at.exception and at.warning[0].value == "Replay of a recorded session, not a live camera"
+    assert not at.exception and not any("not a live camera" in w.value for w in at.warning)
     run = at.session_state["replay_active_run"]
     at.session_state[f"replay_frame_{run}"] = 280                 # the ask fired at frame 270 (9.0 s)
     at.run()

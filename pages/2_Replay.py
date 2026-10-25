@@ -63,7 +63,6 @@ flow.render_nav("replay")
 if vui.choose_mode("replay_data_mode_widget") == vui.REAL:
     vui.render_replay()
     st.stop()
-st.warning(rp.REPLAY_BANNER)
 
 # 1. approved rules (from the Rules page; never invented here)
 wf = st.session_state.get(WORKFLOW_KEY)
@@ -89,7 +88,6 @@ try:
 except rp.ReplayError as exc:
     st.error(f"This session cannot be replayed: {exc}")
     st.stop()
-st.warning(rp.SYNTHETIC_NOTE)
 st.caption(f"`{entry.session}`: {entry.description}")
 
 pose_problem = rv.check_pose(entry)

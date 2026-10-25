@@ -378,3 +378,10 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 1. Wrote `docs/camera.md` (the whole camera chain, the three ways the camera is used, which file does what, presentation setup, video quality needed, what is real). A copy is on the Desktop as `camera.md`.
 2. Restarted the dashboard on port 8766 after the live video work (it was running old code). Fresh page: press Ctrl+F5.
 3. Not finished: real test of the staged demo with the camera on the iPad; MARS test; optional camera video file and smoother live video on the Real session page.
+
+### Part 9, later: drag the corners (2026-10-25)
+1. The user wanted to set the grid (4 screen corners) by dragging. New `corner_picker.py`: an inline custom component (st.components.v2) draws the live camera picture on a canvas with 4 red handles; dragging works with mouse or touch; the corners go back to Python when a handle is let go. The 8 sliders are gone. A Reset button makes a new picker (new key) at the default corners.
+2. `upload_ui.py`: `live_preview` shows the picker and the stretched screen under it; the corners are read from the picker state (`_corners_now`).
+3. Tested in a real Chrome tab on the dashboard (port 8766, restarted): live video works, dragging corner 1 moved the outline and the stretched view changed. Unit tests: 41 passed (corner picker, upload camera, screen map, live view). The browser test used the real webcam and was released with Stop the camera.
+4. Known small thing: the browser console shows an occasional "Image source error" for the fast refreshing stretched picture (st.image 10 times a second). Harmless so far.
+5. Not finished: staged demo end-to-end with the real camera and the iPad; MARS; saving a camera video file.

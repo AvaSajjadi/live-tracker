@@ -94,3 +94,47 @@
 3. Agree the test-split policy with Igor, then run the final test once.
 4. Slides, report, demo rehearsal, backup video.
 5. Decide if the `check_leakage.py` FAIL needs a fix.
+
+## 2026-10-24 (part 3: UI polish, branch `ava/ui-polish`)
+
+### 1. What we did
+1. Checked Syed's work against `plan/SYED.md` (1,292 tests passed). Opened the dashboard and went through Rules, Replay and the summary by hand.
+2. Found: the summary shows only after the "End of session" button; the real-data replay needs a saved run; skeleton lines are provisional; tracking warnings were "pending Ava".
+3. Decided: tracking warnings stay stored apart from the monitor event log. Removed the "pending Ava" text for this.
+4. Made the UI branch `ava/ui-polish`: theme file, shared style (`ui_style.py`), short notices with "More info", colored alert and ask rows.
+5. Applied the project manager's list: less space at the top, system font, new colors (`#F1F5F4`, `#DDE6E3`, `#FFFFFF`, `#B76A54`), home page cleanup, "Advanced settings" folded under the upload box.
+6. Full test suite on the branch (before the last look changes): 4459 passed, 0 failed. Page tests after the last changes: 273 passed, 91 skipped.
+
+### 2. Commands we ran
+- `git checkout -b ava/ui-polish`: new branch for the UI work.
+- `python -m streamlit run app.py --server.port 8765`: starts the dashboard.
+- `python -m pytest -q <files>`: runs tests. The full run takes about 39 minutes.
+- `gh pr view 36`: shows the state of a pull request.
+
+### 3. Files we changed, and why
+- `.streamlit/config.toml` (new): theme colors and font settings.
+- `src/live_tracker/ui_style.py` (new): shared CSS, badges, `note()`, colored action cells.
+- `app.py`: dropped two intro lines, CSV format moved into the upload box, engine settings fixed from `params.py`, sidebar replaced by "Advanced settings".
+- `pages/*.py`, `validation_run_ui.py`, `investigation_v1_ui.py`: long notices shortened, full text under "More info". Spending warnings left as they are.
+- `pages/2_Replay.py`, `summary.py`: tracking-warning text, End-of-session hint.
+- Tests: `test_app.py`, `test_rules_page.py`, `test_replay_page.py`, `test_ui_style.py` (new).
+
+### 4. Problems and fixes
+- Some tests check exact words in notices. Two safety statements ("no language model chose or interpreted them", "browsing is not one") must stay in the short line. Fixed.
+- 84 to 91 tests are skipped here because the real validation run is not on this computer.
+- The Chrome extension was not connected, so we could not take our own screenshots. The project manager sent screenshots.
+
+### 5. Not finished
+- Not merged. Syed must look at the branch first, then merge to `main`.
+- Items not applied: Rules page (fold the Claude cross-check) and renaming "app" to "Home".
+- Camera idea: undecided (simulated live stream, real camera with a pose estimator, or keep Replay).
+- Real-data Replay needs a run from `scripts/validation_run_v1.py`.
+- Skeleton lines are still "PROVISIONAL".
+- Backup video, slides, report, demo rehearsal. Final test run (once only).
+- The last look changes (space, font, colors) have not been seen by the project manager yet.
+
+### 6. Next time
+1. Look at the new design with the project manager and fix what still looks bad.
+2. Decide the camera direction and the Rules page option.
+3. Open a PR from `ava/ui-polish` for Syed.
+4. Full test run, then the final test run once.

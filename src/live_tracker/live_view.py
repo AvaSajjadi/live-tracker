@@ -191,8 +191,11 @@ def render_biologist_report(run_dir, report_json):
             with st.spinner("Claude is writing the report..."):
                 text, problem = bio.write(report_json)
             if problem:
-                st.error(f"Not written: {problem}")
-                return
+                text, plain_problem = bio.write_plain(report_json)       # no Claude: the program writes the facts
+                if plain_problem:
+                    st.error(f"Not written: {problem}")
+                    return
+                st.session_state[key + "_why"] = f"Claude could not write it ({problem}) so this is the plain report."
             st.session_state[key] = text
             st.session_state[key + "_note"] = bio.save_and_notify(run_dir, text)
         else:
@@ -201,6 +204,8 @@ def render_biologist_report(run_dir, report_json):
         st.markdown(text)
     st.download_button("Download the report (Markdown)", text, file_name=f"{run_dir.name}_report.md",
                        mime="text/markdown", key="live_bio_download", on_click="ignore")
+    if st.session_state.get(key + "_why"):
+        st.caption(st.session_state[key + "_why"])
     if st.session_state.get(key + "_note"):
         st.caption(st.session_state[key + "_note"])
 

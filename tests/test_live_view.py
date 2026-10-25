@@ -307,3 +307,19 @@ def test_choosing_a_different_recording_resets_the_session(env):
     at.session_state["flow_source"] = other
     at.run()
     assert "live_run" not in at.session_state and button(at, "live_start")
+
+
+def test_without_claude_the_plain_report_is_shown(env, monkeypatch):
+    from live_tracker import biologist_report as bio
+    root, _ = env
+    run_dir = demo_run(root)
+    write_status(run_dir, "finished", frames=720, alerts=1, asks=0, max_lag_s=0.0)
+    (run_dir / "report.md").write_text("# Run report", encoding="utf-8")
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bio, "write", lambda report_json: (None, "ANTHROPIC_API_KEY is not set."))
+    monkeypatch.setattr(bio, "write_plain", lambda report_json: ("# Report for the biologist plain", None))
+    monkeypatch.setattr(bio, "save_and_notify", lambda d, md: "The report is saved.")
+    at = open_view(running_state(source(root), run_dir))
+    button(at, "live_bio_write")[0].click().run()
+    assert not at.exception and "Report for the biologist plain" in texts(at.markdown)
+    assert "plain report" in texts(at.caption) and len(at.get("download_button")) == 1

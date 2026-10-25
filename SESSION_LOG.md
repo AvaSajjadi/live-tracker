@@ -309,3 +309,9 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
 1. Problem: Real session said "The run could not start: PermissionError [WinError 5] ... status.json.tmp -> status.json". Windows blocks the rename when the page has `status.json` open at the same moment.
 2. Fix: `_write_json` in `monitor_runner.py` now tries the rename up to 40 times (50 ms apart). New test in `tests/test_monitor_runner.py`.
 3. Not changed: the same rename pattern is in `event_log.write_jsonl`, `investigation_data.py` and `schedule_workflow.py`. They could fail the same way. Not seen yet.
+
+### Part 8, later: report button (2026-10-25)
+1. Problem: the "Write the report for the biologist" button did nothing useful. Two causes: (a) without a Claude key the button only showed an error; (b) the new `write_plain` had real line breaks inside a normal string, a syntax error, so the file could not load.
+2. Fix: `write_plain` in `biologist_report.py` now uses `\n`. If Claude cannot write, `live_view.py` shows a plain report made by the program, with a note saying why. New test in `tests/test_live_view.py`.
+3. Commands: `pytest tests -k "live_view or biologist"` runs the related tests (29 passed).
+4. Not tried: the real Claude request with a real key.

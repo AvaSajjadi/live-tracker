@@ -286,3 +286,15 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
    4. If it still fails: HDMI cable and a capture card (clean HDMI out in the camera menu).
    5. Then run the camera test again (camera numbers 0 to 5, brightness must change between pictures).
    6. Then step 3 and the pose model.
+
+## Part 8 - 2026-10-25 (Web page back to demo only)
+1. What we did
+   1. The user asked to take the web version back to the demo only.
+   2. We undid commit 248fbb3 (the USB camera choice on the Upload page) with `git revert`. The Upload page is now Demo camera only, as before.
+2. Commands
+   - `git revert --no-edit 248fbb3`: makes a new commit that undoes that one commit. History is kept.
+   - `pytest tests -k "upload or session_view or demo_smoke or replay"`: runs the web tests.
+3. Files changed: `src/live_tracker/upload_ui.py`, `src/live_tracker/uploads.py`, and `tests/test_upload_camera.py` (deleted) - all by the revert.
+4. Problems: 2 tests in `test_session_view.py` fail when run together with the others. They fail the same way before our change. They pass when run alone. So it is a test order problem, not new.
+5. Not finished: the camera code is still in the project but no page uses it: `pose_model.py`, `camera_check.py`, `make_source` camera, `scripts/find_cameras.py`. Nikon is still not a webcam.
+6. Next time: find out why the 2 tests fail in a group. Camera work waits until the user wants it back (`git revert` the revert to get the USB page back).

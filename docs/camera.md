@@ -97,20 +97,35 @@ These are targets from the demo data, not tested limits (there is no working pos
 "A camera films a screen, and the page shows it live. The behavior alerts are computed from the saved keypoints of that
 video. A pose model that finds the mice in the camera picture is the next step, and the program already has a place for it."
 
-## 8. Offline route with MARS on Google Colab
+## 8. Offline route with MARS, on this computer (or on Google Colab)
 
-Live pose on this laptop is too slow, so a recorded video can be analyzed on a GPU and brought back.
+Live pose on this laptop is too slow, so a recorded video is analyzed afterwards and the result is loaded into the app.
+
+**Where things are (outside the project, not in Git):** `%USERPROFILE%\mars_local` holds the MARS models (`models\`, 328 MB of `.pb`
+files) and a Python environment with TensorFlow (`env\`). MARS models: CC BY-NC 4.0, from Caltech Data record 801be-66057.
+
+**Speed on this laptop (CPU, 8 cores):** about 1.2 frames per second after a 20 s warm-up. So 300 frames (10 s of video) take
+about 5 minutes, and 1 minute of video takes about 25 minutes. Start with a short clip.
 
 1. Record the camera video (for example with the Windows Camera app). Keep the screen steady in the picture.
-2. In the app, Upload step, "USB camera": drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook".
-3. Open `colab/mars_pose_colab.ipynb` in Google Colab, choose a T4 GPU, run the cells, choose the video, paste the corner line.
-   Step 4 of the notebook is a 60-frame speed test; step 5 is the full run.
-4. Download `keypoints.parquet` and `stretched.mp4`.
-5. In the app: Upload > "Upload a video and its keypoints", choose the two files. Then Rules and Real session as usual.
+2. In the app, Upload step, "USB camera": drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook"
+   (it works for the local command too).
+3. Run, from the project folder (keypoints.parquet and stretched.mp4 appear in the folder you run it from):
 
-The script does the same steps as MARS (stretch the screen, two detectors for the black and the white mouse, crop, hourglass
-heatmaps, brightest point). It only reads the `.pb` model files. It never opens the `.pkl` files in the MARS zip (pickle can
-run code). The models are not stored in Git (they are 585 MB; the team keeps big files on the shared Drive).
+       scripts\mars_local.cmd my_video.mp4 --corners 0.23,0.22,0.81,0.22,0.81,0.65,0.23,0.65 --max-frames 300
+
+4. In the app: Upload > "Upload a video and its keypoints", choose `stretched.mp4` and `keypoints.parquet`. Then Rules and
+   Real session as usual.
+
+The script (`scripts/mars_pose_offline.py`) does the same steps as MARS: stretch the screen, two detectors for the black and the
+white mouse, crop, hourglass heatmaps, brightest point. It only reads the `.pb` model files. It never opens the `.pkl` files in the
+MARS zip (pickle can run code). The models are not stored in Git (they are big; the team keeps big files on the shared Drive).
+
+**Google Colab (not used so far):** `colab/mars_pose_colab.ipynb` does the same on a free GPU. Its speed is not measured.
+
+**If the environment is missing** (new computer): create it with `python -m venv %USERPROFILE%\mars_local\env`, install
+`tensorflow numpy opencv-python-headless pandas pyarrow` into it, then run
+`python scripts\mars_pose_offline.py --download-only --models-dir %USERPROFILE%\mars_local\models` (543 MB, md5 checked).
 
 ## 9. Next steps
 

@@ -428,7 +428,7 @@ def test_run_success_settles_the_held_request_after_verification(synthetic, held
     with pytest.raises(RerunException):
         rehearse_via_run(synthetic)
     (name,) = saved_dirs(synthetic["tmp"])
-    assert held_rerun[ui.PROGRESS_KEY]["verdict"] == "verified" and held_rerun[ui.MESSAGE_KEY][0] == "info"
+    assert held_rerun[ui.PROGRESS_KEY]["verdict"] == "verified" and held_rerun[ui.MESSAGE_KEY][0] == "success"
 
 
 def test_run_refusal_settles_the_held_request_and_runs_nothing(synthetic, monkeypatch, held_rerun):
@@ -912,7 +912,8 @@ def tabs_position(at):
 
 
 def finished_messages(at):
-    return [i.value for i in at.info if "finished with recorded status" in i.value]
+    return [i.value for i in [*at.info, *at.success, *at.warning, *at.error]
+            if "finished with recorded status" in i.value]
 
 
 def rehearse_on_page(at, synthetic, question):

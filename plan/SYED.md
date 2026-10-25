@@ -25,9 +25,9 @@ Do **not** edit Ava's motion-engine files (`motion.py`, `filters.py`, `quality.p
 - [ ] Merge PR #2; agree on interfaces
 
 ### 2. `fake_scores.py`: synthetic score file
-- [ ] Makes a table in the `INTERFACES.md` §2 format (`session, frame, time_s, attack, mount, investigation, tracking_ok`)
-- [ ] Includes a clear attack bout (> 2 s, high score), an uncertain one (scores in the "ask" range), a short one (< 2 s, must not alert), and a `tracking_ok = false` stretch
-- [ ] `session` name starts with `SYNTHETIC_` so it can never be mistaken for real data
+- [x] Makes a table in the `INTERFACES.md` §2 format (`session, frame, time_s, attack, mount, investigation, tracking_ok`)
+- [x] Includes a clear attack bout (> 2 s, high score), an uncertain one (scores in the "ask" range), a short one (< 2 s, must not alert), and a `tracking_ok = false` stretch
+- [x] `session` name starts with `SYNTHETIC_` so it can never be mistaken for real data
 
 ### 3. `monitor.py`: rules + scores → events
 - [ ] Input: approved rules (`RuleSet.active()` from `rules.py`) + scores, **one frame at a time** (streaming, like live)
@@ -35,15 +35,15 @@ Do **not** edit Ava's motion-engine files (`motion.py`, `filters.py`, `quality.p
 - [ ] Confidence = mean score over the bout so far; ≥ `alert_threshold` → `alert`, else `ask`; `alert_mode: "log"` → just log
 - [ ] Frames with `tracking_ok = false` don't count as behavior; they end or pause a bout (write down which)
 - [ ] Writes the event log as JSONL in the `INTERFACES.md` §4 format, with evidence (`mean_score`, `min_score`, `frames`)
-- [ ] Only approved rules are ever used (test this!)
-- [ ] Tests with `fake_scores`: right number of events, right start times, the short bout ignored, the uncertain one is `ask`
+- [x] Only approved rules are ever used (test this!)
+- [x] Tests with `fake_scores`: right number of events, right start times, the short bout ignored, the uncertain one is `ask`
 
 ---
 
 ## Day 2: Sun Oct 18
 
 ### 4. `agent.py`: sentence → proposed rule
-- [ ] **No-key fallback first** (the demo must work offline): a simple parser for sentences like
+- [x] **No-key fallback first** (the demo must work offline): a simple parser for sentences like
   "alert me if the mice attack for at least 2 seconds" → behavior word + duration + mode
 - [ ] Then the Claude API path: tool use with a tool whose input schema matches the `Rule` fields;
   the result **always** goes through `rules.validate_rule()`; key from `ANTHROPIC_API_KEY` in `.env`, model name from an env var
@@ -52,9 +52,9 @@ Do **not** edit Ava's motion-engine files (`motion.py`, `filters.py`, `quality.p
 - [ ] Tests run **without** a key (fallback path; mock the API call)
 
 ### 5. Rule confirmation page: `pages/1_Rules.py`
-- [ ] Text box → proposed rule shown as readable text + JSON
-- [ ] Confirm / Reject buttons → `RuleSet.approve()` / `reject()`
-- [ ] Monitoring can't start while no rule is approved
+- [x] Text box → proposed rule shown as readable text + JSON
+- [x] Confirm / Reject buttons → `RuleSet.approve()` / `reject()`
+- [x] Monitoring can't start while no rule is approved
 
 ### ⏳ Needs H1 (loader from Igor, end of Day 1)
 ### 6. Skeleton drawing of a real session
@@ -83,13 +83,13 @@ Do **not** edit Ava's motion-engine files (`motion.py`, `filters.py`, `quality.p
 ## Day 4: Tue Oct 20 (prototype day)
 
 ### 8. `summary.py`: end-of-session summary
-- [ ] Deterministic part: counts, total durations, times, confidences, all computed **from the event log only**
+- [x] Deterministic part: counts, total durations, times, confidences, all computed **from the event log only**
 - [ ] Optional Claude wording on top, given only the log; then check that every number in the text appears in the log (test this). If the check fails, show the deterministic summary instead
-- [ ] Works without a key
+- [x] Works without a key
 
 ### 9. → **H5: full pipeline on one real held-out session**
 Sentence → proposed rule → Confirm → replay → alerts / asks / tracking warnings → event log → summary.
-- [ ] One command starts the dashboard: `python -m streamlit run app.py`
+- [x] One command starts the dashboard: `python -m streamlit run app.py`
 - [ ] Use Igor's validated thresholds for the demo rule
 - [ ] Write down every bug found and who fixes it
 
@@ -97,12 +97,30 @@ Sentence → proposed rule → Confirm → replay → alerts / asks / tracking w
 
 ## Day 5: Wed Oct 21
 
-- [ ] Offline demo path: no network, no API key (fallback parser + saved score file)
+- [x] Offline demo path: no network, no API key (fallback parser + saved score file)
 - [ ] Record a backup screen video of the full demo
-- [ ] README: how to run the dashboard, `.env` / API key setup, what "replay" means
+- [x] README: how to run the dashboard, `.env` / API key setup, what "replay" means
 - [ ] Slides: demo section; rehearse with the team
 
 ## Done when
 - A researcher can type a sentence, confirm the rule, watch a replay, get alerts with time + confidence + evidence, answer "ask" events, and read a summary that only uses logged facts
 - Everything works without an API key
 - Monitor and summary have tests
+
+## UI-5 application polish (2026-10-25)
+
+- [x] Retain Ava's terracotta/sage theme; share semantic colors and mobile layout rules (`ui_style.py`).
+- [x] Label recorded-camera simulation in Upload's main success message; preserve source choice on return.
+- [x] Propose → review assumptions/thresholds → Confirm / Reject; only approved rules enable Next.
+- [x] Shared red ALERT / amber ASK notices and styled event tables on Real session and Run.
+- [x] Group optional schedules, validation exploration and technical details without hiding errors or scientific limits.
+- [x] Correct synthetic-only README wording and document local artifacts and offline rehearsal (`docs/demo_readiness.md`).
+- [ ] Complete H5 on one real held-out session (team agreement; Ava runs the frozen test protocol).
+- [ ] Transfer and verify demo artifacts on the selected presentation computer.
+- [ ] Produce and review a backup screen recording (artifact not established here).
+- [ ] Produce slides and rehearse with the team (artifacts not established here).
+
+Evidence: synthetic AppTest coverage in `test_flow.py`, `test_rules_page.py`, `test_live_view.py`, `test_run_page.py`,
+`test_app.py` and shared styling tests; monitor/workflow/summary tests verify the checked implementation milestones.
+The checked startup and offline items under H5/Day 5 mean the software path exists, not that H5 or a rehearsal on the
+presentation computer has been completed. Earlier unverified team milestones remain unchecked.

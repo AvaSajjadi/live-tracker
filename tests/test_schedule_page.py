@@ -25,10 +25,10 @@ def at(tmp_path, monkeypatch):
     return app
 
 
-def test_the_section_is_on_the_rules_page_and_says_what_is_not_connected(at):
+def test_the_section_is_on_the_rules_page_and_explains_where_to_start(at):
     assert "Run schedule" in texts(at.subheader)
     assert "No schedule decided yet." in texts(at.caption)
-    assert "not connected yet" in texts(at.caption)
+    assert "Real session time limit" in texts(at.caption) and "Run page" in texts(at.caption)
     assert at.radio(key="schedule_mode").value == "For N hours"
 
 

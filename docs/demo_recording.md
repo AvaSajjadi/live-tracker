@@ -5,7 +5,7 @@ The dashboard now has a **guided flow** of four steps. Each page has a bar at th
 
 | Step | Page | What you do |
 |---|---|---|
-| 1 | **Upload** | three choices: **Connect a camera**, **Upload a video** (with its keypoints), **Upload a CSV** of mouse positions. The video shows on the right as soon as there is one. No real camera can be analysed yet, so the camera choice is a clearly labeled **demo camera**: a recorded video stands in for the camera feed |
+| 1 | **Upload** | three choices: **Simulated camera (recorded video)**, **Upload a video** (with its keypoints), **Upload a CSV** of mouse positions. The video shows on the right as soon as there is one. No real camera can be analysed yet, so the camera choice is a clearly labeled **demo camera**: a recorded video stands in for the camera feed |
 | 2 | **Rules** | tell the agent what to look for **in your own words**; the smart reading copes with typos and everyday wording and shows what it understood; then Confirm the rule |
 | 3 | **Replay** | the replay page (a recorded run, played back) |
 | 4 | **Real session** | the recording plays on one side while the analysis runs on the other: alerts, counts, motion charts, the event table, and the report at the end |
@@ -15,7 +15,7 @@ reports) and Motion tool (the old home page for a positions CSV).
 
 ## What the Real session page shows
 
-- **Left:** the video. **Right:** the live analysis from the real run program, working on the keypoints of the same
+- **Left:** the analysis. **Right:** the video preview and compact counts; analysis from the real run program, working on the keypoints of the same
   recording at real speed: the latest alert, the counts, the speed of each mouse and the distance between them
   (last 30 s), a table of events, and a warning if the laptop falls behind. When the session ends, the report is shown.
 - It is a **simulated live stream from a recording.** No camera is used and no camera has been tested (there is no mouse
@@ -65,18 +65,18 @@ That button needs a converter, the optional package `imageio-ffmpeg`, installed 
 - **or Xbox Game Bar:** click the browser, press Windows + Alt + R to start and again to stop. The file goes to `Videos\Captures`.
 
 Steps on the pages:
-1. **Upload:** click **Connect a camera**. The page shows **"Camera connected successfully!"** in green and starts the
-   video on the right at once. Under the green message a small line says "Demo mode: no physical camera is attached. A
-   recorded video is the camera feed." Keep that line in your screenshots and recording, and in your text say it is a demo
-   camera (a recorded video as the feed). Then **Next**.
+1. **Upload:** choose **Simulated camera (recorded video)**. The main success message says
+   **"Simulated camera ready — prerecorded video, no physical camera connected."** The video appears on the right.
+   Describe it as a recording with saved keypoints, then choose **Next**.
 2. **Rules:** write the rule in your own words. For the validated demo rule, include the thresholds, for example
    `let me know if the mice fight for more than 0.5 seconds, ask threshold 0.6, alert threshold 0.8`. Click **Propose rule**,
    read "Your sentence was read as ..." and the assumptions, click **Confirm**, then **Next**.
 3. **Replay:** click **Next** (or look at it, if you want).
-4. **Real session:** read the recording and the rule, click **Start the live session**. It says "Getting ready" for a few
+4. **Real session:** read the recording and the rule, click **Start recorded session**. It says "Getting ready" for a few
    seconds, then the video and the analysis start together.
-5. The first alert comes at about **0:11**. Record about **60 to 90 seconds**, so the viewer sees several alerts, a
-   question, the charts and the table. Stop the recording and watch it once.
+5. Record enough of the run to show alerts, asks and the event table, then answer a question on **Run** and inspect
+   the completion report. Event timing and counts depend on the model artifact, approved rule and machine; rehearse
+   locally instead of promising a specific alert time. Stop the recording and watch it once.
 
 If the video does not start by itself, click its play button once. If the alerts come **before** the fight in the
 video, raise **Sync** (under the rule text) a little before starting again. If they come late, lower it.
@@ -93,3 +93,9 @@ video, raise **Sync** (under the rule text) a little before starting again. If t
 - Check the file size against the Canvas limit.
 - Watch the whole recording once. Check that no private information is on the screen (tabs, notifications).
 - In the text, call it a **simulated live stream from a recording** and give the dataset credit.
+
+## Offline backup and handoff
+
+Use [demo_readiness.md](demo_readiness.md) to inventory local files and prepare an offline rehearsal. This document is
+an instruction sheet, not evidence that a backup recording or slides have been produced. H5 remains incomplete until
+an approved held-out run is completed by the team.

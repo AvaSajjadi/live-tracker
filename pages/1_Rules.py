@@ -46,8 +46,7 @@ st.title("Monitoring rules")
 if recovered:
     st.error("The stored rule session was invalid and has been reset. No rules are approved; "
              "please enter and confirm your rules again.")
-st.caption("Write what you want to monitor in your own words. Click Propose rule: the rule is then confirmed "
-           "and used for monitoring.")
+st.caption("Describe what to monitor, propose a rule, then review and Confirm to approve it.")
 
 backend_label = st.radio("Interpretation", list(BACKEND_LABELS), index=0)
 backend = BACKEND_LABELS[backend_label]
@@ -93,18 +92,12 @@ if st.button("Propose rule", type="primary"):
         wf.submit(text, backend=backend)
         st.session_state.pop("rule_why", None)
         st.session_state.pop("rule_error", None)
-        if wf.pending is not None and isinstance(wf.pending.proposal, RuleProposal):
-            st.session_state["rule_why"] = (text, why_text())           # the (?) keeps the reasons
-            try:
-                wf.confirm(wf.pending.token)                            # Propose rule is the confirmation
-            except DuplicateRuleError as exc:
-                st.session_state["rule_error"] = f"Not approved: {exc}."
-            except (DecisionError, StaleActionError) as exc:
-                st.session_state["rule_error"] = str(exc)
     st.rerun()                                       # so the (?) next to the box shows the new reasons
 
-if wf.notice:
+if wf.notice and not wf.notice.startswith("Rule "):
     st.info(wf.notice)
+elif wf.notice and "rejected" in wf.notice:
+    st.caption(wf.notice)
 
 # 3. the result of the last submission
 result = wf.last_result
@@ -126,11 +119,48 @@ elif isinstance(result, Clarification):
         else:
             st.caption("Claude can read looser wording, but needs an API key. See docs/claude_interpreter.md.")
 
+if wf.pending is not None:
+    pending = wf.pending
+    info = preview(pending)
+    with st.container(border=True):
+        st.subheader("Proposed rule")
+        st.markdown(f"**{info['behavior']}** · {info['min_duration']} · {info['alert_mode']}")
+        st.markdown(f"**Ask threshold:** {info['ask_threshold']}  \n"
+                    f"**Alert threshold:** {info['alert_threshold']}")
+        st.caption(f"Interpreted by {INTERPRETED_BY[pending.backend]}.")
+        st.warning("Not active until you click Confirm; review the thresholds and assumptions.")
+        if info["assumptions"]:
+            st.markdown("**Assumptions to check**\n" + "\n".join(f"- {a}" for a in info["assumptions"]))
+        with st.expander("More info"):
+            st.json(info["rule_json"], expanded=False)
+        yes, no = st.columns(2)
+        confirm = yes.button("Confirm", key=f"rule_confirm_{pending.token}", type="primary", width="stretch")
+        reject = no.button("Reject", key=f"rule_reject_{pending.token}", width="stretch")
+        if confirm or reject:
+            try:
+                if confirm:
+                    st.session_state["rule_why"] = (text, why_text())
+                    wf.confirm(pending.token)
+                else:
+                    wf.reject(pending.token)
+                st.session_state.pop("rule_error", None)
+            except DuplicateRuleError as exc:
+                st.session_state["rule_error"] = f"Not approved: {exc}."
+            except (DecisionError, StaleActionError) as exc:
+                st.session_state["rule_error"] = str(exc)
+            st.rerun()
+
+if wf.ruleset.active():
+    st.success(f"Monitoring can start: {len(wf.ruleset.active())} approved rule(s).")
+    with st.expander("Approved rules"):
+        st.dataframe([r for r in wf.rules_table() if r["status"] == "approved (active)"], hide_index=True, width="stretch")
+
 if st.session_state.get("rule_error"):
     st.error(st.session_state["rule_error"])
 
-schedule_ui.render()
+with st.expander("Run schedule (optional for recorded sessions)"):
+    schedule_ui.render()
 
 st.divider()
 flow.render_nav("rules", can_next=wf.monitoring_allowed(),
-                next_hint="Propose a rule first, then press Next.")
+                next_hint="Propose and confirm a rule first, then press Next.")

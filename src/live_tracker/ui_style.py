@@ -8,6 +8,8 @@ so long explanations stay available without crowding the page.
 
 from __future__ import annotations
 
+from html import escape
+
 import streamlit as st
 
 COLORS = {"ok": "#15803D", "ask": "#B45309", "alert": "#B91C1C", "neutral": "#475569", "accent": "#B76A54"}
@@ -37,6 +39,13 @@ div[data-testid="stAlert"] {border-radius: .7rem; padding: .55rem .9rem; font-si
 div[data-testid="stCaptionContainer"] {font-size: .82rem;}
 details {border-radius: .7rem !important; border-color: #DDE6E3 !important;}
 .lt-badge {display: inline-block; padding: .1rem .6rem; border-radius: 999px; font-size: .78rem; font-weight: 600;}
+.lt-badge {white-space: normal; overflow-wrap: anywhere;}
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"], .block-container {padding: 2rem 1rem !important;}
+  [data-testid="stHorizontalBlock"] {flex-wrap: wrap; gap: .75rem;}
+  [data-testid="stColumn"] {min-width: min(100%, 16rem); flex: 1 1 16rem;}
+  h1 {font-size: 2rem;}
+}
 </style>
 """
 
@@ -48,7 +57,7 @@ def apply():
 
 def badge(text, kind="neutral"):
     """Small colored label as HTML for st.markdown(..., unsafe_allow_html=True)."""
-    return (f'<span class="lt-badge" style="background:{_BG[kind]};color:{COLORS[kind]}">{text}</span>')
+    return (f'<span class="lt-badge" style="background:{_BG[kind]};color:{COLORS[kind]}">{escape(str(text))}</span>')
 
 
 _ACTION_STYLE = {"alert": f"background-color:{_BG['alert']};color:{COLORS['alert']};font-weight:600",
@@ -69,3 +78,12 @@ def note(kind, short, more=None):
     if more:
         with st.expander("More info"):
             st.caption(more)
+
+
+def event_notice(event, time_text):
+    """Consistent event severity; confidence is a score, never verified behavior."""
+    action = event["action"]
+    label = {"alert": "ALERT", "ask": "ASK · researcher review", "log": "LOG"}.get(action, action.upper())
+    text = (f"{label} · possible {event['behavior']} at {time_text} · "
+            f"confidence {event['confidence']:.2f} (model score, not verified behavior)")
+    note({"alert": "error", "ask": "warning"}.get(action, "caption"), text)

@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import streamlit as st
 
+from .ui_style import note
 from . import demo
 from . import flow
 from . import uploads as up
 from . import video_web as vw
 
-CAMERA = "Connect a camera"
+CAMERA = "Simulated camera (recorded video)"
 VIDEO = "Upload a video and its keypoints"
 CENTERS = "Upload a CSV of mouse positions"
 CHOICES = [CAMERA, VIDEO, CENTERS]
@@ -30,7 +31,7 @@ KIND_TEXT = {"demo": "demo camera, a recorded video stands in for the feed", "vi
 
 def camera_source(d):
     """The demo camera: the demo recording (video and keypoints) used as the stand-in feed."""
-    return up.SessionSource("demo", "Demo camera (live stream camera)", video=str(d.video), poses=str(d.poses),
+    return up.SessionSource("demo", "Demo camera (recorded-video simulation)", video=str(d.video), poses=str(d.poses),
                             session=d.session)
 
 
@@ -59,7 +60,8 @@ def show_path(path):
                 else:
                     st.rerun()
     else:
-        st.caption("No video converter is installed. Install the optional package imageio-ffmpeg in the project's Python "
+        note("caption", "No video converter is installed; analysis can run without the picture.",
+             "Install the optional package imageio-ffmpeg in the project's Python "
                    "(see docs/demo_recording.md), then a button appears here that makes a browser-friendly copy. The "
                    "original is never changed. The analysis does not need the picture.")
 
@@ -92,13 +94,14 @@ def render_camera():
     current = flow.get_source()
     if current is None or current.to_dict() != source.to_dict():
         flow.set_source(source)                                  # choosing the demo camera is the whole step
-    st.success("Camera connected successfully!")
+    st.success("Simulated camera ready — prerecorded video, no physical camera connected.")
     return ("path", demos[0].video)
 
 
 def render_video():
-    st.markdown("The analysis needs the **keypoints of the same recording** (7 per mouse, CalMS21 layout, in pixels of a "
-                "1024 x 570 frame). A video alone is not enough.")
+    st.markdown("Use the **keypoints of the same recording**; a video alone is not enough.")
+    with st.expander("More info"):
+        st.caption("Model B expects 7 keypoints per mouse in CalMS21 layout, in pixels of a 1024 x 570 frame.")
     video = st.file_uploader("Video", type=list(up.VIDEO_TYPES), key="upload_video",
                              help="mp4, webm, mov or m4v. Browsers play H.264 and VP9; other formats can be converted later.")
     keypoints = st.file_uploader("Keypoints file", type=list(up.TABLE_TYPES), key="upload_keypoints",
@@ -120,10 +123,10 @@ def render_video():
 
 
 def render_centers():
-    st.markdown("A CSV with one row per frame and four columns: `x_a`, `y_a` (mouse a) and `x_b`, `y_b` (mouse b), in pixels. "
-                "This gives motion and tracking quality only: no behavior scores and no alerts, because that needs the "
-                "7 keypoints of each mouse.")
-    file = st.file_uploader("Positions CSV", type=["csv"], key="upload_centers")
+    note("caption", "Positions give motion and tracking quality only: no behavior scores or alerts.",
+         "Behavior scoring needs 7 keypoints per mouse; a centers file supplies only one point per mouse.")
+    file = st.file_uploader("Positions CSV", type=["csv"], key="upload_centers",
+                            help="One row per frame: x_a, y_a (mouse a), x_b, y_b (mouse b), in pixels.")
     preview = None
     if file:
         try:
@@ -143,10 +146,17 @@ def render_centers():
 def render():
     flow.render_bar("upload")
     st.title("Upload")
-    st.caption("Choose what the agent should look at. Next, tell it what to look for.")
+    st.caption("Choose recorded data, then define a monitoring rule; camera inference is not available.")
     left, right = st.columns([2, 3])
     with left:
-        choice = st.radio("Source", CHOICES, index=None, key="upload_choice")
+        current = flow.get_source()
+        initial = {"demo": CAMERA, "video_keypoints": VIDEO, "keypoints": VIDEO, "centers": CENTERS}.get(
+            current.kind if current else None)
+        choice = st.radio("Source", CHOICES, index=CHOICES.index(initial) if initial else None, key="upload_choice")
+        previous = st.session_state.get("upload_active_choice", initial)
+        if previous != choice:
+            st.session_state.pop(flow.SOURCE_KEY, None)
+        st.session_state["upload_active_choice"] = choice
         preview = {CAMERA: render_camera, VIDEO: render_video, CENTERS: render_centers}.get(choice, lambda: None)()
     with right:
         show_preview(preview)

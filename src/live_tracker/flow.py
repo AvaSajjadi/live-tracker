@@ -74,7 +74,7 @@ def bar_text(key):
     parts = []
     for i, (_, label, _) in enumerate(STEPS):
         text = f"{i + 1}. {label}"
-        parts.append(f"**{text}**" if i == here else (f"~~{text}~~" if i < here else text))
+        parts.append(f"**{text}**" if i == here else text)
     return "  >  ".join(parts)
 
 
@@ -86,10 +86,12 @@ def render_nav(key, can_next=True, next_hint=None):
     """Back and Next buttons. Next is disabled (with a hint) until the step is complete."""
     back, nxt = previous_page(key), next_page(key)
     left, right = st.columns(2)
-    if back and left.button("Back", key=f"flow_back_{key}"):
+    if back and left.button("Back", key=f"flow_back_{key}", width="stretch",
+                           help=f"Back to {STEPS[step_index(key) - 1][1]}"):
         st.switch_page(back)
     if nxt:
-        if right.button("Next", key=f"flow_next_{key}", type="primary", disabled=not can_next):
+        if right.button("Next", key=f"flow_next_{key}", type="primary", disabled=not can_next,
+                        width="stretch", help=f"Next: {STEPS[step_index(key) + 1][1]}"):
             st.switch_page(nxt)
         if not can_next and next_hint:
             right.caption(next_hint)

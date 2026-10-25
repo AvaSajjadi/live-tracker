@@ -328,8 +328,20 @@ def test_real_mode_without_runs_says_so(tmp_path, monkeypatch, path):
     assert "No validation run found" in texts(at.error) and not at.dataframe
 
 
-
-
+def test_real_mode_renders_a_verified_run_insufficient_evidence_explicitly(made, monkeypatch):
+    """One verified run, two views on the Investigation page: the scientific investigation (the Contract v1 tool
+    run) and the monitoring record (formerly on Replay). The data-mode choice is shared state, not an approval."""
+    root, _, manifest = made
+    at = page("3_Investigation.py", monkeypatch, root, manifest)
+    assert [t.label for t in at.tabs][:2] == ["Monitoring record", "Scientific investigation"]
+    assert [s.label for s in at.selectbox].count("Validation run") == 1                 # one run, shared by both views
+    assert "verified" in texts(at.success)
+    assert texts(at.warning).count("Insufficient evidence") == 3 and "No effect value is reported" in texts(at.warning)
+    assert "no language model chose or interpreted them" in texts(at.info)
+    rec = at.get("download_button")[0]
+    assert rec.label.startswith("Download the recorded Contract v1 record") and "not authenticated" in rec.label
+    assert {m.label for m in at.metric} >= {"Sessions", "Events (predicted)", "Alerts", "Asks"}
+    assert "browsing is not one" in texts(at.info)                     # browsing is not an approval
 
 
 # ---- the genuine run (local, read only) ----
@@ -363,6 +375,27 @@ def test_genuine_run_renders_on_both_pages(monkeypatch, path):
     at.session_state[vui.RUN_KEY] = REAL_RUN
     at.run()
     assert not at.exception and f"Run '{REAL_RUN}': the recorded execution is CONSISTENT" in texts(at.success)
+    assert digests(REAL_ROOT / REAL_RUN) == before
+
+
+@real
+def test_genuine_run_monitoring_record_and_investigation_are_one_verified_run(monkeypatch):
+    """Both views read the one selected, freshly verified run: the monitoring counts are the journal's own, the
+    investigation's bouts are the same events, and nothing on disk changes."""
+    before = digests(REAL_ROOT / REAL_RUN)
+    at = page("3_Investigation.py", monkeypatch, REAL_ROOT)
+    at.session_state[vui.RUN_KEY] = REAL_RUN
+    at.run()
+    run = vv.load_run(REAL_RUN, REAL_ROOT)
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["Events (predicted)"] == str(run.derived["n_events"])
+    assert metrics["Alerts"] == str(run.derived["actions"].get("alert", 0))
+    assert metrics["Asks"] == str(run.derived["actions"].get("ask", 0))
+    assert metrics["Sessions"] == str(len(run.validation_sessions))
+    shown = " ".join(m.value for m in at.markdown) + " " + texts(at.caption)
+    assert "UNVERIFIED claim" in shown and "classifier predictions" in shown                # recorded, not ground truth
+    assert f"{run.query['n_bouts']} bouts" in shown and "exactly the journal's events" in shown
+    assert "NOT established here" in shown and "Not independently authenticated" in texts(at.caption)
     assert digests(REAL_ROOT / REAL_RUN) == before
 
 
@@ -550,7 +583,7 @@ def test_missing_or_incomplete_annotation_counts_are_unknown_not_zero(real_copy,
     assert run.evaluation["status"] == "recorded_incomplete" and run.evaluation["reason"]
     assert {r["annotated attack bouts"] for r in vv.session_rows(run)} == {vv.UNKNOWN}       # never 0
     assert {r["annotated attack bouts in session"] for r in vv.per_session_rows(run, 2.0)} == {vv.UNKNOWN}
-    at = page("2_Replay.py", monkeypatch, root)
+    at = page("3_Investigation.py", monkeypatch, root)                 # the monitoring record, now on Investigation
     assert "Per-session annotation coverage" in texts(at.warning)
 
 

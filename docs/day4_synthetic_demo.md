@@ -1,3 +1,7 @@
+> Historical Day 4 walkthrough: Replay controls and presentation have changed since this was written.
+> Use [demo_readiness.md](demo_readiness.md) for the current offline rehearsal; the synthetic fixture timings below
+> describe test data, not measured animal behavior or a promise about current page controls.
+
 # Day 4 synthetic demo: sentence → rule → replay → answer → summary
 
 > **SYNTHETIC DATA ONLY.** Every session in this demo starts with `SYNTHETIC_`. The scores come from
@@ -17,7 +21,7 @@ python -m venv .venv
 ```
 
 The optional Claude extra (`pip install -e .[claude]`) is **not** needed for this demo. The Rules
-page's default "Offline parser" does not use it.
+page's default "Smart reading" does not use it.
 
 Start the dashboard:
 
@@ -39,7 +43,7 @@ earlier answers.
 ## 2. Rules page: propose and confirm a rule
 
 1. In the sidebar, open **Rules**.
-2. Keep **Interpretation: Offline parser (default, no API key, no cost)**.
+2. Keep **Interpretation: Smart reading (default, no API key, no cost)**.
 3. Enter exactly:
 
    ```
@@ -57,7 +61,7 @@ earlier answers.
 
    The page warns that the thresholds are untuned defaults from `rules.py`, not values chosen on
    data.
-5. Click **Confirm**. Expected: "Monitoring can start: 1 approved rule."
+5. Click **Confirm**. Expected: "Monitoring can start: 1 approved rule(s)."
 
 ## 3. Replay page: the demo session
 
@@ -154,8 +158,9 @@ Switching back to the demo session restores its position and its answer.
 
 ## 7. Known limitations
 
-- **Synthetic only.** Real sessions are refused until H3 (Igor's test-session scores) and the
-  held-out-session policy for H5. Thresholds are the untuned `rules.py` defaults.
+- **This walkthrough is synthetic only.** The application separately supports saved real validation runs
+  ([validation_run_v1.md](validation_run_v1.md)); H5 on held-out test data remains pending team approval.
+  This synthetic example uses the untuned `rules.py` defaults.
 - **Provisional tracking parts (pending Ava):** the skeleton edge list, the 0.15 keypoint score
   threshold, the warning flags (`low_conf` is added to Ava's), and warning storage. Warnings are
   shown and summarized separately; the journal accepts only alert, ask and log.

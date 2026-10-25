@@ -65,10 +65,6 @@ if backend == "claude_interpret":
          "(a place, a time of day, an extra condition) is refused, not dropped, and every guess is shown as an assumption "
          "before you confirm. It needs ANTHROPIC_API_KEY and LIVE_TRACKER_CLAUDE_MODEL. The offline parser stays the default.")
 
-if backend == "offline":
-    st.caption("The smart reading copes with typos and everyday wording (\"let me know if the mice fight for more than 2 "
-               "seconds\") and shows what it understood. It runs on this computer: nothing is sent anywhere.")
-
 def why_text():
     """The reasons and assumptions behind the last answer, for the hover help (?) next to the instruction box."""
     lines = []

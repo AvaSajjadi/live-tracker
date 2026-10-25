@@ -143,7 +143,7 @@ def test_a_constraint_the_rule_cannot_express_is_shown_as_a_refusal_with_the_rea
 
 def test_the_first_choice_is_the_smart_reading_and_it_understands_a_loose_sentence_with_its_notes():
     at = open_page()
-    assert at.radio[0].value.startswith("Smart reading (default") and "nothing is sent anywhere" in texts(at.caption)
+    assert at.radio[0].value.startswith("Smart reading (default") and "nothing is sent anywhere" not in texts(at.caption)
     at.text_area(key="rule_instruction").set_value("let me know if the mice are fighting for more that 2 seconds").run()
     [b for b in at.button if b.label == "Propose rule"][0].click().run()
     assert not at.exception

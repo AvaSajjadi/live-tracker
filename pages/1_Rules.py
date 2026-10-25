@@ -109,7 +109,6 @@ pending = wf.pending
 if pending is not None and isinstance(pending.proposal, RuleProposal):
     p = preview(pending)
     st.subheader(f"Proposed rule {p['rule_id']}")
-    st.warning(f"Status: {p['status']}.")
     st.markdown(
         f"- **Behavior:** {p['behavior']}\n"
         f"- **Minimum duration:** {p['min_duration']}\n"

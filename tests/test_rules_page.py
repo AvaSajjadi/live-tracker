@@ -72,7 +72,7 @@ def test_proposal_preview_shows_all_fields():
                      "**Alert mode:** alert:", "**Alert threshold:** 0.8 (untuned example default",
                      "**Ask threshold:** 0.5 (untuned example default", "rules.py defaults are used"):
         assert expected in body, expected
-    assert "NOT active until you click Confirm" in texts(at.warning)
+    assert "NOT active until you click Confirm" not in texts(at.warning)           # removed on request; Confirm / Reject decide
     assert "Untuned default thresholds: alert_threshold, ask_threshold" in texts(at.warning)
     assert EXAMPLE in texts(at.text)  # the original instruction, shown separately
     assert '"status": "proposed"' in at.code[0].value

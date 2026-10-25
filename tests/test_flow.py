@@ -124,7 +124,7 @@ def test_clicking_the_camera_sets_the_demo_camera_and_shows_the_video_at_once(ro
     assert source.kind == "demo" and source.can_score and source.has_video and source.label.startswith("Demo camera")
     assert len(at.get("video")) == 1                                                 # the video is on the page at once
     assert [s.value for s in at.success][0] == "Camera connected successfully!"        # the green message, exactly
-    assert f"Chosen: Demo camera (recorded video {NAME})" in texts(at.success)
+    assert len(at.success) == 1                                                       # no second green box at the bottom
     assert not next_button(at).disabled
     next_button(at).click().run()
     assert seen == ["pages/1_Rules.py"]
@@ -182,7 +182,7 @@ def test_the_csv_option_says_it_gives_motion_only(root):
 def test_a_chosen_centers_source_is_shown_as_motion_only(root):
     source = up.SessionSource("centers", "c.csv", centers="c.csv")
     at = open_page({"flow_source": source})
-    assert "Chosen: c.csv (mouse positions, motion only)" in texts(at.success)
+    assert not at.success
     assert "the agent can score" not in texts(at.caption)
 
 

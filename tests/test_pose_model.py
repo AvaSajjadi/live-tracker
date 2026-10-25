@@ -102,6 +102,7 @@ def test_camera_with_a_model_opens_the_camera_by_number(tmp_path, monkeypatch):
     monkeypatch.setattr(rsrc, "open_camera", lambda d=0: opened.append(d) or FakeCapture())
     src = rsrc.make_source({"kind": "camera", "device": "1", "pose_estimator": lambda im: None}, tmp_path)
     assert opened == [1] and src.kind == "pose" and src.reopen is not None
+    src.close()                                          # stops the camera reader thread
 
 
 def test_camera_device_number_or_address():

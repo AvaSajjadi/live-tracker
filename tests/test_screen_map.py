@@ -63,6 +63,7 @@ def test_the_camera_source_gives_the_pose_model_the_stretched_picture(monkeypatc
             "pose_estimator": lambda image: seen.append(image.shape) or None}
     source = rsrc.make_source(spec)
     source.read()
+    source.close()
     assert seen == [(IMAGE_SIZE[1], IMAGE_SIZE[0], 3)]
 
 

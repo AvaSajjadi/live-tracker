@@ -113,7 +113,8 @@ video, slides and poster for the submission.
 | `src/live_tracker/notify.py` | Log file and optional ntfy phone messages | `test_notify.py` (13) |
 | `src/live_tracker/monitor_runner.py` | The program: wait, run, log, answers, interruptions, report, stop | `test_monitor_runner.py` (21) |
 | `src/live_tracker/run_control.py`, `run_ui.py`, `pages/6_Run.py` | Start, stop, watch, answer (also after the run), report | `test_run_control.py` (22), `test_run_page.py` (12) |
-| `src/live_tracker/demo.py`, `demo_ui.py`, `pages/7_Demo.py`, `scripts/prepare_demo_session.py` | Live demo page: a recorded video and its run start together; GO signal, delay meter; see `docs/demo_recording.md` | `test_demo.py` (12), `test_demo_page.py` (11) |
+| `src/live_tracker/flow.py`, `app.py` (router), `pages/0_Upload.py`, `upload_ui.py`, `uploads.py` | Guided flow: Upload, Rules, Replay, Real session, with a bar and Back / Next; checked uploads | `test_flow.py` (16), `test_uploads.py` (35) |
+| `src/live_tracker/live_view.py`, `live_session.py`, `video_web.py`, `demo.py`, `scripts/prepare_demo_session.py` | Real session page: the video on one side, the live analysis on the other; browser-playable check and web copy; the demo recording; see `docs/demo_recording.md` | `test_live_view.py` (18), `test_live_session.py` (10), `test_video_web.py` (18), `test_demo.py` |
 
 Measured on one validation session: live scores equal whole-session scores (largest difference 5e-13); the program,
 run as its own process, produced the same 46 events as the whole-session calculation. Details and limits:

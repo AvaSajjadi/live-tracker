@@ -349,13 +349,14 @@ at the end. A question left open can be answered the next morning.
 
 It works today with recorded data. **A real camera is not supported yet: there is no mouse pose model in this repository.**
 What was measured, the limits and a setup checklist: [`docs/lab_run.md`](docs/lab_run.md).
-The **Live demo** page plays a CalMS21 video and its run together (a simulated live stream from a recording, not a camera):
+The dashboard opens on a **guided flow**: Upload, Rules, Replay, Real session. On the Real session page the recording plays on one side and the
+live analysis runs on the other (a simulated live stream from a recording, not a camera):
 [`docs/demo_recording.md`](docs/demo_recording.md).
 
 ## Project structure
 
 ```
-app.py                     Streamlit main page: motion engine and tracking quality
+app.py                     Streamlit front door: the menu (guided flow first); the old home page is pages/8_Motion_Tool.py
 pages/1_Rules.py           Streamlit page: plain-English rules with researcher approval
 pages/2_Replay.py          Streamlit page: replay of synthetic sessions with events, warnings and summary
 pages/3_Investigation.py   Streamlit page: the evidence behind a replayed session

@@ -21,6 +21,28 @@ STEPS = (
 KEYS = [key for key, _, _ in STEPS]
 
 
+OTHER_PAGES = (
+    ("Investigation", "pages/3_Investigation.py"),
+    ("Live Agent", "pages/5_Live_Agent.py"),
+    ("Run", "pages/6_Run.py"),
+    ("Motion tool", "pages/8_Motion_Tool.py"),
+)
+
+
+def menu():
+    """The sidebar menu as plain data: {section: [(title, path, is_default)]}. The numbered steps come first, and
+    Upload is the front page."""
+    steps = [(f"{i + 1}. {label}", path, i == 0) for i, (_, label, path) in enumerate(STEPS)]
+    more = [(title, path, False) for title, path in OTHER_PAGES]
+    return {"Guided flow": steps, "More": more}
+
+
+def navigation_pages():
+    """The same menu as st.Page objects, for st.navigation (call it inside a running app)."""
+    return {section: [st.Page(path, title=title, default=default) for title, path, default in items]
+            for section, items in menu().items()}
+
+
 def step_index(key):
     return KEYS.index(key)
 

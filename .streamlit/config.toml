@@ -9,6 +9,9 @@ borderColor = "#DDE6E3"
 font = "sans serif"
 baseRadius = "0.6rem"
 
+[server]
+maxUploadSize = 1024        # megabytes: research videos are large
+
 [client]
 toolbarMode = "minimal"
 

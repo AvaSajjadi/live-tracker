@@ -149,3 +149,27 @@ def test_a_chosen_centers_source_is_shown_as_motion_only(tmp_path, monkeypatch):
     at = open_page({"flow_source": source})
     assert "Chosen: c.csv (mouse positions, motion only)" in texts(at.success)
     assert "the agent can score" not in texts(at.caption)
+
+
+# ---- the router (app.py) ----
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_the_menu_lists_the_steps_in_order_then_the_other_pages():
+    pages = flow.menu()
+    assert list(pages) == ["Guided flow", "More"]
+    assert [t for t, _, _ in pages["Guided flow"]] == ["1. Upload", "2. Rules", "3. Replay", "4. Real session"]
+    assert [t for t, _, _ in pages["More"]] == ["Investigation", "Live Agent", "Run", "Motion tool"]
+    assert [d for _, _, d in pages["Guided flow"]] == [True, False, False, False]
+    assert all((ROOT / path).exists() for items in pages.values() for _, path, _ in items)
+    assert len({path for items in pages.values() for _, path, _ in items}) == 8
+
+
+def test_the_app_opens_on_the_upload_step_and_every_page_can_be_reached(tmp_path, monkeypatch):
+    monkeypatch.setattr(rc, "ROOT", tmp_path)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    assert not at.exception and [t.value for t in at.title] == ["Upload"]
+    for _, path in [(None, p) for _, _, p in flow.STEPS[1:]] + [(None, p) for _, p in flow.OTHER_PAGES]:
+        at.switch_page(path).run()
+        assert not at.exception, (path, [e.value for e in at.exception])

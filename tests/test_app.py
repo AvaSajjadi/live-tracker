@@ -7,7 +7,7 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-APP = str(Path(__file__).resolve().parents[1] / "app.py")
+APP = str(Path(__file__).resolve().parents[1] / "pages" / "8_Motion_Tool.py")
 
 
 def run_demo(inject=False):

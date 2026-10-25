@@ -1,8 +1,9 @@
-"""Streamlit rendering of a verified REAL validation run on the Replay and Investigation pages (new file).
+"""Streamlit rendering of a verified REAL validation run on the Investigation page (new file).
 
-The pages offer two data modes: the existing SYNTHETIC demonstration (unchanged) and a verified real validation
+The page offers two data modes: the existing SYNTHETIC demonstration (unchanged) and a verified real validation
 run (validation_run_view.load_run). In real mode a run is chosen by its directory name from the runs directory and
 re-verified on every rerun; if it does not verify, the reason is shown and nothing else (no synthetic fallback).
+The one verified run is shown in two views: its monitoring record and its scientific investigation.
 Everything shown is a recorded value of that run: nothing is re-run, re-scored or re-classified, and no model is
 called. Inspecting a completed run is not an approval: the run's own recorded approval is shown as such.
 """
@@ -94,16 +95,29 @@ def _rule(run):
             f"{r['min_duration_s']:g} s, alert threshold {r['alert_threshold']:g}, mode {r['alert_mode']}")
 
 
-def render_replay():
-    """Replay, real mode: the recorded monitoring run (no new monitoring run, no approval)."""
-    note("info", "REAL validation data: a completed run is browsed and nothing is re-run. "
-                 "Starting a new run needs your approval; browsing is not one.",
-         "The model and the monitor are not called. A new monitoring run needs an explicit researcher "
-         "approval: scripts/validation_run_v1.py --confirm.")
-    run = choose_run("replay_validation_run")
+def render_real_run():
+    """Investigation, real mode: ONE verified run (choose_run re-verifies it on every rerun), shown in two views of
+    that same run. Nothing is re-run and no model is called."""
+    run = choose_run("investigation_validation_run")
     if run is None:
         return
     disclosures()
+    monitoring, science = st.tabs(["Monitoring record", "Scientific investigation"])
+    with monitoring:
+        render_monitoring(run)
+    with science:
+        render_investigation(run)
+
+
+def render_monitoring(run):
+    """The recorded monitoring run: the approved rule's events, alerts and asks, as recorded (no new monitoring run,
+    no approval)."""
+    note("info", "REAL validation data: a completed monitoring run is browsed and nothing is re-run. "
+                 "Starting a new run needs your approval; browsing is not one.",
+         "The model and the monitor are not called. A new monitoring run needs an explicit researcher "
+         "approval: scripts/validation_run_v1.py --confirm.")
+    st.caption("Recorded monitoring events: the approved rule applied to the recorded classifier scores. The events "
+               "are classifier predictions, not observed or annotated behavior.")
     st.markdown(f"**Approved rule (as recorded):** {_rule(run)}")
     st.caption(f"Recorded approval: {run.summary['rule'].get('approval', 'not recorded')}")
     m, d = run.summary["monitor"], run.derived                   # counts derived from the journal
@@ -119,7 +133,7 @@ def render_replay():
                 "are recorded, unverified values; the events are classifier predictions)")
     st.dataframe(pd.DataFrame(vv.session_rows(run)), hide_index=True, width="stretch")
     labels = {sid.rsplit("/", 1)[-1]: sid for sid in run.validation_sessions}
-    pick = st.selectbox("Validation session", list(labels), key="replay_validation_session")
+    pick = st.selectbox("Validation session", list(labels), key="validation_monitoring_session")
     rows = vv.event_rows(run, labels[pick])
     st.markdown(f"**Recorded events in {pick}** (journal order, recorded ids)")
     if rows:
@@ -135,16 +149,12 @@ def render_replay():
         st.dataframe(pd.DataFrame(vv.provenance_rows(run)), hide_index=True, width="stretch")
 
 
-def render_investigation():
-    """Investigation, real mode: the recorded Contract v1 tool run of the verified run."""
+def render_investigation(run):
+    """The recorded Contract v1 tool run of the verified run: its tool sequence and findings."""
     note("info", "REAL validation data: a recorded tool run; no language model chose or interpreted them. "
                  "Nothing is re-run.",
          "The Contract v1 calls were a fixed, deterministic sequence chosen before any value was seen, "
          "for a verified validation run.")
-    run = choose_run("investigation_validation_run")
-    if run is None:
-        return
-    disclosures()
     q = run.query
     tab_q, tab_cmp, tab_trace, tab_find, tab_prov = st.tabs(["Query & bouts", "Comparisons", "Trace", "Findings",
                                                              "Provenance & export"])

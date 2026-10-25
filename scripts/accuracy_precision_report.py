@@ -286,6 +286,21 @@ def render(res):
               "Per mouse (original): black " + str(m["clean"]["per_mouse"]["black"]) + " px, white " + str(m["clean"]["per_mouse"]["white"]) + " px.", ""]
     else:
         L += ["**Not measured in this run.** Run `scripts/accuracy_mars_handlabels.py` in the MARS environment and pass `--mars-json`.", ""]
+    rts = res.get("realtime") or []
+    L += ["## 3b. Real-time test: a live feed at 30 frames per second", ""]
+    if rts:
+        L += ["The video is fed at exactly 30 frames per second (or the stated rate). The model always takes the newest frame; frames that arrived "
+              "while it was busy are dropped, as in a live camera. **Keeping up** needs at least 95% of the frames processed.", "",
+              "| Model | Feed | Frames processed | Reached (frames/s) | Keypoints late, median (s) | late, 95th pct (s) | Keeps up? | Error vs saved keypoints, median (px) |",
+              "|---|---|---|---|---|---|---|---|"]
+        for r in rts:
+            acc = r.get("accuracy_vs_saved_keypoints", {})
+            L.append(f"| {r['backend']} | {r['feed_fps']:g} fps, {r['seconds_fed']} s | {r['frames_processed']} of {r['frames_available']} ({pct(r['share_processed'])}) | "
+                     f"{r['reached_fps']} | {r['latency_median_s']} | {r['latency_p95_s']} | {'yes' if r['keeps_up_with_live'] else '**NO**'} | "
+                     f"{acc.get('median_error_px', 'n/a')} |")
+        L += [""]
+    else:
+        L += ["**Not measured in this run.** Run `scripts/realtime_pose_test.py` and pass its JSON with `--realtime-json`.", ""]
     k = res["camera"]
     L += ["## 4. Camera recording and the screen stretch", "",
           "Truth is synthetic: bright squares placed at known points of a screen in a 640 x 480 picture, and a camera that gives "
@@ -321,6 +336,7 @@ def main(argv=None):
     ap.add_argument("--json", default=str(ROOT / "outputs" / "accuracy_precision.json"))
     ap.add_argument("--labels", default=str(ROOT / "data" / "processed" / "labels.parquet"))
     ap.add_argument("--mars-json")
+    ap.add_argument("--realtime-json", help="outputs of scripts/realtime_pose_test.py (a list is also fine: pass it more than once)", action="append")
     ap.add_argument("--yolo-json")
     a = ap.parse_args(argv)
     scores, source = load_scores()
@@ -328,6 +344,8 @@ def main(argv=None):
     res = {"behavior": behavior_section(scores, labels, source), "centers": centers_section(), "camera": camera_section()}
     if a.mars_json and Path(a.mars_json).is_file():
         res["mars"] = json.loads(Path(a.mars_json).read_text(encoding="utf-8"))
+    if a.realtime_json:
+        res["realtime"] = [json.loads(Path(x).read_text(encoding="utf-8")) for x in a.realtime_json if Path(x).is_file()]
     if a.yolo_json and Path(a.yolo_json).is_file():
         res["yolo"] = json.loads(Path(a.yolo_json).read_text(encoding="utf-8"))
     Path(a.json).parent.mkdir(parents=True, exist_ok=True)

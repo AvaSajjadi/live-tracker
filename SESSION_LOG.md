@@ -322,3 +322,5 @@ Next time: step 3 (start a camera run from the Real session page), then the pose
 3. Not finished: the user may want more changes to the look (spacing, table, shorter text).
 
 Later: the smaller headings still looked big (the theme in `ui_style.py` sizes all headings). Now `_small_headings` turns heading lines into bold lines. Dashboard on 8766 restarted.
+
+Later: the report table was wider than the box (screenshot). New `_show_report` in `live_view.py` shows the Markdown table as a small data table (`st.dataframe`, full width). The text parts stay Markdown.

@@ -187,6 +187,21 @@ def _small_headings(text):
     return "\n".join(lines)
 
 
+def _show_report(text):
+    """The report text; a Markdown table is shown as a small data table so it fits the box."""
+    text = _small_headings(text)
+    rows = [ln for ln in text.split("\n") if ln.startswith("|")]
+    if len(rows) < 3:
+        st.markdown(text)
+        return
+    cells = [[c.strip() for c in ln.strip("|").split("|")] for ln in rows]
+    before, _, after = text.partition(rows[0])
+    after = after.split(rows[-1], 1)[1]
+    st.markdown(before)
+    st.dataframe([dict(zip(cells[0], r)) for r in cells[2:]], hide_index=True, width="stretch")
+    st.markdown(after)
+
+
 def render_biologist_report(run_dir, report_json):
     """The written report for the biologist: Claude writes it when the button is clicked (one paid request)."""
     key = f"live_bio_{run_dir.name}"
@@ -211,7 +226,7 @@ def render_biologist_report(run_dir, report_json):
         else:
             return
     with st.container(border=True):
-        st.markdown(_small_headings(text))
+        _show_report(text)
     st.download_button("Download the report (Markdown)", text, file_name=f"{run_dir.name}_report.md",
                        mime="text/markdown", key="live_bio_download", on_click="ignore")
     if st.session_state.get(key + "_why"):

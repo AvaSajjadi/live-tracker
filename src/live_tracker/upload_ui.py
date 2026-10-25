@@ -26,8 +26,8 @@ CENTERS = "Upload a CSV of mouse positions"
 CHOICES = [CAMERA, VIDEO, CENTERS]
 KIND_TEXT = {"demo": "demo camera, a recorded video stands in for the feed", "video_keypoints": "video with keypoints",
              "keypoints": "keypoints, no picture", "centers": "mouse positions, motion only", "camera": "camera"}
-CAMERA_NOTE = ("Demo camera. No real camera is connected: a recorded video stands in for the camera feed, so you can try "
-               "the whole flow. A real camera cannot be analysed yet, because that needs a mouse pose model.")
+DEMO_MODE_NOTE = ("Demo mode: no physical camera is attached. A recorded video is the camera feed. "
+                  "A real camera needs a mouse pose model, which this project does not have yet.")
 
 
 def camera_source(d):
@@ -51,7 +51,7 @@ def show_path(path):
         return
     ok, why = vw.is_browser_playable(path)
     st.warning(f"The picture cannot be shown in the browser: {why}.")
-    if vw.converter_exe():
+    if vw.converter_available():
         if st.button("Prepare the video for the browser", key="upload_convert"):
             with st.spinner("Converting the video (about a minute)..."):
                 try:
@@ -94,7 +94,8 @@ def render_camera():
     current = flow.get_source()
     if current is None or current.to_dict() != source.to_dict():
         flow.set_source(source)                                  # choosing the demo camera is the whole step
-    st.info(CAMERA_NOTE)
+    st.success("Camera connected successfully!")
+    st.caption(DEMO_MODE_NOTE)
     return ("path", demos[0].video)
 
 

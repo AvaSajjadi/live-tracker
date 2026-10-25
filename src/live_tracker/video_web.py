@@ -3,19 +3,24 @@
 Browsers play H.264, VP9 and AV1. Many research videos use older formats such as MPEG-4 Part 2 ("mp4v"),
 which Windows players show but browsers do not: the picture area just stays empty. The CalMS21 videos are
 "mp4v". This module reads the video's codec from its file (no extra package), and can write an H.264 copy next to
-the original (`<name>_web.mp4`) using the ffmpeg that comes with the optional package imageio-ffmpeg. The original
-is never changed. Nothing here is imported unless a page needs it.
+the original (`<name>_web.mp4`). Two converters are tried, nothing has to be installed on Windows:
+  - the converter that is built into Windows (scripts/win_transcode.ps1, Media Foundation), or
+  - the ffmpeg of the optional package imageio-ffmpeg, if it is installed (used first when present).
+The original is never changed. Nothing here is imported unless a page needs it.
 """
 
 from __future__ import annotations
 
 import io
+import os
+import shutil
 import struct
 import subprocess
 from pathlib import Path
 
 PLAYABLE = ("h264", "vp9", "av1")
 SUFFIX = "_web"
+WIN_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "win_transcode.ps1"
 
 
 class ConverterMissing(RuntimeError):
@@ -138,6 +143,16 @@ def converter_exe():
         return None
 
 
+def windows_converter_available():
+    """True on Windows with PowerShell: the converter built into Windows can be used, nothing to install."""
+    return os.name == "nt" and WIN_SCRIPT.exists() and shutil.which("powershell") is not None
+
+
+def converter_available():
+    """True if some converter can make a browser-friendly copy."""
+    return bool(converter_exe()) or windows_converter_available()
+
+
 def make_web_copy(src, dst=None, *, exe=None, runner=subprocess.run, tolerance_s=0.5):
     """Write an H.264 copy (faststart, no audio) and check it. Returns the new path.
 
@@ -146,10 +161,16 @@ def make_web_copy(src, dst=None, *, exe=None, runner=subprocess.run, tolerance_s
     src = Path(src)
     dst = Path(dst) if dst is not None else web_copy_path(src)
     exe = exe or converter_exe()
-    if not exe:
-        raise ConverterMissing("no video converter: install the optional package imageio-ffmpeg in the project's Python")
-    result = runner([exe, "-y", "-v", "error", "-i", str(src), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)], capture_output=True, text=True)
+    if exe:
+        command = [exe, "-y", "-v", "error", "-i", str(src), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                   "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst)]
+    elif windows_converter_available():
+        command = [shutil.which("powershell") or "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                   str(WIN_SCRIPT), "-Source", str(src), "-Destination", str(dst)]
+    else:
+        raise ConverterMissing("no video converter: this computer has no built-in one (Windows has), and the optional "
+                               "package imageio-ffmpeg is not installed in the project's Python")
+    result = runner(command, capture_output=True, text=True)
     if getattr(result, "returncode", 1) != 0 or not dst.exists():
         dst.unlink(missing_ok=True)
         raise ConversionFailed(f"the converter failed: {(getattr(result, 'stderr', '') or '')[-200:].strip() or 'no message'}")

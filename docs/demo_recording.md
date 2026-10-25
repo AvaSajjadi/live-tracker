@@ -65,9 +65,10 @@ That button needs a converter, the optional package `imageio-ffmpeg`, installed 
 - **or Xbox Game Bar:** click the browser, press Windows + Alt + R to start and again to stop. The file goes to `Videos\Captures`.
 
 Steps on the pages:
-1. **Upload:** click **Connect a camera**. The page says it is a demo camera (no real camera is connected) and the
-   recorded video appears on the right at once. Then **Next**. Say "demo camera" or "recorded video standing in for the
-   camera" in your text; do not say a camera is connected.
+1. **Upload:** click **Connect a camera**. The page shows **"Camera connected successfully!"** in green and starts the
+   video on the right at once. Under the green message a small line says "Demo mode: no physical camera is attached. A
+   recorded video is the camera feed." Keep that line in your screenshots and recording, and in your text say it is a demo
+   camera (a recorded video as the feed). Then **Next**.
 2. **Rules:** write the rule in your own words. For the validated demo rule, include the thresholds, for example
    `let me know if the mice fight for more than 0.5 seconds, ask threshold 0.6, alert threshold 0.8`. Click **Propose rule**,
    read "Your sentence was read as ..." and the assumptions, click **Confirm**, then **Next**.

@@ -82,10 +82,34 @@ def test_a_failing_converter_is_reported(tmp_path):
         vw.make_web_copy(src, exe="ffmpeg", runner=converter(tmp_path, returncode=1, write_output=False))
 
 
-def test_without_a_converter_it_says_what_to_install(tmp_path, monkeypatch):
+def test_without_any_converter_it_says_what_to_do(tmp_path, monkeypatch):
     monkeypatch.setattr(vw, "converter_exe", lambda: None)
+    monkeypatch.setattr(vw, "windows_converter_available", lambda: False)
     with pytest.raises(vw.ConverterMissing, match="imageio-ffmpeg"):
         vw.make_web_copy(write(tmp_path, "clip.mp4", fake_mp4(b"mp4v")))
+    assert vw.converter_available() is False
+
+
+def test_the_converter_built_into_windows_is_used_when_there_is_no_ffmpeg(tmp_path, monkeypatch):
+    monkeypatch.setattr(vw, "converter_exe", lambda: None)
+    monkeypatch.setattr(vw, "windows_converter_available", lambda: True)
+    seen = []
+
+    def run(cmd, capture_output=True, text=True):
+        seen.append(cmd)
+        (tmp_path / "clip_web.mp4").write_bytes(fake_mp4(b"avc1", 10.0))
+        return SimpleNamespace(returncode=0, stderr="")
+
+    src = write(tmp_path, "clip.mp4", fake_mp4(b"mp4v", 10.0))
+    out = vw.make_web_copy(src, runner=run)
+    cmd = seen[0]
+    assert out == tmp_path / "clip_web.mp4" and vw.video_codec(out) == "h264" and vw.converter_available() is True
+    assert "powershell" in cmd[0].lower() and "-File" in cmd and str(vw.WIN_SCRIPT) in cmd
+    assert cmd[cmd.index("-Source") + 1] == str(src) and cmd[cmd.index("-Destination") + 1] == str(out)
+
+
+def test_the_windows_script_is_part_of_the_project():
+    assert vw.WIN_SCRIPT.name == "win_transcode.ps1" and vw.WIN_SCRIPT.exists()
 
 
 # ---- which file to play ----

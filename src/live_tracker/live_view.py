@@ -101,7 +101,7 @@ def render_intro(source, rules):
     if source.has_video and playable is None:
         ok, why = vw.is_browser_playable(source.video)
         st.warning(f"The picture cannot be shown in the browser: {why}. The analysis can still run without it.")
-        if vw.converter_exe():
+        if vw.converter_available():
             if st.button("Prepare the video for the browser", key="live_convert"):
                 with st.spinner("Converting the video (about a minute)..."):
                     try:

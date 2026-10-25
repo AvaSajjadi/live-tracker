@@ -123,18 +123,31 @@ def test_clicking_the_camera_sets_the_demo_camera_and_shows_the_video_at_once(ro
     source = at.session_state["flow_source"]
     assert source.kind == "demo" and source.can_score and source.has_video and source.label.startswith("Demo camera")
     assert len(at.get("video")) == 1                                                 # the video is on the page at once
-    assert "No real camera is connected" in texts(at.info) and "recorded video stands in" in texts(at.info)
+    assert [s.value for s in at.success][0] == "Camera connected successfully!"        # the green message, exactly
     assert f"Chosen: Demo camera (recorded video {NAME})" in texts(at.success)
     assert not next_button(at).disabled
     next_button(at).click().run()
     assert seen == ["pages/1_Rules.py"]
 
 
-def test_the_page_never_says_a_camera_is_connected(root):
+def test_the_green_message_always_comes_with_the_demo_mode_line(root):
+    """The message is the one asked for; the demo-mode line keeps screenshots and recordings truthful."""
     playable_demo(root)
     at = open_page()
     at.radio(key="upload_choice").set_value("Connect a camera").run()
-    assert "camera connected" not in page_text(at).lower() and "connected to the camera" not in page_text(at).lower()
+    assert "Camera connected successfully!" in [s.value for s in at.success]
+    caption = texts(at.caption)
+    assert "Demo mode: no physical camera is attached. A recorded video is the camera feed." in caption
+    assert "mouse pose model" in caption
+    assert "Camera connected successfully!" not in texts(at.warning) + texts(at.error)
+
+
+def test_nothing_says_connected_before_the_camera_is_clicked(root):
+    playable_demo(root)
+    at = open_page()
+    assert "connected" not in page_text(at).lower()
+    at.radio(key="upload_choice").set_value("Upload a video and its keypoints").run()
+    assert "connected" not in page_text(at).lower()
 
 
 def test_a_video_the_browser_cannot_play_is_explained_and_next_still_works(root):

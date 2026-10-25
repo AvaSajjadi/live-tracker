@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from . import camera_check as cc
 from . import demo
 from . import flow
 from . import uploads as up
@@ -75,6 +76,8 @@ def show_preview(preview):
             st.video(preview[2], muted=True)
         else:
             st.warning(f"This video cannot be shown in the browser: {why}. It can still be used for the analysis.")
+    elif preview[0] == "image":
+        st.image(preview[1], caption="One picture from the camera", width="stretch")
     elif preview[0] == "table":
         st.markdown("**First rows of the file**")
         st.dataframe(preview[1].head(8), hide_index=True, width="stretch")
@@ -82,11 +85,14 @@ def show_preview(preview):
 
 # ---- the three choices ----
 
-def render_camera():
+DEMO_CAMERA, USB_CAMERA = "Demo camera (a recorded video)", "USB camera"
+
+
+def render_demo_camera():
     demos = demo.find_demos()
     if not demos:
-        st.warning("No recorded video is available on this computer to stand in for a camera. A real camera cannot be "
-                   "analysed yet, because that needs a mouse pose model.")
+        st.warning("No recorded video is available on this computer to stand in for a camera. "
+                   "A real camera cannot be analysed yet, because that needs a mouse pose model.")
         return None
     source = camera_source(demos[0])
     current = flow.get_source()
@@ -94,6 +100,41 @@ def render_camera():
         flow.set_source(source)                                  # choosing the demo camera is the whole step
     st.success("Camera connected successfully!")
     return ("path", demos[0].video)
+
+
+def render_usb_camera():
+    """A real camera: test it, see one picture, then use it. Analysing it also needs a pose model."""
+    if not cc.opencv_available():
+        st.error("OpenCV is not installed, so a camera cannot be opened. Run: pip install opencv-python-headless")
+        return None
+    device = st.text_input("Camera number or stream address", value="0", key="upload_device",
+                           help="0 is the first camera, 1 the second. A network camera has an address like rtsp://...")
+    current = flow.get_source()                                  # the demo camera or another camera number is no longer the choice
+    if current is not None and (current.kind == "demo" or (current.kind == "camera" and current.device != device.strip())):
+        st.session_state.pop(flow.SOURCE_KEY, None)
+    state = st.session_state.get("upload_camera_test")
+    if st.button("Test the camera", key="upload_test_camera"):
+        with st.spinner("Opening the camera..."):
+            png, why = cc.snapshot(device)
+        state = st.session_state["upload_camera_test"] = {"device": device, "png": png, "why": why}
+    if not state or state["device"] != device:
+        st.caption("Press Test the camera to see one picture.")
+        return None
+    if state["png"] is None:
+        st.error(f"The camera cannot be used: {state['why']}.")
+        return None
+    st.success("The camera works.")
+    _, reason = cc.pose_model.load()
+    if reason:
+        st.warning(f"{reason} You can choose this camera now, but the analysis cannot start until a pose model is set up.")
+    if st.button("Use this camera", type="primary", key="upload_use_camera"):
+        flow.set_source(up.SessionSource("camera", f"USB camera {device}", device=device.strip()))
+    return ("image", state["png"])
+
+
+def render_camera():
+    kind = st.radio("Camera type", [DEMO_CAMERA, USB_CAMERA], key="upload_camera_kind")
+    return render_usb_camera() if kind == USB_CAMERA else render_demo_camera()
 
 
 def render_video():

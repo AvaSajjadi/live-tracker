@@ -54,6 +54,7 @@ class SessionSource:
     session: str | None = None
     centers: str | None = None          # CSV with x_a, y_a, x_b, y_b
     fps: float = FPS
+    device: str | None = None           # a real camera: its number ("0") or stream address; none means camera 0
 
     def __post_init__(self):
         if self.kind not in KINDS:

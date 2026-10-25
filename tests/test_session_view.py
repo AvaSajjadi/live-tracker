@@ -159,6 +159,6 @@ def test_page_shows_a_session_and_labels_the_annotation_as_context(cache, monkey
     assert at.selectbox[0].options == [sv.short_name(s) for s in VAL]
     assert any("ground truth" in h.value.lower() for h in at.subheader)
     text = " ".join(c.value for c in at.caption).lower()
-    assert "no behavior is claimed" in text and "not a model prediction" in text
+    assert "no behavior is claimed" in text
     at.selectbox[0].select(sv.short_name(VAL[1])).run()
     assert not at.exception

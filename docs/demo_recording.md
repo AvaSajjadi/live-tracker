@@ -1,20 +1,35 @@
-# The live demo and the screen recording
+# The guided flow, the live session, and the screen recording
 
-The **Live demo** page plays a CalMS21 video and, at the same moment, runs the real run program on that
-video's pose keypoints: live scores from Model B, the validated demo rule, the monitor, the event log. The
-audience sees the mice and the alerts together.
+The dashboard now has a **guided flow** of four steps. Each page has a bar at the top that shows where you are, and
+**Back** and **Next** buttons.
 
-**What to say, and what not to say.** This is a **simulated live stream from a recording.** No camera is used,
-and no camera has been tested (there is no mouse pose model yet; see `docs/lab_run.md`). The video shows the
-mice, but the system works from the saved keypoints, not from the picture. The session was chosen because it has
-the most events among the validation sessions, so it is the best case, not a typical one.
+| Step | Page | What you do |
+|---|---|---|
+| 1 | **Upload** | choose what the agent looks at: the demo recording, a video with its keypoints, a keypoints file, or a CSV of mouse positions. A camera is listed but cannot be used yet |
+| 2 | **Rules** | tell the agent what to look for, in plain English, and Confirm the rule |
+| 3 | **Replay** | the replay page (a recorded run, played back) |
+| 4 | **Real session** | the recording plays on one side while the analysis runs on the other: alerts, counts, motion charts, the event table, and the report at the end |
 
-## The video
+More pages are under "More" in the menu: Investigation, Live Agent, Run (start and stop runs, answer questions, read
+reports) and Motion tool (the old home page for a positions CSV).
+
+## What the Real session page shows
+
+- **Left:** the video. **Right:** the live analysis from the real run program, working on the keypoints of the same
+  recording at real speed: the latest alert, the counts, the speed of each mouse and the distance between them
+  (last 30 s), a table of events, and a warning if the laptop falls behind. When the session ends, the report is shown.
+- It is a **simulated live stream from a recording.** No camera is used and no camera has been tested (there is no mouse
+  pose model yet; see `docs/lab_run.md`). The video shows the mice, but the system works from the saved keypoints, not
+  from the picture.
+- A video alone cannot be analysed: the behavior scores come from keypoints. A CSV of positions (x_a, y_a, x_b, y_b) gives
+  motion and tracking quality only, with no behavior scores and no alerts.
+
+## The demo recording
 
 | | |
 |---|---|
 | Session | `task1/train/mouse064_task1_annotator1` (a validation session) |
-| Why this one | most events: 46 (41 alerts, 5 questions), 45 of them inside a human-labeled attack; the next best session has 19 |
+| Why this one | most events: 46 (41 alerts, 5 questions), 45 of them inside a human-labeled attack; the next best session has 19. It is the best case, not a typical one |
 | Length | 238.3 s |
 | Source | CalMS21, Caltech Data, CC BY 4.0: https://data.caltech.edu/records/s0vdx-0k302 , file `task1_videos_mp4/train/mouse064_task1_annotator1.mp4` inside `task1_videos_mp4.zip` (28 GB; the video is about 200 MB inside it) |
 | Credit | Sun et al. 2021, "The Multi-Agent Behavior Dataset: Mouse Dyadic Social Interactions", arXiv:2104.02710 |
@@ -24,16 +39,24 @@ The poses file is made from the CalMS21 train file with
 `python scripts/prepare_demo_session.py --session task1/train/mouse064_task1_annotator1 --out data/raw/calms21_video/mouse064_task1_annotator1_poses.parquet`.
 The script refuses a test session. Do not use test videos for the demo.
 
+### The video format
+
+This video uses an older format (`mp4v`) that **browsers cannot play**. The page says so and offers **"Prepare the
+video for the browser"**, which writes an H.264 copy next to the original (`..._web.mp4`; the original is not changed).
+That button needs a converter, the optional package `imageio-ffmpeg`, installed in the project's Python:
+`.\.venv\Scripts\python.exe -m pip install imageio-ffmpeg`. Without it, the analysis still runs, but without the picture.
+
 ## Before recording
 
 1. Plug the charger in. Set the power mode to Best performance. Turn off sleep.
 2. Close other programs and browser tabs. Turn on Focus assist so no pop-ups appear.
-3. Start the dashboard from the project folder:
+3. Start the dashboard from the project folder (the last option keeps it closed to other computers):
    ```
+   Set-Location "C:\Users\AnTiC\Downloads\live-tracker\live-tracker"
    $env:PYTHONPATH = "src"
-   .\.venv\Scripts\python.exe -m streamlit run app.py
+   & ".\.venv\Scripts\python.exe" -m streamlit run app.py --server.port 8766 --server.address localhost
    ```
-4. Open **Live demo** in the menu. Zoom the browser (Ctrl and +) until it is easy to read.
+4. Open http://localhost:8766. Zoom the browser (Ctrl and +) until it is easy to read.
 5. If you use a TV, connect with the HDMI cable and press Windows + P, then choose Duplicate.
 
 ## Recording (Windows 11)
@@ -41,23 +64,25 @@ The script refuses a test session. Do not use test videos for the demo.
 - **Snipping Tool:** press Windows + Shift + R, drag over the browser window, click Start.
 - **or Xbox Game Bar:** click the browser, press Windows + Alt + R to start and again to stop. The file goes to `Videos\Captures`.
 
-Steps on the page:
-1. Read the rule and the length on the page, then click **Confirm the rule and start the demo.** This click is the
-   researcher's approval of the rule and the run.
-2. The page says "Getting ready" for a few seconds, then the video starts and the monitor starts with it.
-3. The first alert comes at about **0:11** into the video. Record about **60 to 90 seconds**, so the viewer sees
-   several alerts, a question, the counters and the table. Stop the recording.
-4. Watch the recording once. The alerts should appear just after the fighting starts.
+Steps on the pages:
+1. **Upload:** choose "Use the demo recording", click **Use the demo recording**, then **Next**.
+2. **Rules:** type `alert me when the mice attack for at least 0.5 seconds, ask threshold 0.6, alert threshold 0.8`
+   (this gives the validated demo rule), click **Propose rule**, check it, click **Confirm**, then **Next**.
+3. **Replay:** click **Next** (or look at it, if you want).
+4. **Real session:** read the recording and the rule, click **Start the live session**. It says "Getting ready" for a few
+   seconds, then the video and the analysis start together.
+5. The first alert comes at about **0:11**. Record about **60 to 90 seconds**, so the viewer sees several alerts, a
+   question, the charts and the table. Stop the recording and watch it once.
 
-If the video does not start by itself, click its play button once. If the alerts come **before** the fight in the video,
-raise **Sync** (under the rule text) a little before starting again. If they come late, lower it.
+If the video does not start by itself, click its play button once. If the alerts come **before** the fight in the
+video, raise **Sync** (under the rule text) a little before starting again. If they come late, lower it.
 
 ## What the page tells you
 
-- **"Keeping up with real time (slowest delay ..)"** means the laptop is fast enough. If it says the laptop **fell behind**,
-  close other programs and try again, or the alerts will be late by that much.
+- **"Keeping up with real time (slowest delay ..)"** means the laptop is fast enough. If it says the laptop **fell
+  behind**, close other programs and try again, or the alerts will be late by that much.
 - Questions (asks) are answered on the **Run** page, not here, so that the video is never redrawn.
-- When the demo ends, the report is on the **Run** page. It states whether the run was complete.
+- When the session ends, the full report is on the **Run** page. It states whether the run was complete.
 
 ## Before uploading
 

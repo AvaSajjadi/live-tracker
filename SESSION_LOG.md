@@ -452,3 +452,8 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 2. Reason: Igor and Syed do not have the repacked zip; Igor's report shows the same score file in his handoff zip.
 3. Tests: `tests/test_investigation_archive_alternative.py` (6) plus the Live Agent page and evidence tests (68 passed, 5 skipped). Checked with the real Downloads zip: no "score archive not found" and no other problems on this laptop.
 4. To do: tell Syed (it is his guard code). Not run yet: the free rehearsal on the page (needs the user to press the button; no key, no cost). A paid run needs a separate decision.
+
+### Part 9, later: live preview was too heavy (2026-10-25)
+1. While testing the staged demo in Chrome the page became slow and a screenshot timed out. The dashboard process had used 4441 CPU-seconds (a whole core all the time). Cause: the live preview sent a 1024x570 PNG ten times a second (24.7 ms of encoding each, about 1 MB each). Fix: the stretched view is shown at 640x356 as JPEG (4.0 ms), the live picture and the Real session picture are JPEG too. 39 related tests pass.
+2. The user asked: for each type of uploaded data we need an accuracy test and a precision test. Plan (not built yet): per data type (keypoints with labels, video+keypoints, centers CSV, camera recording, staged demo) define accuracy (closeness to truth) and precision (repeatability, and classification precision TP/(TP+FP)), run what has ground truth, report.
+3. Staged demo end-to-end with the real webcam in Chrome: started, interrupted by the slowness; to be redone after the restart of the dashboard.

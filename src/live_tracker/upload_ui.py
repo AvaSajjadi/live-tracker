@@ -158,7 +158,4 @@ def render():
     st.divider()
     if current is None:
         st.caption("Nothing chosen yet.")
-    else:
-        if current.can_score:
-            st.caption("Keypoints present: the agent can score behaviors and raise alerts.")
     flow.render_nav("upload", can_next=current is not None, next_hint="Choose a source first, then press Next.")

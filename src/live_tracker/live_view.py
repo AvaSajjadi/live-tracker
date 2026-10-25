@@ -20,7 +20,7 @@ from . import flow
 from . import biologist_report as bio
 from . import live_session as ls
 from . import monitor_runner as mr
-from . import run_sources as rsrc
+from . import camera_live
 from . import pose_model
 from . import run_control as rc
 from . import run_schedule as rs
@@ -31,7 +31,6 @@ from .uploads import SessionSource
 from .ui_style import note
 
 KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SOURCE, KEY_SERIES = "live_run", "live_video", "live_go_sent", "live_source", "live_series"
-KEY_CAP = "live_camera_capture"
 DEFAULT_OFFSET_S = 0.3                      # the video needs a moment to start after its element is drawn
 CHART_SECONDS = 30
 
@@ -51,16 +50,7 @@ def chosen_limit_s():
 def _reset():
     for key in (KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SERIES):
         st.session_state.pop(key, None)
-    _release_camera()
-
-
-def _release_camera():
-    cap = st.session_state.pop(KEY_CAP, None)
-    if cap is not None:
-        try:
-            cap.release()
-        except Exception:
-            pass
+    camera_live.release()
 
 
 def render():
@@ -117,6 +107,7 @@ def render_camera(source):
         st.error(why)
         return
     if st.button("Start the camera session", type="primary", key="live_start_camera"):
+        camera_live.release()                                     # the camera run opens the camera in its own program
         try:
             run_dir = ls.start_camera(source, rules, limit_s=limit)
         except (mr.RunRefusedError, rs.ScheduleError, ValueError, OSError) as exc:
@@ -175,19 +166,9 @@ def render_staged_intro(source, rules):
 @st.fragment(run_every=0.5)
 def camera_preview(device, screen):
     """The live camera picture (stretched to the video part when corners were set). Only shown, never analysed."""
-    cap = st.session_state.get(KEY_CAP)
-    if cap is None:
-        try:
-            cap = st.session_state[KEY_CAP] = rsrc.open_camera(rsrc.camera_device(device))
-        except rsrc.CameraUnavailableError as exc:
-            st.error(f"The camera cannot be shown: {exc}.")
-            return
-    try:
-        ok, image = cap.read()
-    except Exception:
-        ok, image = False, None
-    if not ok or image is None:
-        st.warning("The camera gave no picture.")
+    image, why = camera_live.read(device)
+    if image is None:
+        st.error(f"The camera cannot be shown: {why}.")
         return
     import cv2
     if screen:

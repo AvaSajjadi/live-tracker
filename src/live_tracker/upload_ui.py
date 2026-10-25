@@ -16,6 +16,7 @@ from __future__ import annotations
 import streamlit as st
 
 from . import camera_check as cc
+from . import camera_live
 from . import demo
 from . import flow
 from . import uploads as up
@@ -76,6 +77,8 @@ def show_preview(preview):
             st.video(preview[2], muted=True)
         else:
             st.warning(f"This video cannot be shown in the browser: {why}. It can still be used for the analysis.")
+    elif preview[0] == "live":
+        live_preview(preview[1])
     elif preview[0] == "image":
         st.image(preview[1], caption="One picture from the camera", width="stretch")
     elif preview[0] == "table":
@@ -103,7 +106,7 @@ def render_demo_camera():
 
 
 def render_usb_camera():
-    """A real camera: test it, see one picture, then use it. Analysing it also needs a pose model."""
+    """A real camera: test it, watch live video from it, then use it. Analysing it also needs a pose model."""
     if not cc.opencv_available():
         st.error("OpenCV is not installed, so a camera cannot be opened. Run: pip install opencv-python-headless")
         return None
@@ -114,17 +117,23 @@ def render_usb_camera():
         st.session_state.pop(flow.SOURCE_KEY, None)
     state = st.session_state.get("upload_camera_test")
     if st.button("Test the camera", key="upload_test_camera"):
+        camera_live.release()                                    # a camera opened by this page would block the test
         with st.spinner("Opening the camera..."):
             png, why = cc.snapshot(device)
         state = st.session_state["upload_camera_test"] = {"device": device, "png": png, "why": why}
+        st.session_state["upload_live"] = png is not None
     if not state or state["device"] != device:
-        st.caption("Press Test the camera to see one picture.")
+        st.caption("Press Test the camera to see live video from it.")
         return None
     if state["png"] is None:
         st.error(f"The camera cannot be used: {state['why']}.")
         return None
     st.success("The camera works.")
-    screen, png = screen_setup(state["png"])
+    live = bool(st.session_state.get("upload_live"))
+    if live and st.button("Stop the camera", key="upload_stop_camera"):
+        camera_live.release()
+        st.session_state["upload_live"] = live = False
+    screen, png = screen_setup(state["png"], show_stretched=not live)
     mode = st.radio("What should the program analyze?", [REAL_POSE, STAGED], key="upload_cam_mode",
                     help="Real: a pose model finds the mice in the camera picture (none is set up yet). "
                          "Staged: the camera shows the iPad, but the numbers come from saved keypoints of the demo video.")
@@ -135,13 +144,13 @@ def render_usb_camera():
         st.session_state.pop(flow.SOURCE_KEY, None)
     if staged:
         render_staged_choice(device, screen)
-        return ("image", png)
+        return ("live", device.strip()) if live else ("image", png)
     _, reason = cc.pose_model.load()
     if reason:
         st.warning(f"{reason} You can choose this camera now, but the analysis cannot start until a pose model is set up.")
     if st.button("Use this camera", type="primary", key="upload_use_camera"):
         flow.set_source(up.SessionSource("camera", f"USB camera {device}", device=device.strip(), screen=screen))
-    return ("image", png)
+    return ("live", device.strip()) if live else ("image", png)
 
 
 REAL_POSE, STAGED = "Real pose model (needs a pose model)", "Staged demo (saved keypoints of the demo video)"
@@ -162,10 +171,11 @@ def render_staged_choice(device, screen):
                                          poses=str(d.poses), session=d.session, device=device.strip(), screen=screen))
 
 
+STRETCHED_CAPTION = "The screen stretched to 1024 x 570. The whole video should fill this picture, with no border."
 CORNER_NAMES = ("top-left", "top-right", "bottom-right", "bottom-left")
 
 
-def screen_setup(png):
+def screen_setup(png, show_stretched=True):
     """The camera films a screen (for example an iPad playing the video)? Choose its 4 corners.
     Returns (the corners or None, the PNG to show). The stretched result is shown so it can be checked."""
     if not st.checkbox("The camera films a screen (for example an iPad that plays the video)", value=True, key="upload_screen_on"):
@@ -188,9 +198,41 @@ def screen_setup(png):
     except sm.ScreenError as exc:
         st.error(f"These corners cannot be used: {exc}.")
         return None, png
-    st.image(cv2.cvtColor(stretched, cv2.COLOR_BGR2RGB), caption="What the pose model will see (1024 x 570). "
-             "The whole video should fill this picture, with no border.", width="stretch")
+    if show_stretched:
+        st.image(cv2.cvtColor(stretched, cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch")
     return corners, cv2.imencode(".png", marked)[1].tobytes()
+
+
+def _corners_now():
+    """The corners the sliders show right now, or None when the screen option is off or the corners are not usable."""
+    if not st.session_state.get("upload_screen_on", True):
+        return None
+    from . import screen_map as sm
+    defaults = sm.DEFAULT_CORNERS
+    pts = [(st.session_state.get(f"upload_corner_{i}_x", int(dx * 100)) / 100.0,
+            st.session_state.get(f"upload_corner_{i}_y", int(dy * 100)) / 100.0) for i, (dx, dy) in enumerate(defaults)]
+    try:
+        return sm.check_corners(pts)
+    except sm.ScreenError:
+        return None
+
+
+@st.fragment(run_every=0.1)
+def live_preview(device):
+    """The camera as live video (about 10 pictures a second): the outline of the screen, and the stretched screen."""
+    image, why = camera_live.read(device)
+    if image is None:
+        st.error(f"The camera cannot be shown: {why}.")
+        return
+    import cv2
+    corners = _corners_now()
+    if corners is None:
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera video", width="stretch")
+        return
+    from . import screen_map as sm
+    st.image(cv2.cvtColor(sm.outline(image, corners), cv2.COLOR_BGR2RGB), caption="Live camera video, with the screen outline",
+             width="stretch")
+    st.image(cv2.cvtColor(sm.warp(image, corners), cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch")
 
 
 def render_camera():

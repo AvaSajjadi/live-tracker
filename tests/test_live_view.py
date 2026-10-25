@@ -379,7 +379,7 @@ def test_a_staged_demo_shows_the_camera_and_go_is_sent_by_the_button(env, monkey
     run_dir = Path(launched[0]).parent
     write_status(run_dir, "ready")
     at.run()
-    assert not at.exception and isinstance(at.session_state["live_camera_capture"], FakeCap)   # the camera is open and shown
+    assert not at.exception and isinstance(at.session_state["camera_live_capture"], FakeCap)   # the camera is open and shown
     assert "STAGED DEMO" in texts(at.warning)
     assert not (run_dir / "GO").exists()                                              # GO waits for the researcher
     button(at, "live_go_staged")[0].click().run()

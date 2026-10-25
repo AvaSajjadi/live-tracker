@@ -21,8 +21,21 @@ def button(at, key):
     return next(b for b in at.button if b.key == key)
 
 
+class FakeCap:
+    def __init__(self):
+        self.released = False
+
+    def read(self):
+        return True, np.full((480, 640, 3), 80, dtype=np.uint8)
+
+    def release(self):
+        self.released = True
+
+
 def open_usb(monkeypatch, snapshot):
+    from live_tracker import run_sources as rsrc
     monkeypatch.setattr(cc, "snapshot", snapshot)
+    monkeypatch.setattr(rsrc, "open_camera", lambda device: FakeCap())      # the live video never touches a real camera
     at = AppTest.from_file(PAGE, default_timeout=30).run()
     at.radio(key="upload_choice").set_value("Connect a camera").run()
     at.radio(key="upload_camera_kind").set_value("USB camera").run()
@@ -31,7 +44,7 @@ def open_usb(monkeypatch, snapshot):
 
 def test_a_working_camera_can_be_chosen_and_the_pose_model_gap_is_said(monkeypatch):
     at = open_usb(monkeypatch, lambda device, opener=None: (PNG, None))
-    assert "Press Test the camera" in texts(at.caption)
+    assert "Press Test the camera to see live video" in texts(at.caption)
     button(at, "upload_test_camera").click().run()
     assert "The camera works." in texts(at.success)
     assert "pose model" in texts(at.warning)
@@ -86,3 +99,13 @@ def test_the_staged_demo_can_be_chosen_and_keeps_the_camera_number(monkeypatch):
     assert source.staged_camera and source.device == "0" and source.session == "task1/train/clip"
     at.radio(key="upload_cam_mode").set_value("Real pose model (needs a pose model)").run()
     assert "flow_source" not in at.session_state or at.session_state["flow_source"] is None
+
+
+def test_the_camera_test_shows_live_video_and_stop_releases_the_camera(monkeypatch):
+    at = open_usb(monkeypatch, lambda device, opener=None: (PNG, None))
+    button(at, "upload_test_camera").click().run()
+    assert not at.exception and at.session_state["upload_live"] is True
+    cap = at.session_state["camera_live_capture"]
+    assert isinstance(cap, FakeCap) and not cap.released                   # the live video holds the camera open
+    button(at, "upload_stop_camera").click().run()
+    assert cap.released and "camera_live_capture" not in at.session_state and at.session_state["upload_live"] is False

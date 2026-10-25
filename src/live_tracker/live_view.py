@@ -56,7 +56,6 @@ def render():
     if source.kind == "centers":
         render_centers(source)
         return
-    st.caption("Simulated live stream from a recording. No camera is used.")
     rules = approved_rules()
     if not rules:
         st.warning("No approved rule yet. Go back to the Rules step and confirm a rule: the agent needs to know what to look for.")

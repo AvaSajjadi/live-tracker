@@ -119,7 +119,7 @@ def test_the_intro_shows_the_recording_the_rules_and_a_start_button(env):
     root, _ = env
     at = open_view(with_source(source(root)))
     shown = texts(at.markdown)
-    assert "Simulated live stream" in texts(at.caption)
+    assert "Simulated live stream" not in texts(at.caption)                       # removed on request
     assert "clip.mp4, 0:10 long" in shown and "attack for at least 0.5 s" in shown and "not calibrated" in shown
     assert button(at, "live_start")[0].label == "Start the live session"
 

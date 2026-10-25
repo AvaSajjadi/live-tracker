@@ -29,7 +29,7 @@ reports) and Motion tool (the old home page for a positions CSV).
 | | |
 |---|---|
 | Session | `task1/train/mouse064_task1_annotator1` (a validation session) |
-| Why this one | most events: 46 (41 alerts, 5 questions), 45 of them inside a human-labeled attack; the next best session has 19. It is the best case, not a typical one |
+| Why this one | most events: 44 (40 alerts, 4 questions) with the models trained in the project's Python (scikit-learn 1.9.1), 43 of them inside a human-labeled attack; the next best session has 19. With the earlier models (scikit-learn 1.7.2) it was 46. The count depends a little on the scikit-learn version. It is the best case, not a typical one |
 | Length | 238.3 s |
 | Source | CalMS21, Caltech Data, CC BY 4.0: https://data.caltech.edu/records/s0vdx-0k302 , file `task1_videos_mp4/train/mouse064_task1_annotator1.mp4` inside `task1_videos_mp4.zip` (28 GB; the video is about 200 MB inside it) |
 | Credit | Sun et al. 2021, "The Multi-Agent Behavior Dataset: Mouse Dyadic Social Interactions", arXiv:2104.02710 |

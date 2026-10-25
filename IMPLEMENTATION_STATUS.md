@@ -118,7 +118,8 @@ video, slides and poster for the submission.
 | `src/live_tracker/claude_interpreter.py` (+ third backend in `rule_workflow.py`, Rules page) | Claude reads loose wording (typos, "more than") into a rule; code checks quotes and numbers; refusals; assumptions shown; **tested with a fake client only, not with a real model**; see `docs/claude_interpreter.md` | `test_claude_interpreter.py` (58), `test_interpret_integration.py` (10) |
 
 Measured on one validation session: live scores equal whole-session scores (largest difference 5e-13); the program,
-run as its own process, produced the same 46 events as the whole-session calculation. Details and limits:
+run as its own process, produced the same 46 events as the whole-session calculation (models trained under scikit-learn
+1.7.2; retrained under 1.9.1 on 2026-10-25, 44 events on that session). Details and limits:
 `docs/lab_run.md`. **No camera and no mouse pose model exist yet; nothing here was tested on a real camera.**
 
 ## Still missing / open

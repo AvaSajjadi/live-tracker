@@ -96,6 +96,8 @@ into the log and the report is written again. If the program died (a power cut),
 - **End to end.** The run program, started as its own process, played that session in real time (255 s for a 238 s
   recording). It produced **46 events, and the whole-session calculation produced the same 46**, with identical
   start times, confidences and alert / ask decisions. The validated demo rule was used (ask 0.6, 0.5 s, alert 0.8).
+  (Measured with the models trained under scikit-learn 1.7.2. The models were retrained under 1.9.1 on 2026-10-25; the
+  demo session then has 44 events, and the live scores still equal the whole-session scores in the real-data test.)
 
 ## Limits you should know
 

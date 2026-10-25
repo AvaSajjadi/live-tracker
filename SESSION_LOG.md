@@ -366,3 +366,10 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 3. Real session page: `render_staged_intro`, `camera_preview` (live picture, stretched to the video part when corners are set), `render_staged_running` with a GO button. GO is pressed together with play on the iPad (about 0.3 s human delay).
 4. Tests: 106 passed (live view, upload camera, uploads, screen map, flow, live session, demo smoke). Not tried with a real camera and a real iPad yet.
 5. Not finished: real test with the webcam on the iPad; MARS try (543 MB models, old TensorFlow); the Nikon.
+
+### Part 9, later: live video on the Upload step (2026-10-25)
+1. The user: the camera works, but it should be video, not a picture. We asked what they meant; they chose "Live video on the Upload step too" only.
+2. New `camera_live.py`: ONE open camera shared by the Upload step and the Real session page (Windows lets only one program use a camera). `release()` is called by the Stop button, by the Test button before a new test, by the session reset, and before a real camera run starts.
+3. Upload page: after "Test the camera" it shows live video (`live_preview`, a fragment that runs about 10 times a second) with the screen outline and the stretched screen. "Stop the camera" releases it. Real camera speed measured: 15 pictures per second at 640 x 480.
+4. Tests: 93 passed (upload camera, live view, screen map, uploads, flow), with a fake camera. Real webcam checked only for speed, not through the page.
+5. Not done (not chosen): saving the camera as a video file in the run folder; smoother live video on the Real session page (it still refreshes about twice a second).

@@ -83,9 +83,24 @@ def test_no_source_points_back_to_upload(env):
     assert "Go back to the Upload step" in texts(open_view().info)
 
 
-def test_a_camera_says_it_cannot_be_analysed_yet(env):
-    at = open_view({"flow_source": up.SessionSource("camera", "Camera")})
-    assert "mouse pose model" in texts(at.info) and not at.button
+def test_a_camera_without_a_pose_model_says_so_and_has_no_start_button(env):
+    root, _ = env
+    at = open_view(with_source(up.SessionSource("camera", "USB camera 0", device="0")))
+    assert "There is no pose model" in texts(at.error) and not button(at, "live_start_camera")
+
+
+def test_a_camera_with_a_pose_model_starts_a_camera_run(env, monkeypatch):
+    root, launched = env
+    monkeypatch.setenv("LIVE_TRACKER_POSE_MODEL", str(root / "pose_model.json"))
+    (root / "pose_model.json").write_text(json.dumps({"backend": "fake"}), encoding="utf-8")
+    from live_tracker import pose_model
+    pose_model.register_backend("fake", lambda settings, r: (lambda image: None))
+    at = open_view(with_source(up.SessionSource("camera", "USB camera 2", device="2")))
+    assert "real camera" in texts(at.markdown)
+    button(at, "live_start_camera")[0].click().run()
+    assert not at.exception and len(launched) == 1
+    cfg = json.loads(Path(launched[0]).read_text(encoding="utf-8"))
+    assert cfg["source"]["kind"] == "camera" and cfg["source"]["device"] == "2" and cfg["wait_for_go"] is False
 
 
 def test_a_centers_file_shows_motion_only(env):

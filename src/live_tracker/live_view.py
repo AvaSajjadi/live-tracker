@@ -20,6 +20,7 @@ from . import flow
 from . import biologist_report as bio
 from . import live_session as ls
 from . import monitor_runner as mr
+from . import pose_model
 from . import run_control as rc
 from . import run_schedule as rs
 from . import schedule_workflow as sw
@@ -59,8 +60,7 @@ def render():
         _reset()
         st.session_state[KEY_SOURCE] = source.to_dict()
     if source.kind == "camera":
-        st.info("A camera cannot be analysed yet: turning each camera picture into mouse keypoints needs a mouse pose "
-                "model, and this project does not have one. Choose a recording on the Upload step.")
+        render_camera(source)
         return
     if source.kind == "centers":
         render_centers(source)
@@ -77,6 +77,41 @@ def render():
         render_intro(source, rules)
     else:
         render_running(Path(run_dir), source)
+
+
+# ---- a real camera ----
+
+def render_camera(source):
+    rules = approved_rules()
+    if not rules:
+        st.warning("No approved rule yet. Go back to the Rules step and confirm a rule: the agent needs to know what to look for.")
+        return
+    if not demo.model_available():
+        st.warning("Model B is not on this computer (models/model_b), so the keypoints cannot be scored.")
+        return
+    run_dir = st.session_state.get(KEY_RUN)
+    if run_dir is not None:
+        counts(Path(run_dir))
+        panel(Path(run_dir), ls.camera_limit_s(chosen_limit_s()), source.fps)
+        return
+    estimator, why = pose_model.load()
+    limit = chosen_limit_s()
+    st.markdown(f"- **Camera:** {source.label}. This is a real camera, not a recording.\n"
+                f"- **Rules:** " + "; ".join(f"{r.behavior} for at least {r.min_duration_s:g} s "
+                                             f"(ask above {r.ask_threshold:g}, alert at {r.alert_threshold:g})" for r in rules)
+                + f".\n- **Time limit:** {_mmss(ls.camera_limit_s(limit))}"
+                + (" (the time you confirmed on the Rules page)." if limit else " (no time chosen on the Rules page)."))
+    if estimator is None:
+        st.error(why)
+        return
+    if st.button("Start the camera session", type="primary", key="live_start_camera"):
+        try:
+            run_dir = ls.start_camera(source, rules, limit_s=limit)
+        except (mr.RunRefusedError, rs.ScheduleError, ValueError, OSError) as exc:
+            st.error(f"Not started: {exc}.")
+            return
+        st.session_state.update({KEY_RUN: str(run_dir), KEY_SENT: True})
+        st.rerun()
 
 
 # ---- a centers file: motion only ----

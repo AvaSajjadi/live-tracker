@@ -136,3 +136,21 @@ def test_centers_table_gives_the_same_numbers():
     series = ls.centers_series(df)
     assert series["speed_a"].iloc[20] == pytest.approx(90.0) and series["speed_b"].iloc[20] == 0
     assert series["distance"].iloc[0] == pytest.approx(300.0) and series["tracking_ok"].all()
+
+
+def test_start_camera_writes_a_camera_config_that_stops_at_the_chosen_time(tmp_path, monkeypatch):
+    monkeypatch.setenv(rc.RUNS_ENV, str(tmp_path / "runs"))
+    cam = SessionSource("camera", "USB camera 1", device="1")
+    run_dir = ls.start_camera(cam, [approved_rule()], limit_s=600, launcher=lambda p: 1)
+    cfg = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert cfg["source"] == {"kind": "camera", "device": "1", "session": "camera"}
+    assert cfg["wait_for_go"] is False and cfg["schedule"]["status"] == "approved"
+    assert ls.camera_limit_s(None) == ls.CAMERA_DEFAULT_S and ls.camera_limit_s(600) == 600.0
+
+
+def test_camera_spec_refuses_a_recording_and_unapproved_rules(tmp_path, monkeypatch):
+    monkeypatch.setenv(rc.RUNS_ENV, str(tmp_path / "runs"))
+    with pytest.raises(mr.RunRefusedError, match="not a camera"):
+        ls.camera_spec(source(tmp_path))
+    with pytest.raises(mr.RunRefusedError, match="every rule"):
+        ls.start_camera(SessionSource("camera", "c"), [Rule("R2", "attack", 1.0)], launcher=lambda p: 1)

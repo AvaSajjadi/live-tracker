@@ -30,7 +30,7 @@ KIND_TEXT = {"demo": "demo camera, a recorded video stands in for the feed", "vi
 
 def camera_source(d):
     """The demo camera: the demo recording (video and keypoints) used as the stand-in feed."""
-    return up.SessionSource("demo", f"Demo camera (recorded video {d.name})", video=str(d.video), poses=str(d.poses),
+    return up.SessionSource("demo", "Demo camera (live stream camera)", video=str(d.video), poses=str(d.poses),
                             session=d.session)
 
 

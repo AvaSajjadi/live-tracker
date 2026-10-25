@@ -93,7 +93,8 @@ def render_centers(source):
 def render_intro(source, rules):
     seconds = ls.length_s(source.poses, source.fps)
     playable = vw.playable_video(source.video) if source.has_video else None
-    st.markdown(f"- **Recording:** {source.label}, {_mmss(seconds)} long.\n"
+    recording = source.label if source.kind == "demo" else f"{source.label}, {_mmss(seconds)} long"
+    st.markdown(f"- **Recording:** {recording}.\n"
                 f"- **Rules:** " + "; ".join(f"{r.behavior} for at least {r.min_duration_s:g} s "
                                              f"(ask above {r.ask_threshold:g}, alert at {r.alert_threshold:g})" for r in rules)
                 + ".\n- **Scores:** Model B's raw scores (not calibrated).")

@@ -14,7 +14,9 @@ does not verify shows only why. Reopening never calls the network or the model.
 from __future__ import annotations
 
 import json
+import queue
 import secrets
+import threading
 
 import altair as alt
 import pandas as pd
@@ -108,23 +110,408 @@ def show_preflight(report):
                                             "local_configuration")}, expanded=False)
 
 
-def _run(config, inputs, paid, **kw):
+# ---- UI-3: live progress of a run in the tab that started it (presentation only) ----
+
+try:                                              # a rerun / stop request is raised from inside st.* calls
+    from streamlit.runtime.scriptrunner_utils.exceptions import ScriptControlException
+except ImportError:  # pragma: no cover - another Streamlit: no live updates during a run (as before UI-3)
+    ScriptControlException = None
+
+PROGRESS_KEY = "live_agent_last_progress"         # the last run's progress record in this browser tab
+MAX_PROGRESS_EVENTS = 400                         # a run has at most 12 turns and 12 tool calls: ample
+STAGE_LABELS = {"lock": "Investigation lock acquired (one investigation at a time)",
+                "inputs": "Loading the verified validation inputs",
+                "validation_run": "Checking the recorded reference run",
+                "preflight": "Provider preflight (metadata only, no model request)",
+                "budget": "Setting the budget",
+                "investigate": "Investigation (model turns and Contract v1 tools)",
+                "verify": "Checking the saved report",
+                "cost_ledger": "Checking the cost ledger against the report",
+                "compatibility": "Reference compatibility check"}
+
+
+class ProgressQueue:
+    """The bridge from the investigation (worker thread) to the page (Streamlit script thread): bounded and
+    thread-safe. put() never blocks and never raises: when the queue is full the event is dropped and counted, so
+    the view can say it is incomplete instead of pretending otherwise."""
+
+    def __init__(self, maxsize=MAX_PROGRESS_EVENTS):
+        self._q, self._lock, self.dropped = queue.Queue(maxsize), threading.Lock(), 0
+
+    def put(self, event):
+        try:
+            self._q.put_nowait(event)
+        except queue.Full:
+            with self._lock:
+                self.dropped += 1
+
+    def drain(self, timeout):
+        """Every queued event, waiting up to `timeout` seconds for the first one."""
+        out = []
+        try:
+            out.append(self._q.get(timeout=timeout) if timeout else self._q.get_nowait())
+            while True:
+                out.append(self._q.get_nowait())
+        except queue.Empty:
+            pass
+        return out
+
+
+def _add_note(error, text):
+    """Attach a diagnostic note (a type name, never a message) without ever raising: add_note() on Python 3.11+,
+    else the same __notes__ list by hand (Python 3.10 keeps it, its traceback just does not print it)."""
     try:
-        with st.spinner("Investigating (the agent chooses each Contract v1 call)..."):
-            name, summary = runs.execute(config, inputs, paid=paid, **kw)
-    except runs.RunBusy as exc:
-        st.session_state[MESSAGE_KEY] = ("error", f"Not started: {exc}.")
-        return
-    except Exception as exc:                       # the CLI's refusals: before any request or file
-        st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}")
-        return
-    # select the new run through the Session State API (sent to the browser), never by dropping the widget's
-    # state: a dropped state falls back to a default the browser is not told about, so the selector would keep
-    # showing the previous run above the new run's results
-    st.session_state[OPEN_KEY] = str(runs.live_dir() / name)
-    st.session_state[MESSAGE_KEY] = ("info", f"Investigation {name} finished with recorded status "
-                                              f"`{summary.get('status')}`. Open the Saved investigations tab: the "
-                                              "report is reloaded from disk and re-verified before it is shown.")
+        add = getattr(error, "add_note", None)
+        if callable(add):
+            add(text)
+        else:
+            notes = getattr(error, "__notes__", None)
+            error.__notes__ = (list(notes) if isinstance(notes, list) else []) + [text]
+    except Exception:
+        pass                                      # a note is optional: the error itself is what matters
+
+
+def _is_control(exc):
+    return ScriptControlException is not None and isinstance(exc, ScriptControlException)
+
+
+def _report_unexpected(view, exc):
+    """Best effort while an unexpected failure is leaving _run: close the view and leave a message. Streamlit may
+    refuse (a pending stop or rerun is raised from session-state access and page updates) or fail; either is
+    swallowed HERE ONLY, so the original failure stays the one that propagates. Interrupts are not swallowed."""
+    try:
+        view.close("error", "Stopped by an unexpected error")
+        st.session_state[MESSAGE_KEY] = (
+            "error", f"The investigation stopped with an unexpected error ({type(exc).__name__}). Nothing from it "
+            "is shown as verified and it is not repeated; open Saved investigations to see whether a report was "
+            "saved and whether it verifies.")
+    except Exception:
+        pass
+    except BaseException as secondary:
+        if not _is_control(secondary):
+            raise
+
+
+def run_with_live_view(work, view, poll_s=0.1):
+    """work(progress) runs on ONE worker thread (the investigation: runs.execute, unchanged); its progress events
+    cross a ProgressQueue and are rendered here, on the Streamlit script thread, in batches. The worker never waits
+    for rendering, and never calls Streamlit. Returns work's result, or re-raises its exception on this thread after
+    the worker has ended (it is always joined: no investigation outlives this call, and none is started twice)."""
+    events, outcome = ProgressQueue(), {}
+
+    def worker():
+        try:
+            outcome["result"] = work(events.put)
+        except BaseException as exc:              # handed to the script thread
+            outcome["error"] = exc
+    thread = threading.Thread(target=worker, name="live-agent-investigation", daemon=False)
+    thread.start()
+    render_error = None
+    try:
+        while thread.is_alive():
+            view.show(events.drain(poll_s), events.dropped)
+        view.show(events.drain(0), events.dropped)
+    except BaseException as exc:                  # the display failed: the run is still waited for and inspected
+        render_error = exc
+        view.live = False
+    finally:
+        thread.join()                             # even if this thread is interrupted, the run completes first
+    # precedence: (1) the investigation's own failure, with the display failure noted by type only; (2) a display
+    # failure that is not an ordinary Exception (e.g. KeyboardInterrupt); (3) the investigation's result (an
+    # ordinary display failure never discards a run that completed; the view then says it stopped updating)
+    if "error" in outcome:
+        error = outcome["error"]
+        if render_error is not None:
+            _add_note(error, f"(the live progress view also failed: {type(render_error).__name__})")
+        raise error
+    if render_error is not None:
+        if not isinstance(render_error, Exception):
+            raise render_error
+        view.render_failure = type(render_error).__name__
+    return outcome["result"]
+
+
+class LiveProgress:
+    """The live view of one run in the tab that started it: the CLI's progress events (runs.execute(progress=)),
+    rendered into an st.status box on the Streamlit script thread (run_with_live_view), never on the investigation's
+    thread, so rendering takes no time from the investigation. Presentation only. Rendering is where Streamlit raises
+    a pending rerun or stop request (a click, the Stop button, a closed tab): such a request is HELD and re-raised by
+    release() after the run has finished and been saved, so the investigation is never interrupted (as with the
+    former blocking spinner). Any other display error just ends the live updates."""
+
+    def __init__(self, paid, max_turns):
+        self.paid, self.max_turns = paid, max_turns
+        self.events, self.lines = [], []
+        self.turns, self.accepted, self.refused = 0, [], []
+        self.stage = self.failed = self.spending = self.stop = self.status = None
+        self.waiting, self.deferred, self.live = False, None, ScriptControlException is not None
+        self.queue_dropped = 0                    # events the bounded queue could not take (the producer's total)
+        self.view_omitted = 0                     # events past the view's own cap (MAX_PROGRESS_EVENTS)
+        self.render_failure = None                # the type of a display failure, if the live view stopped
+        self.box = st.status("Starting the investigation...", expanded=True)
+        # placeholders created on the box itself: leaving a `with st.status(...)` block would mark it complete
+        self.now, self.counts, self.log = self.box.empty(), self.box.empty(), self.box.empty()
+
+    # -- state from the events --
+
+    @property
+    def dropped(self):
+        """Every event this view did not get or did not keep: never decreases."""
+        return self.queue_dropped + self.view_omitted
+
+    def __call__(self, event):
+        self.show([event], self.queue_dropped)
+
+    def show(self, batch, queue_dropped=0):
+        """Apply a batch of events, then draw once. queue_dropped is the queue's running total (it only grows)."""
+        before = self.dropped
+        self.queue_dropped = max(self.queue_dropped, queue_dropped)
+        for event in batch:
+            if len(self.events) >= MAX_PROGRESS_EVENTS:
+                self.view_omitted += 1
+                continue
+            self.events.append(event)
+            self.apply(event)
+        if batch or self.dropped != before:
+            self.render()
+
+    def started(self):
+        """True once anything beyond taking the lock was reported (the investigation's own stages began)."""
+        return any(not (e.get("type") == "stage" and e.get("stage") == "lock") for e in self.events)
+
+    def apply(self, e):
+        kind = e.get("type")
+        if kind == "stage":
+            label = STAGE_LABELS.get(e["stage"], e["stage"])
+            if e["state"] == "failed":
+                self.failed = e["stage"]
+                self.lines.append(f":red-badge[failed] {label} ({e.get('error')})")
+            elif e["state"] == "started":
+                self.stage = e["stage"]
+                self.lines.append(f":blue-badge[started] {label}")
+            else:
+                self.stage = None if self.stage == e["stage"] else self.stage
+                self.lines.append(f":green-badge[done] {label}")
+        elif kind == "model_request":
+            self.waiting = True
+            self.lines.append(f":gray-badge[waiting] Request sent for model turn {self.turns + 1} of "
+                              f"{self.max_turns}" + ("" if self.paid else " (emulated endpoint)"))
+        elif kind == "trace":
+            self.trace(e)
+        elif kind == "spending":
+            self.spending = e
+        elif kind == "saved":
+            self.lines.append(f":green-badge[saved] `{e['file']}` written")
+        elif kind == "finished":
+            self.status = e.get("status")
+            self.stop = e.get("stopping_reason") or self.stop
+            self.lines.append(f":green-badge[finished] Run finished with recorded status `{self.status}`")
+
+    def trace(self, e):
+        k = e.get("kind")
+        if k == "model_turn":
+            self.turns += 1
+            self.waiting = False
+            if e.get("outcome"):
+                self.lines.append(f":red-badge[not used] Model reply {self.turns}: {e['outcome']}")
+            else:
+                asked = ", ".join(f"`{n}`" for n in e.get("tool_names") or []) or "no tool"
+                self.lines.append(f":violet-badge[reply] Model reply {self.turns} of {self.max_turns}: asked for "
+                                  f"{asked}")
+        elif k == "model_error":
+            self.waiting = False
+            self.lines.append(f":red-badge[provider] Model request failed ({e.get('reason')}): no reply was used")
+        elif k in ("tool_call", "finish"):
+            tool = f"`{e.get('tool')}`"
+            if e.get("outcome") == "refused":
+                self.refused.append(e.get("tool"))
+                self.lines.append(f":red-badge[refused] {tool}: {e.get('refused')} (not executed as evidence)")
+            elif k == "finish":
+                self.accepted.append(e.get("tool"))
+                self.lines.append(f":green-badge[finding submitted] {tool}: accepted by the loop; the finding is "
+                                  "shown only from the saved report once it verifies")
+            else:
+                self.accepted.append(e.get("tool"))
+                self.lines.append(f":green-badge[executed] {tool}: accepted (result shown after verification)")
+        elif k == "budget_exceeded":
+            self.lines.append(f":orange-badge[budget] Limit reached: {e.get('stopping_reason')}")
+        elif k == "stop":
+            self.stop = e.get("stopping_reason")
+            self.lines.append(f":orange-badge[stopped] The investigation loop stopped: `{self.stop}`")
+
+    # -- the page --
+
+    def render(self):
+        if not self.live:
+            return
+        try:
+            self.draw()
+        except Exception:                         # a display problem: no more live updates, the run goes on
+            self.live = False
+        except BaseException as exc:
+            if ScriptControlException is None or not isinstance(exc, ScriptControlException):
+                raise
+            self.deferred = self.deferred or exc  # held until the run is over (release())
+
+    def draw(self):
+        if self.failed:
+            self.now.error(f"Stage failed: {STAGE_LABELS.get(self.failed, self.failed)}. The run stops; its "
+                           "recorded status will say why.")
+        elif self.waiting:
+            who = "the provider (OpenRouter)" if self.paid else "the emulated endpoint"
+            self.now.info(f"Waiting for {who} to reply to model turn {self.turns + 1} of {self.max_turns}. "
+                          "Nothing is known about this reply until it arrives.")
+        elif self.stage:
+            self.now.info(f"In progress: {STAGE_LABELS.get(self.stage, self.stage)}")
+        elif self.stop:
+            self.now.info(f"The investigation loop stopped (`{self.stop}`); saving and checking the report.")
+        with self.counts.container():
+            c = st.columns(4)
+            c[0].metric("Model turns", f"{self.turns} of {self.max_turns}")
+            c[1].metric("Tool calls executed", len([t for t in self.accepted if t != av1.FINISH]))
+            c[2].metric("Tool calls refused", len(self.refused))
+            c[3].metric(*self.spent())
+        self.log.markdown("  \n".join(self.lines[-40:]) + self.incomplete())
+        self.box.update(label=self.label(), expanded=True)
+
+    def incomplete(self):
+        out = ""
+        if self.dropped:
+            out += (f"  \n:orange-badge[incomplete] {self.dropped} progress events could not be shown "
+                    f"({self.queue_dropped} not queued, {self.view_omitted} past the view's limit), so this is not "
+                    "a complete timeline (the saved report is not affected)")
+        if self.render_failure:
+            out += (f"  \n:orange-badge[incomplete] The live view stopped updating ({self.render_failure}); the "
+                    "saved report is not affected")
+        return out
+
+    def spent(self):
+        s = self.spending
+        if s is None:
+            return ("Provider-reported spending" if self.paid else "Simulated cost (not spent)"), "none reported yet"
+        value = f"${s['known_cost_usd']:.5f}" + (f" + {s['unknown_cost_attempts']} unreported"
+                                                 if s["unknown_cost_attempts"] else "")
+        return ("Provider-reported spending" if s["basis"] == "provider-reported" else
+                "Simulated cost (not spent)"), value
+
+    def label(self):
+        if self.failed:
+            return "Stopped: a stage failed"
+        if self.waiting:
+            return f"Waiting for the {'provider' if self.paid else 'emulated endpoint'} (turn {self.turns + 1})..."
+        if self.stage:
+            return STAGE_LABELS.get(self.stage, self.stage) + "..."
+        return "Investigating..."
+
+    def close(self, state, label, line=None):
+        if line:
+            self.lines.append(line)
+        if not self.live:
+            return
+        try:
+            self.now.empty()
+            self.log.markdown("  \n".join(self.lines[-40:]) + self.incomplete())
+            self.box.update(label=label, state=state, expanded=True)
+        except Exception:
+            self.live = False
+        except BaseException as exc:
+            if ScriptControlException is None or not isinstance(exc, ScriptControlException):
+                raise
+            self.deferred = self.deferred or exc
+
+    def record(self, name, verdict):
+        """What the tab keeps after the run (projected events only: no text, arguments or findings)."""
+        missing = self.incomplete().strip()
+        return {"run": name, "paid": self.paid, "lines": list(self.lines) + ([missing] if missing else []),
+                "dropped": self.dropped, "queue_dropped": self.queue_dropped, "view_omitted": self.view_omitted,
+                "render_failure": self.render_failure, "turns": self.turns,
+                "max_turns": self.max_turns, "executed": len([t for t in self.accepted if t != av1.FINISH]),
+                "refused": len(self.refused), "stop": self.stop, "status": self.status, "verdict": verdict,
+                "spending": self.spent()}
+
+    def release(self):
+        """Re-raise a rerun / stop request held during the run."""
+        if self.deferred is not None:
+            raise self.deferred
+
+
+def verdict_of(saved):
+    """(state, text) of the saved report's re-verification (load_saved), for the end of a run."""
+    if not saved.verified:
+        return "error", ("the saved investigation does NOT verify, so none of its results are shown: "
+                         + "; ".join(map(str, saved.problems[:2])))
+    kind, _ = runs.autonomous_status(saved)
+    return ("complete", "verified") if kind == "verified" else ("complete", "verified, incomplete (no finding)")
+
+
+def render_progress_record(rec):
+    with st.expander(f"Live progress of the last run started in this tab ({rec['run']})", expanded=False):
+        st.caption("Recorded as the run happened, in this browser tab only (not a monitor of other tabs or "
+                   "sessions). Results are shown only from the saved, re-verified report.")
+        c = st.columns(4)
+        c[0].metric("Model turns", f"{rec['turns']} of {rec['max_turns']}")
+        c[1].metric("Tool calls executed", rec["executed"])
+        c[2].metric("Tool calls refused", rec["refused"])
+        c[3].metric(*rec["spending"])
+        st.markdown("  \n".join(rec["lines"]))
+
+
+# a run that is refused before it starts (documented: authorization, environment, inputs, configuration); anything
+# else from runs.execute is an unexpected failure and stays the primary one
+EXPECTED_REFUSALS = runs.script("investigation_v1_live").REFUSALS + (ValueError,)
+
+
+def _run(config, inputs, paid, **kw):
+    """One run with its live view. Every exit settles the view: a rerun / stop request held during the run is
+    re-raised at the end, unless another failure is already leaving this function, which stays the primary one (the
+    held request is then dropped). The run itself is never repeated here."""
+    view = LiveProgress(paid, config.max_model_turns)
+    failure = None
+    try:
+        try:
+            name, summary = run_with_live_view(
+                lambda progress: runs.execute(config, inputs, paid=paid, progress=progress, **kw), view)
+        except runs.RunBusy as exc:
+            view.close("error", "Not started")
+            st.session_state[MESSAGE_KEY] = ("error", f"Not started: {exc}.")
+            return
+        except EXPECTED_REFUSALS as exc:
+            if view.started():                     # (never "not started" once the investigation's stages began)
+                raise
+            view.close("error", "Not started")     # the CLI's refusals: before any request or file
+            st.session_state[MESSAGE_KEY] = ("error", f"Not started ({type(exc).__name__}): {exc}")
+            return
+        view.close("running", "Re-verifying the saved report from disk...",
+                   ":blue-badge[started] Re-verifying the saved report from disk")
+        try:
+            state, verdict = verdict_of(runs.load_saved(runs.live_dir() / name))
+        except Exception as exc:                   # never "verified" when the check itself failed
+            state, verdict = "error", (f"the saved report could not be loaded or checked ({type(exc).__name__}), "
+                                       "so none of its results are shown")
+        view.close(state, f"Run {name}: recorded status {summary.get('status')}; saved report "
+                          f"{verdict.split(':')[0].split(' (')[0]}",
+                   (":green-badge[verified]" if state == "complete" else ":red-badge[not verified]") +
+                   f" Saved report re-verified: {verdict}")
+        st.session_state[PROGRESS_KEY] = view.record(name, verdict)
+        # select the new run through the Session State API (sent to the browser), never by dropping the widget's
+        # state: a dropped state falls back to a default the browser is not told about, so the selector would keep
+        # showing the previous run above the new run's results
+        st.session_state[OPEN_KEY] = str(runs.live_dir() / name)
+        st.session_state[MESSAGE_KEY] = (
+            ("info" if state == "complete" else "error"),
+            f"Investigation {name} finished with recorded status `{summary.get('status')}`; the saved report was "
+            f"reloaded from disk and re-verified: {verdict}. Open the Saved investigations tab for its overview, "
+            "evidence and activity.")
+    except BaseException as exc:
+        failure = exc
+        if not _is_control(exc):                   # an unexpected failure: reporting it is secondary
+            _report_unexpected(view, exc)
+        raise                                      # the original exception, type and traceback
+    finally:
+        if failure is None:
+            view.release()                         # the held rerun / stop request, now that the run is settled
+        else:
+            view.deferred = None                   # the original failure stays the primary one
 
 
 def render_new():
@@ -168,6 +555,8 @@ def render_new():
         st.session_state[GEN_KEY] = gen + 1
         _run(config, inputs, False, confirm_budget_usd=None, authorization=None)
         st.rerun()
+    if st.session_state.get(PROGRESS_KEY):
+        render_progress_record(st.session_state[PROGRESS_KEY])
 
 
 # ---- a saved investigation ----

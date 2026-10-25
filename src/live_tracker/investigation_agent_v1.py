@@ -389,15 +389,34 @@ class _Ledger:
 
 # ---- the run: the Stage 6 loop with the Contract v1 tools ----
 
+class _ObservedModel:
+    """The model, unchanged, with one presentation-only notice before each request (a progress observer's
+    "waiting for the provider"). respond() passes every argument through as given."""
+
+    def __init__(self, model, notify):
+        self._model, self._notify = model, notify
+
+    def respond(self, *args, **kwargs):
+        self._notify({"kind": "model_request"})
+        return self._model.respond(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
 class _RunV1(ia._Run):
     """investigation_agent._Run with Contract v1 execution: run() (model turns, usage, budget, refusals, stops,
     trace) is inherited unchanged; handle() executes through the InvestigationRunner and stop() builds the
-    contract-v1/1 report. Every call is decided by its _Ledger (admit)."""
+    contract-v1/1 report. Every call is decided by its _Ledger (admit).
+
+    observer (optional, presentation only): called with a deep copy of every trace entry as it is recorded, and with
+    {"kind": "model_request"} before each model request. It decides nothing and cannot change the run: an exception
+    from it is swallowed and the observer dropped. Without an observer the run is exactly as before."""
 
     evidence = property(lambda self: self.ledger.evidence)
     tool_calls = property(lambda self: self.ledger.tool_calls)
 
-    def __init__(self, question, data, model, budget, clock, investigation_id):
+    def __init__(self, question, data, model, budget, clock, investigation_id, observer=None):
         if not isinstance(data, v1.InvestigationData):
             raise TypeError("data must be an investigation_tools_v1.InvestigationData")
         if not isinstance(question, str) or not question.strip() or len(question) > 500:
@@ -416,7 +435,24 @@ class _RunV1(ia._Run):
         self.overrun = None
         self.unreported = 0
         self.pass_limits = ia._accepts_limits(model)
+        self.observer = observer
+        if observer is not None:                     # (pass_limits is read from the model itself, above)
+            self.model = _ObservedModel(model, self.notify)
         self.start = clock()
+
+    # -- progress (presentation only) --
+
+    def notify(self, event):
+        if self.observer is None:
+            return
+        try:
+            self.observer(copy.deepcopy(event))
+        except Exception:                            # never part of the investigation: drop the observer
+            self.observer = None
+
+    def log(self, kind, **kw):
+        super().log(kind, **kw)
+        self.notify(self.trace[-1])
 
     # -- one tool call --
 
@@ -429,6 +465,7 @@ class _RunV1(ia._Run):
                 finish = self.entry("finish", **entry, outcome="accepted")
                 final = ia._guarded(self.verify_finish, admitted, key, finish)
                 self.trace.append(finish)
+                self.notify(finish)
                 self.rejected_in_a_row = 0
                 return json.dumps({"accepted": True, "fingerprint": final["fingerprint"]}), False, final
             request = admitted
@@ -522,14 +559,15 @@ class _RunV1(ia._Run):
 
 
 def investigate_v1(question, data, model, *, budget=None, investigation_id=None, allow_synthetic=False,
-                   clock=time.monotonic):
+                   clock=time.monotonic, observer=None):
     """One bounded, model-directed investigation over Contract v1 (see the module docstring). allow_synthetic is
-    for tests only: real runs refuse a synthetic data source (no synthetic fallback)."""
+    for tests only: real runs refuse a synthetic data source (no synthetic fallback). observer: an optional,
+    presentation-only progress callback (see _RunV1); it never changes the run or its report."""
     if isinstance(data, v1.InvestigationData) and data.data_source == "synthetic" and not allow_synthetic:
         raise ValueError("synthetic data is refused: a real investigation needs a real data source")
     budget = budget or ia.Budget()
     investigation_id = investigation_id or f"agent_v1_{hashlib.sha256(question.encode()).hexdigest()[:12]}"
-    return _RunV1(question, data, model, budget, clock, investigation_id).run()
+    return _RunV1(question, data, model, budget, clock, investigation_id, observer).run()
 
 
 # ---- a saved report: re-derived from its own content, then rendered ----

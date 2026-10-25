@@ -177,6 +177,18 @@ def counts(run_dir):
     q.markdown(f"<div style='background:#DDE6E3;border-radius:6px;padding:2px 10px;font-size:0.9rem'>Questions <b>{status.get('asks', 0)}</b></div>", unsafe_allow_html=True)
 
 
+def _small_headings(text):
+    """Page view only: the big Markdown headings are too large here, so '#' becomes '####' and '##' becomes '#####'."""
+    lines = []
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            line = "#####" + line[2:]
+        elif line.startswith("# "):
+            line = "####" + line[1:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def render_biologist_report(run_dir, report_json):
     """The written report for the biologist: Claude writes it when the button is clicked (one paid request)."""
     key = f"live_bio_{run_dir.name}"
@@ -201,7 +213,7 @@ def render_biologist_report(run_dir, report_json):
         else:
             return
     with st.container(border=True):
-        st.markdown(text)
+        st.markdown(_small_headings(text))
     st.download_button("Download the report (Markdown)", text, file_name=f"{run_dir.name}_report.md",
                        mime="text/markdown", key="live_bio_download", on_click="ignore")
     if st.session_state.get(key + "_why"):

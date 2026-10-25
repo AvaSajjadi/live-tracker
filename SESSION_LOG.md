@@ -244,3 +244,17 @@ Notes:
 2. Ran `pytest` on `test_biologist_report.py`, `test_replay_page.py`, `test_session_view.py`, `test_demo_smoke.py`: 23 passed. (Runs the tests; no files changed.)
 3. Found: `docs/demo_recording.md` is out of date (Demo mode line, Confirm button, assumptions list, video side). `save_and_notify` has no error handling for the file write. Skeleton canvas is not checked in a browser. Full test run still not done.
 4. Next: fix the doc, check Replay in a browser, full test run, Syed reviews PR #38.
+
+## Part 7 - 2026-10-25 (Real backend, step 1 and 2: the camera)
+1. Plan from the user: make the demo real, starting with the camera. Choices: build the pose-model plug-in only (no model yet), USB webcam first.
+2. Installed OpenCV in the project Python: `.\.venv\Scripts\python.exe -m pip install opencv-python-headless` (lets the program open a camera).
+3. New `src/live_tracker/pose_model.py`: the slot for a pose model (picture to keypoints), checks the model output on every frame. `docs/pose_model.md` explains it. No backend ships yet.
+4. `run_sources.py`: `make_source({"kind": "camera"})` now checks the pose model first, then opens the real camera (number or address) and can reconnect. New `camera_device`.
+5. New `src/live_tracker/camera_check.py`: is OpenCV there, does the camera give a picture, is there a pose model.
+6. Upload page: "Connect a camera" now has two types: Demo camera (recorded video, as before) and USB camera (number box, "Test the camera" shows one picture, "Use this camera"). `SessionSource` has a new `device` field.
+7. Tests: `tests/test_pose_model.py` (20), `tests/test_upload_camera.py` (4). 344 passed in the camera, flow, upload, replay, live view and run tests. Full suite not run.
+8. Bug found by a test and fixed: choosing USB camera kept the demo source selected in the background.
+9. Commits: d934f6e, 248fbb3 (pushed on `ava/demo-integration`).
+
+Not finished: the Real session page still says a camera cannot be analysed (`live_view.py`). A camera run needs: a run spec for the camera, a live panel that does not need a poses file or video, and the Rules page schedule as the time limit. No pose model exists. No real camera was tried (no hardware test).
+Next time: step 3 (start a camera run from the Real session page), then the pose model backend, then a real camera test.

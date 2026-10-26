@@ -11,66 +11,70 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import FancyBboxPatch, Polygon
 
-INK, BLUE, TEAL, RED, GREY = "#082D60", "#2F6DB5", "#3E8E86", "#B5483A", "#8A8A80"
-plt.rcParams.update({"font.family": "Arial", "font.size": 16, "text.color": INK, "axes.labelcolor": INK, "xtick.color": INK, "ytick.color": INK})
+# poster colors
+NAVY, OLIVE, SAND, CARD, BLUE, RED, GREY = "#082D60", "#948A54", "#DDD9C3", "#EEECE1", "#2F6DB5", "#B5483A", "#A9A79A"
+plt.rcParams.update({"font.family": "Arial", "text.color": NAVY})
+
+
+def save(fig, out, name):
+    fig.savefig(out / name, dpi=220, transparent=True, bbox_inches="tight", pad_inches=0.05)
+    plt.close(fig)
 
 
 def pipeline(out):
-    steps = ["Camera", "Straighten\nthe screen", "Find body\npoints", "Score\nbehavior", "Apply the\nrule", "Alert +\nreport"]
-    fig, ax = plt.subplots(figsize=(12.9, 2.4))
-    ax.set_xlim(0, 12.9)
-    ax.set_ylim(0, 2.4)
+    # the real chain of the project (README "How the parts fit together", docs/camera.md section 1)
+    steps = [("Video", "camera or file"), ("Body points", "7 per mouse"), ("Quality check", "bad frames flagged"),
+             ("Motion", "speed, distance"), ("Behavior score", "Model B"), ("Researcher rule", "approved by a person"),
+             ("Monitor", "alert or ask"), ("Log + report", "every event saved")]
+    n, w, h, notch = len(steps), 2.3, 1.6, 0.35
+    fig, ax = plt.subplots(figsize=(16, 2.6))
+    ax.set_xlim(0, n * (w - notch / 2) + notch)
+    ax.set_ylim(-0.1, h + 0.1)
     ax.axis("off")
-    w, gap = 1.8, 0.32
-    for i, s in enumerate(steps):
-        x = i * (w + gap) + 0.1
-        ax.add_patch(FancyBboxPatch((x, 0.5), w, 1.4, boxstyle="round,pad=0.02,rounding_size=0.15", fc="#EAF2F5", ec=BLUE, lw=2))
-        ax.text(x + w / 2, 1.2, s, ha="center", va="center", fontsize=15, fontweight="bold")
-        ax.text(x + 0.18, 1.78, str(i + 1), ha="center", va="center", fontsize=12, color="white", fontweight="bold",
-                bbox=dict(boxstyle="circle,pad=0.25", fc=BLUE, ec="none"))
-        if i < len(steps) - 1:
-            ax.annotate("", xy=(x + w + gap - 0.03, 1.2), xytext=(x + w + 0.03, 1.2), arrowprops=dict(arrowstyle="-|>", color=INK, lw=2))
-    fig.savefig(out / "1_pipeline.png", dpi=200, transparent=True, bbox_inches="tight")
-    plt.close(fig)
+    for i, (title, sub) in enumerate(steps):
+        x = i * (w - notch / 2)
+        pts = [(x, 0), (x + w - notch, 0), (x + w, h / 2), (x + w - notch, h), (x, h)] + ([(x + notch, h / 2)] if i else [])
+        ax.add_patch(Polygon(pts, closed=True, fc=NAVY if i % 2 == 0 else OLIVE, ec="none"))
+        cx = x + (w + (notch if i else 0)) / 2 - notch / 2 - 0.05
+        ax.text(cx, h * 0.62, title, ha="center", va="center", fontsize=14.5, fontweight="bold", color="white")
+        ax.text(cx, h * 0.28, sub, ha="center", va="center", fontsize=10, color="white")
+    save(fig, out, "1_pipeline.png")
 
 
 def speed(out, fast_ms):
-    names, vals, cols = ["Research tool\n(MARS)", "Needed for\nlive video"], [850, 33], [RED, GREY]
+    rows = [("Research tool (MARS)", 850, RED), ("Needed for live video", 33, GREY)]
     if fast_ms:
-        names.insert(1, "Our fast\nmodel")
-        vals.insert(1, fast_ms)
-        cols.insert(1, TEAL)
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
-    bars = ax.bar(names, vals, color=cols, width=0.6)
-    for b, v in zip(bars, vals):
-        ax.text(b.get_x() + b.get_width() / 2, v + 20, f"{v:g} ms", ha="center", fontweight="bold")
-    ax.set_ylabel("Time for one picture (ms), lower is faster")
-    ax.set_ylim(0, 1000)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    ax.set_title("Finding body points: speed" + ("" if fast_ms else " (before the fast model)"), fontweight="bold", loc="left")
-    fig.savefig(out / "2_speed.png", dpi=200, transparent=True, bbox_inches="tight")
-    plt.close(fig)
+        rows.insert(1, ("Our fast model", fast_ms, BLUE))
+    fig, ax = plt.subplots(figsize=(7, 1.2 + 1.1 * len(rows)))
+    for i, (name, v, c) in enumerate(rows[::-1]):
+        y = i * 1.5
+        ax.barh(y, 1000, height=0.5, color=CARD)
+        ax.barh(y, max(v, 20), height=0.5, color=c)
+        ax.text(0, y + 0.38, name, fontsize=14, fontweight="bold", va="bottom")
+        inside = v > 300
+        ax.text(max(v, 20) - 15 if inside else max(v, 20) + 15, y, f"{v:g} ms", fontsize=17, fontweight="bold", va="center",
+                ha="right" if inside else "left", color="white" if inside else NAVY)
+    ax.set_xlim(0, 1000)
+    ax.set_ylim(-0.5, (len(rows) - 1) * 1.5 + 1.1)
+    ax.axis("off")
+    ax.text(0, (len(rows) - 1) * 1.5 + 1.0, "Time to find the body points in one picture", fontsize=12.5, color=OLIVE, va="bottom")
+    save(fig, out, "2_speed.png")
 
 
 def quality(out):
-    rows = [("Frames labeled right", 84.3, 78.7, 88.5), ("Alerts that were right", 82.5, 18.2, 92.5), ("Attack bouts found", 64.3, 21.1, 87.2)]
-    fig, ax = plt.subplots(figsize=(6.5, 3.6))
-    for i, (name, v, lo, hi) in enumerate(rows[::-1]):
-        ax.barh(i, v, color=BLUE, height=0.55)
-        ax.errorbar(v, i, xerr=[[v - lo], [hi - v]], color=INK, capsize=5, lw=1.5)
-        ax.text(2, i, f"{v:.0f}%", va="center", color="white", fontweight="bold")
-    ax.set_yticks(range(3))
-    ax.set_yticklabels([r[0] for r in rows[::-1]])
-    ax.set_xlim(0, 100)
-    ax.set_xlabel("Percent (line = 95% range over 14 videos)")
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
-    ax.set_title("How good are the alerts? (validation videos)", fontweight="bold", loc="left")
-    fig.savefig(out / "3_alert_quality.png", dpi=200, transparent=True, bbox_inches="tight")
-    plt.close(fig)
+    rows = [("84%", "of video frames\nlabeled right"), ("82%", "of alerts\nwere right"), ("64%", "of attack bouts\nwere found")]
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 2.6))
+    for ax, (big, small) in zip(axes, rows):
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis("off")
+        ax.add_patch(FancyBboxPatch((0.02, 0.02), 0.96, 0.96, boxstyle="round,pad=0,rounding_size=0.06", fc=CARD, ec=OLIVE, lw=1.8, mutation_aspect=1))
+        ax.text(0.5, 0.62, big, ha="center", va="center", fontsize=46, fontweight="bold", color=NAVY)
+        ax.text(0.5, 0.2, small, ha="center", va="center", fontsize=14, color=NAVY)
+    fig.subplots_adjust(wspace=0.08)
+    save(fig, out, "3_alert_quality.png")
 
 
 if __name__ == "__main__":

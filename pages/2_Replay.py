@@ -1,9 +1,9 @@
-"""Read-only recorded video/pose inspection; monitoring belongs to Real session and Run."""
+"""Read-only recorded video/pose inspection, or the live camera with its pose; monitoring belongs to Real session and Run."""
 from pathlib import Path
 
 import streamlit as st
 
-from live_tracker import flow, ui_style
+from live_tracker import flow, live_pose_view, ui_style
 from live_tracker import skeleton_player as sp
 from live_tracker import video_web as vw
 
@@ -11,8 +11,6 @@ ui_style.apply()
 flow.render_bar("replay")
 st.title("Replay")
 flow.render_nav("replay")
-st.caption("Inspect recorded video with the matching recorded keypoints. This page does not infer poses from a "
-           "camera or run monitoring. Monitoring and execution remain on Real session and Run.")
 
 
 @st.cache_data(show_spinner="Reading the recorded keypoints...", max_entries=2)
@@ -22,9 +20,9 @@ def _frames(poses, session, stamp, require_observed=False):
 
 source = flow.get_source()
 if source is not None and source.kind == "camera":
-    st.info("A real camera has no recording to replay, so this step has nothing to show. Press Next to continue. "
-            "(For the staged demo, choose 'Staged demo' on the Upload step: it has a video and saved keypoints to replay.)")
+    live_pose_view.render(source)
     st.stop()
+st.caption("Inspect recorded video with the matching recorded keypoints. This page does not run monitoring.")
 if source is None or not source.has_video or not source.poses:
     st.info("Nothing to replay yet. On the Upload step, choose a video that has a keypoints file.")
     st.stop()

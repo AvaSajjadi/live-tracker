@@ -1,0 +1,1 @@
+{"backend": "yolo", "weights": "models/pose/mouse_pose_best_openvino_model", "device": "intel:gpu", "imgsz": [384, 640], "conf": 0.15, "hold": 3}

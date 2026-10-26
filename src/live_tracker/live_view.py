@@ -28,10 +28,12 @@ from . import run_schedule as rs
 from . import schedule_workflow as sw
 from . import video_web as vw
 from .run_ui import approved_rules
+from .pose_preview import PREVIEW_FILE
 from .uploads import SessionSource
 from .ui_style import note, badge, color_actions, event_notice
 
 KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SOURCE, KEY_SERIES = "live_run", "live_video", "live_go_sent", "live_source", "live_series"
+PREVIEW_REFRESH_S = 0.3
 DEFAULT_OFFSET_S = 0.3                      # the video needs a moment to start after its element is drawn
 CHART_SECONDS = 30
 
@@ -55,8 +57,9 @@ def _reset():
 
 
 def render():
-    st.caption("Recorded-data simulation: behavior scoring uses saved keypoints, not camera images.")
     source = flow.get_source()
+    if source is None or source.kind != "camera":
+        st.caption("Recorded-data simulation: behavior scoring uses saved keypoints, not camera images.")
     if source is None:
         st.info("Nothing is chosen yet. Go back to the Upload step and choose a recording.")
         return
@@ -95,8 +98,13 @@ def render_camera(source):
         return
     run_dir = st.session_state.get(KEY_RUN)
     if run_dir is not None:
-        counts(Path(run_dir))
-        panel(Path(run_dir), ls.camera_limit_s(chosen_limit_s()), source.fps)
+        left, right = st.columns([11, 9])                         # run details on the left, the camera (about 45%) on the right
+        with right:
+            counts(Path(run_dir))
+            camera_run_picture(Path(run_dir))
+        with left:
+            panel(Path(run_dir), ls.camera_limit_s(chosen_limit_s()), source.fps)
+            camera_live_charts(Path(run_dir), source.fps)
         return
     estimator, why = pose_model.check()                         # the run program loads the model itself
     limit = chosen_limit_s()
@@ -117,6 +125,37 @@ def render_camera(source):
             return
         st.session_state.update({KEY_RUN: str(run_dir), KEY_SENT: True})
         st.rerun()
+
+
+@st.fragment(run_every=1)
+def camera_live_charts(run_dir, fps):
+    """What the camera run measures now: the behavior scores and the motion of the last CHART_SECONDS seconds."""
+    from . import live_log
+    scores = live_log.read_scores(run_dir, CHART_SECONDS)
+    if scores is None:
+        return
+    st.markdown(f"**Behavior scores, last {CHART_SECONDS} s** (0 to 1)")
+    st.line_chart(scores.set_index("time_s")[list(live_log.BEHAVIORS)], height=220)
+    motion = live_log.read_motion(run_dir, CHART_SECONDS, fps)
+    if motion is not None and len(motion):
+        st.markdown(f"**Motion, last {CHART_SECONDS} s** (px/s, px)")
+        st.line_chart(motion.set_index("time_s")[["speed_a", "speed_b", "distance"]], height=220)
+        if not bool(motion["tracking_ok"].iloc[-1]):
+            st.warning("Tracking is lost for at least one mouse right now. A gap is not a still mouse.")
+
+
+@st.fragment(run_every=PREVIEW_REFRESH_S)
+def camera_run_picture(run_dir):
+    """The newest picture the camera run analysed, with the keypoints it found (the run program has the camera, so it saves it)."""
+    path = Path(run_dir) / PREVIEW_FILE
+    try:
+        data = path.read_bytes()
+    except OSError:
+        st.caption("The camera picture appears here once the run has loaded the model and opened the camera.")
+        return
+    status = rc.read_status(Path(run_dir)) or {}
+    still = status.get("state") in rc.ACTIVE_STATES
+    st.image(data, width="stretch", caption=None if still else "The session is over; this is its last picture.")
 
 
 # ---- a centers file: motion only ----
@@ -298,18 +337,27 @@ def _small_headings(text):
 
 
 def _show_report(text):
-    """The report text; a Markdown table is shown as a small data table so it fits the box."""
-    text = _small_headings(text)
-    rows = [ln for ln in text.split("\n") if ln.startswith("|")]
-    if len(rows) < 3:
-        st.markdown(text)
+    """The report text; each Markdown table is shown as a small data table so it fits the box."""
+    lines, block = _small_headings(text).split("\n") + [""], []
+    for line in lines:
+        is_row = line.startswith("|")
+        if block and is_row != block[0].startswith("|"):
+            _show_block(block)
+            block = []
+        block.append(line)
+    _show_block(block)
+
+
+def _show_block(block):
+    if not block[0].startswith("|"):
+        if "\n".join(block).strip():
+            st.markdown("\n".join(block))
         return
-    cells = [[c.strip() for c in ln.strip("|").split("|")] for ln in rows]
-    before, _, after = text.partition(rows[0])
-    after = after.split(rows[-1], 1)[1]
-    st.markdown(before)
+    cells = [[c.strip() for c in ln.strip().strip("|").split("|")] for ln in block]
+    if len(cells) < 3:
+        st.markdown("\n".join(block))
+        return
     st.dataframe([dict(zip(cells[0], r)) for r in cells[2:]], hide_index=True, width="stretch")
-    st.markdown(after)
 
 
 def render_biologist_report(run_dir, report_json):
@@ -363,8 +411,6 @@ def panel(run_dir, length_s, fps):
     last = ls.latest_alert(events)
     if last is not None:
         event_notice(last, _mmss(last['start_s']))
-    elif status.get("state") == "running":
-        st.caption("No alert yet.")
 
     frames = status.get("frames", 0)
     st.progress(min(1.0, frames / fps / length_s), text=f"{_mmss(frames / fps)} of {_mmss(length_s)}")
@@ -380,9 +426,7 @@ def panel(run_dir, length_s, fps):
 
     lag = status.get("max_lag_s", 0.0)
     if status.get("state") in ("running", "finished") and frames:
-        if lag < 1.0:
-            st.caption(f"Keeping up with real time (slowest delay {lag:.1f} s).")
-        else:
+        if lag >= 1.0:
             st.warning(f"The laptop fell behind at times (slowest delay {lag:.1f} s). Alerts were that late.")
 
     shown = [e for e in events if e["action"] in ("alert", "ask")]
@@ -401,7 +445,7 @@ def panel(run_dir, length_s, fps):
             st.success("The session has finished; its report is ready on the Run page.")
         if report is not None:
             with st.expander("Report"):
-                st.markdown(report[0])
+                _show_report(report[0])
             render_biologist_report(run_dir, report[1])
     if status.get("state") in ("finished", "failed") or problem:
         if st.button("Start again", key="live_again"):

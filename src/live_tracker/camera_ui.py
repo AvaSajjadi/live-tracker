@@ -1,13 +1,13 @@
-"""The Camera page: connect a USB camera, set the screen corners, record and analyze, or use the staged demo (new file).
+"""The Camera page: connect a USB camera, set the screen corners, analyze it live or record and analyze (new file).
 
 Rendering only. This used to be part of the Upload step (upload_ui.py). The Upload step is now Syed's page (recorded data only); the camera
 screens live here, on their own page, so that nothing of the camera work is lost. The camera is a first step like Upload: "Next" goes to Rules.
 
-Three ways to use a camera (see docs/camera.md):
+Two ways to use a camera (see docs/camera.md):
+  - Live real pose: the pose model (models/pose/pose_model.json, on a Mac pose_model_mac.json) finds the mice in each picture;
+    see docs/pose_model.md.
   - Record, then analyze with MARS (real pose, not live): the camera is recorded with the screen stretched to 1024 x 570, MARS runs on the
     recording in the background, and the result becomes the source.
-  - Staged demo: the camera is shown live, but the alerts come from the SAVED keypoints of the demo video. The page says so.
-  - Live real pose: needs a fast pose model (models/pose/pose_model.json); see docs/pose_model.md.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import streamlit as st
 
 from . import camera_check as cc
 from . import camera_live
-from . import demo
 from . import flow
 from . import mars_job
 from . import uploads as up
@@ -71,20 +70,15 @@ def render_usb_camera():
             st.error("These corners cannot be used. Press Reset the corners.")
         elif not live:
             png = _marked_png(state["png"], screen)
-    mode = st.radio("What should the program analyze?", [OFFLINE, STAGED, REAL_POSE], key="upload_cam_mode",
-                    help="Record then analyze: real pose from your recording, with MARS, not live (about 25 minutes for each minute "
-                         "of video). Staged: the camera shows the iPad live, but the numbers come from saved keypoints of the demo "
-                         "video. Live real pose: needs a pose model fast enough for live video (none yet).")
-    staged = mode == STAGED
-    current = flow.get_source()                                  # another camera, corners or mode than the saved ones: choose again
+    mode = st.radio("What should the program analyze?", [REAL_POSE, OFFLINE], key="upload_cam_mode",
+                    help="Live real pose: the pose model finds the mice in each camera picture. Record then analyze: real pose "
+                         "from your recording, with MARS, not live (about 25 minutes for each minute of video).")
+    current = flow.get_source()                                  # another camera or corners than the saved ones: choose again
     if current is not None and current.device is not None and (
-            current.device != device.strip() or current.screen != screen or current.staged_camera != staged):
+            current.device != device.strip() or current.screen != screen or current.staged_camera):
         st.session_state.pop(flow.SOURCE_KEY, None)
     if mode == OFFLINE:
         render_record_and_analyze(device, live, screen_on, screen)
-        return ("live", device.strip()) if live else ("image", png)
-    if staged:
-        render_staged_choice(device, screen)
         return ("live", device.strip()) if live else ("image", png)
     _, reason = cc.pose_model.check()                              # check, not load: loading a trained model takes seconds
     if reason:
@@ -97,25 +91,7 @@ def render_usb_camera():
 OFFLINE = "Record, then analyze with MARS (real pose, not live)"
 
 
-STAGED = "Staged demo (saved keypoints of the demo video)"
-
-
-REAL_POSE = "Live real pose (needs a fast pose model)"
-
-
-def render_staged_choice(device, screen):
-    """The camera films a screen that plays the demo video. The picture is only shown; the keypoints are read from a file."""
-    st.warning("STAGED DEMO. The camera picture is shown live, but the alerts are computed from the SAVED keypoints of the demo "
-               "video, not from what the camera sees. Say this plainly when you present it.")
-    demos = demo.find_demos()
-    if not demos:
-        st.error("No demo video with saved keypoints is on this computer (data/raw/calms21_video/), so there is nothing to stage.")
-        return
-    d = demos[0]
-    st.caption(f"Play this video on the screen the camera films: {d.video.name}")
-    if st.button("Use the staged demo", type="primary", key="upload_use_staged"):
-        flow.set_source(up.SessionSource("demo", f"Staged demo: camera {device} films the screen", video=str(d.video),
-                                         poses=str(d.poses), session=d.session, device=device.strip(), screen=screen))
+REAL_POSE = "Live real pose"
 
 
 def recordings_root():
@@ -267,7 +243,7 @@ def live_preview(device):
 def render():
     flow.render_bar("upload")
     st.title("Camera")
-    st.caption("Connect a USB camera, set the screen corners, then record and analyze, or use the staged demo. "
+    st.caption("Connect a USB camera, set the screen corners, then analyze it live or record and analyze. "
                "Recorded data is on the Upload page.")
     left, right = st.columns([2, 3])
     with left:

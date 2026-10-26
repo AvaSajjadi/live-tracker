@@ -18,8 +18,9 @@ claude = ["anthropic>=0.40,<2"]
 # 1.15 is the lowest anthropic version verified here. No network call is made.
 investigation = ["anthropic>=1.15,<2", "httpx2>=2.0,<3"]
 
-# a real camera (src/live_tracker/camera_check.py, run_sources.open_camera); a pose model is also needed, see docs/pose_model.md
-camera = ["opencv-python-headless>=4.8,<5"]
+# a real camera (src/live_tracker/camera_check.py, run_sources.open_camera) and the YOLO pose model in models/pose
+# (pose_backends.py; ultralytics brings torch). An Intel laptop also needs openvino for the OpenVINO weights.
+camera = ["opencv-python-headless>=4.8,<5", "ultralytics>=8.3,<9"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -195,6 +195,7 @@ class Runner:
         self.run_id = _safe_id(f"{self.schedule.schedule_id}_{self.schedule.start.astimezone(timezone.utc):%Y%m%dT%H%M%SZ}"
                                f"_{self.run_dir.name}")
         self.stop_requested = False
+        self.live_log = None                    # a live camera: the per-frame numbers for the Real session page (live_log.py)
         self.state, self.outcome, self.message = "waiting", None, ""
         self.n_frames = self.n_rows = self.n_rejected = 0
         self.first_frame = self.last_frame = None
@@ -300,6 +301,9 @@ class Runner:
                 self.write_status()
                 self.clock.sleep(0.05)
         self.state = "running"
+        if getattr(self.source, "live", False):
+            from .live_log import LiveLog
+            self.live_log = LiveLog(self.run_dir)
         self.write_status(force=True)
         while True:
             if self._should_stop():
@@ -338,6 +342,8 @@ class Runner:
 
     def _process(self, frame):
         self.n_frames += 1
+        if self.live_log is not None:
+            self.live_log.position(frame)
         if frame.scores is not None:
             rows = [frame.scores]
         else:
@@ -353,6 +359,8 @@ class Runner:
                 continue
             now = self.clock.now()
             self.n_rows += 1
+            if self.live_log is not None:
+                self.live_log.score(row)
             if self.first_frame is None:
                 self.first_frame, self.first_time_s, self.first_at = row["frame"], row["time_s"], now
             self.last_frame, self.last_time_s, self.last_at = row["frame"], row["time_s"], now
@@ -404,6 +412,8 @@ class Runner:
                     entry["end"] = self.clock.now()            # still down at the end of the run
             self.monitor.finish()
             self.apply_answers()
+        if self.live_log is not None:
+            self.live_log.close()
         completeness = rs.completeness(self.schedule, self.first_at, self.last_at)
         self.outcome = "stopped" if reason == "stopped" else completeness["outcome"]
         self.message = {"window_end": "The schedule ended.", "source_ended": "The video source ended.",

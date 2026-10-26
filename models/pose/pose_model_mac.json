@@ -1,0 +1,1 @@
+{"backend": "yolo", "weights": "models/pose/mouse_pose_best.pt", "device": "mps", "imgsz": [384, 640], "conf": 0.15, "hold": 3}

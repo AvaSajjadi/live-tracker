@@ -1,32 +1,45 @@
 # Live Tracker
 
-> **About this copy.** This public repository holds the **minimum needed to run the demo**: the app (`app.py`, `pages/`),
-> the code (`src/`), the settings and the split manifest. The full project (tests, scripts, documentation, Colab notebooks,
-> working notes and the camera acceptance test) is kept in a private repository for the team. Where this README names
-> `docs/`, `tests/`, `scripts/` or `INTERFACES.md`, those files are in the private copy.
->
-> **Not included, on purpose:** the CalMS21 data, the MARS models and data (CC BY-NC 4.0, non-commercial), and the trained
-> fast mouse pose model (`models/pose/`). Put your own model files in `models/` (the pose model settings are described in `docs/pose_model.md`, in the private copy).
-> The live camera path needs a pose model, `opencv-python-headless`, and for the fast model `ultralytics` (AGPL-3.0) and `openvino`.
-
 **Turning mouse pose data into researcher-approved behavior alerts, with every step kept honest about what the data
 can and cannot show.**
 
 Behavioral neuroscience labs record hours of video of mice interacting. Finding the moments that matter (an attack, a
 mount, a close investigation) still mostly means watching footage or labeling it frame by frame. Live Tracker is a
-hackathon prototype that works on **already-tracked pose data** (2D body keypoints per frame). It:
+hackathon prototype that watches a **live camera** (or a recording) and:
+- finds both mice in every camera picture with a small trained pose model (7 body points per mouse, about 30 times a
+  second);
 - checks how trustworthy the tracking is;
-- computes motion features with causal filters and formulas (the tracking-quality preprocessing in front of them is
-  not causal; see [limitations](#scientific-integrity-and-limitations));
-- trains a per-frame behavior classifier on the public CalMS21 dataset;
+- computes motion features with causal filters and formulas;
+- scores attack, investigation and mount with a behavior classifier trained on the public CalMS21 dataset;
 - lets a researcher describe, in plain English, what they want to be alerted to.
 
 A proposed rule does nothing until the researcher confirms it. A deterministic monitor, with no language model in the
-loop, then turns per-frame scores into timestamped, journaled events.
+loop, then turns per-frame scores into timestamped, journaled alerts and questions, and writes a report at the end.
 
-> **Status:** active hackathon project (October 2026). This README describes what is on `main`. Nothing here is a
-> validated scientific instrument; see [Scientific integrity and limitations](#scientific-integrity-and-limitations).
-> Measured motion-engine results (validation sessions only) are in `docs/motion_engine_results.md`.
+> **Status:** hackathon project (October 2026). Nothing here is a validated scientific instrument; see
+> [Scientific integrity and limitations](#scientific-integrity-and-limitations).
+
+## Latest demo
+
+A recording of the full live run (camera → pose model → rule → alerts → report) is in
+[`latest_demo/`](latest_demo/). The quickest way to try it yourself is [Quick start](#quick-start).
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[camera]" -r requirements.txt
+.venv/bin/python -m streamlit run app.py
+```
+
+Open http://localhost:8501 and follow the guided flow:
+1. **Upload:** Connect a camera → camera number `0` → **Test the camera** → **Live real pose** → **Use this camera**.
+2. **Rules:** type `Alert me if the mice fight for more than 2 seconds` → **Propose rule** → **Confirm**.
+3. **Replay:** check that both mice have a skeleton drawn on them (red: the black mouse, blue: the white mouse).
+4. **Real session:** **Start the camera session**. Alerts, live charts and the report appear on the page.
+
+The models (`models/`) are in the repository, so no training is needed. Point the camera at a top-view CalMS21 video
+(for example on a phone or tablet), in focus. Camera setup and troubleshooting: [`docs/camera.md`](docs/camera.md).
 
 ## Why this matters
 
@@ -53,17 +66,17 @@ Live Tracker is built around those three constraints.
 | **Researcher approval** | Every rule starts as `proposed`; only an explicit Confirm approves it. The workflow is UI-independent and tested without a browser | `src/live_tracker/rules.py`, `src/live_tracker/rule_workflow.py` |
 | **Streaming monitor** | Deterministic: approved rules + per-frame scores → alert / ask / log events. Decisions use only past and current frames; tracking loss ends a bout | `src/live_tracker/monitor.py` |
 | **Event journal** | Append-only lifecycle journal with crash recovery, plus the `INTERFACES.md` §4 event-log export | `src/live_tracker/event_log.py` |
-| **Streamlit dashboard** | Eight pages: Upload, Rules, Replay, Real session (recorded-data simulation and optional validation motion measurements), Investigation, Live Agent, Run and Motion tool | `app.py`, `pages/` |
+| **Live camera** | Opens a USB camera (tested with a Nikon D7500 through the Nikon Webcam Utility), optionally stretches a filmed screen to the CalMS21 frame, and reconnects if the camera drops out | `camera_live.py`, `run_sources.py`, `screen_map.py` |
+| **Pose model** | A small YOLO pose model trained on the MARS hand-labeled set: 7 keypoints for each of the two mice, about 10 ms per picture on a MacBook Air | `models/pose/`, `pose_model.py`, `pose_backends.py`, `docs/pose_model.md` |
+| **Streamlit dashboard** | A guided flow (Upload, Rules, Replay, Real session) with the live camera, the skeletons, live charts of the scores and motion, alerts and the report; plus Investigation, Live Agent, Run, Camera and Motion tool pages | `app.py`, `pages/` |
 | **Synthetic test data** | A labeled synthetic pose CSV and a synthetic per-frame score generator. Every synthetic session id starts with `SYNTHETIC_` | `example_pose_demo.csv`, `src/live_tracker/fake_scores.py` |
 
 ## How the parts fit together
 
 ```
- CalMS21 Task 1 JSON (pose + labels)
-        │
-        ▼
- calms21.py ── long pose table
-        │
+ live camera ── pose_model.py (YOLO) ── 7 keypoints per mouse, every picture
+        │            or
+        │      CalMS21 Task 1 JSON / an uploaded recording with keypoints (calms21.py, uploads.py)
         ▼
  quality.py ── flags, short-gap filling, tracking_ok     (retrospective: see limitations)
         │
@@ -83,10 +96,10 @@ Live Tracker is built around those three constraints.
  monitor.py ◄───────────────────────────────────────────┘
         │  alert / ask / log events
         ▼
- event_log.py ── journal, §4 event-log export
+ event_log.py ── journal, §4 event-log export, live charts, report
         │
         ▼
- replay page and session summary (synthetic sessions), evidence-grounded investigation (offline, association-only)
+ Real session page; replay and evidence-grounded investigation (offline, association-only)
 ```
 
 The monitor has two separate inputs. Classifier probabilities say how likely each behavior is in each frame. They
@@ -121,6 +134,15 @@ py -3 -m venv .venv
 
 `requirements.txt` lists version ranges for `numpy`, `pandas`, `scipy`, `scikit-learn`, `streamlit`, `joblib`, `pyarrow` (the
 classifier's feature files are Parquet) and `pytest`.
+
+For the live camera, install the `camera` extra as well. It adds OpenCV and `ultralytics` (the pose model, with PyTorch):
+
+```bash
+.venv/bin/python -m pip install -e ".[camera]"                 # Windows: .\.venv\Scripts\python.exe -m pip install -e ".[camera]"
+```
+
+The pose model settings are picked automatically: `models/pose/pose_model_mac.json` on a Mac (the Apple GPU), else
+`models/pose/pose_model.json` (OpenVINO on an Intel GPU; also `pip install openvino`). See `docs/pose_model.md`.
 
 Installing the dependencies may need internet access. After installation, the default application (all pages, with
 the offline rule parser) runs without an API key and does not need a network connection.
@@ -160,12 +182,15 @@ $env:PYTHONPATH = "src"
 
 ### Guided flow (front page, `app.py`)
 
-Upload → Rules → Replay → Real session. Upload accepts recorded video with matching keypoints or a positions CSV.
-**Simulated camera (recorded video)** uses a local recording; its success message explicitly says no physical camera
-is connected. It requires the video and matching pose artifact described in demo readiness.
-A positions CSV gives motion only, without behavior alerts. Rules are proposed, reviewed and explicitly confirmed.
-Replay is read-only inspection of the Upload recording: its video with the matching recorded keypoints drawn in sync;
-it does not score or monitor. Real session uses the Upload source and approved rules. No camera-image inference is implemented.
+Upload → Rules → Replay → Real session.
+
+- **Upload:** a camera (live, see [Quick start](#quick-start)), a recorded video with its matching keypoints, or a
+  positions CSV (motion only, no behavior alerts). A camera can also be recorded and analyzed afterwards with MARS
+  (`docs/camera.md`, section 8).
+- **Rules:** rules are proposed, reviewed and explicitly confirmed (below).
+- **Replay:** for a camera, the live picture with the skeletons the pose model finds; for a recording, its video with
+  the matching keypoints drawn in sync. Replay never scores or monitors.
+- **Real session:** runs the approved rules on the chosen source (below).
 
 ### Motion tool (`pages/8_Motion_Tool.py`)
 
@@ -196,7 +221,7 @@ This page turns a sentence into a monitoring rule, and nothing is approved witho
    Alert me when the mice attack for at least 2 seconds
    ```
 3. Click **Propose rule**. This sentence gives rule R1: attack, at least 2.0 s, alert mode `alert`. Thresholds you
-   don't state use untuned defaults (alert 0.8, ask 0.5), and the page warns about them.
+   don't state use untuned defaults (alert 0.8, ask 0.5); the (?) next to the box lists every assumption.
 4. Click **Confirm** or **Reject**. Only confirmed rules are approved, and the page shows whether monitoring can start.
 
 **What the parser supports:**
@@ -206,9 +231,16 @@ This page turns a sentence into a monitoring rule, and nothing is approved witho
 
 ### Real Session (`pages/4_Real_Session.py`)
 
-Runs a **recorded-data simulation** using saved keypoints and Model B; the video is a synchronized preview,
-not input to camera inference. Start/stop controls operate the separate run program; closing the browser does not
-stop it. Questions are answered on Run. Optional Claude report wording is a clearly labelled paid call.
+**With a camera:** press **Start the camera session**. A separate run program opens the camera, finds the mice in every
+picture, scores them live with Model B and runs the approved rules; closing the browser does not stop it. The page shows:
+- the camera as the pose model sees it, with both skeletons;
+- the alert and question counts, and the latest alert;
+- live charts of the last 30 s: the behavior scores (attack, investigation, mount) and the motion (speed of each mouse,
+  distance between them), with a warning when tracking is lost;
+- at the end, the report and a plain-language summary that can be downloaded.
+
+**With a recording:** the same analysis runs on the saved keypoints while the video plays next to it. Questions are
+answered on the Run page.
 
 Select **Explore validation motion measurements** for the motion engine on one real CalMS21 **validation** session:
 tracking quality and warnings, the causal
@@ -243,7 +275,7 @@ from made-up scores and say nothing about mice.
 
 ## Working with CalMS21 (external data)
 
-Real data is not in this repository. Data, videos and keys never go into Git. Download CalMS21 yourself from the
+Real data is not in this repository. Data, videos and keys never go into Git; the trained models in `models/` are. Download CalMS21 yourself from the
 official Caltech record (link under [Attribution](#attribution)), then:
 - **Download only Task 1.** Get `task1_classic_classification.zip` (no videos, no MARS features). Unzip it and put
   `calms21_task1_train.json` (1.2 GB) and `calms21_task1_test.json` (632 MB) in `data/raw/calms21/` (git-ignored). The
@@ -255,8 +287,8 @@ official Caltech record (link under [Attribution](#attribution)), then:
   (Windows: `.\.venv\Scripts\python.exe -m live_tracker.calms21_inspect data\raw\calms21\<file>.json`).
 - **Keep the split.** `splits/split_manifest.json` is session-level and already committed. The official test set is
   held out: never train, tune or replay-tune on it.
-- **The classifier pipeline** reads from `data/raw/calms21/` and writes to the git-ignored `data/processed/`,
-  `models/` and `outputs/` (full usage in the `classify.py` docstring):
+- **The classifier pipeline** reads from `data/raw/calms21/` and writes to the git-ignored `data/processed/` and `outputs/`, and to
+  `models/` (full usage in the `classify.py` docstring):
   macOS / Linux:
   ```bash
   .venv/bin/python -m live_tracker.classify features --train data/raw/calms21/calms21_task1_train.json \
@@ -290,12 +322,12 @@ The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.p
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q                     # private copy only (this public copy has no tests)
+.venv/bin/python -m pytest -q                     # Windows: .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-- Every pull request and every push to `main` runs the full suite in GitHub Actions on `ubuntu-latest` and
-  `windows-latest` (`.github/workflows/tests.yml`).
-- The tests use synthetic fixtures only. They need no dataset, no network and no API key.
+- About 5,000 tests. The last full run of this version (MacBook Air, Python 3.12): 5060 passed, 127 skipped, 0 failed.
+- The tests use synthetic fixtures only. They need no dataset, no network and no API key; tests that need the CalMS21
+  data or a camera are skipped without them.
 - The Streamlit pages are tested headlessly with Streamlit's `AppTest`.
 
 ## Scientific integrity and limitations
@@ -330,9 +362,9 @@ The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.p
 ## Investigation, replay and session summary
 
 Investigation offers synthetic demonstrations and saved real **validation** runs. The documented real
-validation run is described in validation_run_v1.md; browsing checks consistency of local
+validation run is described in [validation_run_v1.md](docs/validation_run_v1.md); browsing checks consistency of local
 records, not independent authenticity, and does not re-score data. This does not complete H5 on the held-out test set:
-that work remains subject to team agreement and Ava's approved run. See demo readiness for
+that work remains subject to team agreement and Ava's approved run. See [demo readiness](docs/demo_readiness.md) for
 required local artifacts and an offline backup.
 
 | Work | Status |
@@ -372,31 +404,29 @@ does not stop it. It waits for the start time, reads frames, scores them live wi
 writes the event log, sends short messages (a log file, and a phone through ntfy if you set a topic) and writes a report
 at the end. A question left open can be answered the next morning.
 
-It works today with recorded data. **A real camera is not supported yet: there is no mouse pose model in this repository.**
-What was measured, the limits and a setup checklist: `docs/lab_run.md`.
-The dashboard opens on a **guided flow**: Upload, Rules, Replay, Real session. On the Real session page the recording plays on one side and the
-live analysis runs on the other (a simulated live stream from a recording, not a camera):
-`docs/demo_recording.md`.
+It works with a live camera and with recorded data. What was measured, the limits and a setup checklist:
+[`docs/lab_run.md`](docs/lab_run.md) and [`docs/camera.md`](docs/camera.md).
 
 ## Project structure
 
 ```
-app.py                     Streamlit front door: the menu (guided flow first); the old home page is pages/8_Motion_Tool.py
-pages/1_Rules.py           Streamlit page: plain-English rules with researcher approval
-pages/2_Replay.py          Streamlit page: recorded video with its matching keypoints, read only
-pages/3_Investigation.py   Streamlit page: the evidence behind a replayed session
-pages/4_Real_Session.py    Streamlit page: recorded-data simulation and optional validation motion measurements
-src/live_tracker/          the package (quality, filters, features, calms21, classify, evaluate,
-                           agent, claude_agent, rules, rule_workflow, monitor, event_log, ...)
-tests/                     pytest suite (synthetic fixtures only); in the private copy only
-scripts/                   analysis scripts (sensitivity, ablation, quality tuning, dry runs)
+app.py                     Streamlit front door: the menu (guided flow first)
+pages/0_Upload.py          guided flow 1: choose a camera, a recording with keypoints, or a positions CSV
+pages/1_Rules.py           guided flow 2: plain-English rules with researcher approval
+pages/2_Replay.py          guided flow 3: live camera with skeletons, or a recording with its keypoints
+pages/4_Real_Session.py    guided flow 4: the live run, alerts, live charts and report
+pages/3_, 5_ to 8_*.py     Investigation, Live Agent, Run, Camera, Motion tool
+src/live_tracker/          the package (camera, pose model, quality, features, classify, rules, monitor, event log, ...)
+models/                    Model A and B (behavior classifiers) and models/pose (the YOLO pose model and its settings)
+tests/                     pytest suite (synthetic fixtures only)
+scripts/                   analysis, training and camera test scripts
+colab/                     notebooks: train the pose model, run MARS on a GPU
 splits/split_manifest.json session-level train / validation / test split
-docs/                      CalMS21 schema notes, investigation tool contract
+docs/                      camera, pose model, CalMS21 schema, investigation and run notes
 INTERFACES.md              data formats between components
-IMPLEMENTATION_STATUS.md   progress log
-plan/                      team plan and per-person task lists
+latest_demo/               the latest demo recording
 example_pose_demo.csv      synthetic pose demo (not CalMS21)
-data/, models/             local only, git-ignored contents
+data/                      local only (CalMS21 and videos are not in Git)
 ```
 
 ## Team and contributing
@@ -407,9 +437,7 @@ data/, models/             local only, git-ignored contents
 | Igor | CalMS21 data and model: loader, split, classifier, evaluation, per-frame scores |
 | Syed | Agent and interface: plain-English rules, approval, monitor, event log, replay, investigation |
 
-The plan and the per-person task lists are in `plan/`.
-
-**How to contribute** (details in `CONTRIBUTING.md`):
+**How to contribute:**
 - Branch from `main` and open a pull request; never push to `main`.
 - Get one teammate's review, and keep the tests green.
 - Keep data, videos and API keys out of Git.

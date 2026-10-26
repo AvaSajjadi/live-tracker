@@ -19,6 +19,7 @@ from . import monitor_runner as mr
 from . import run_control as rc
 from . import run_schedule as rs
 from .calms21 import FPS, TORSO_KEYPOINTS
+from .pose_preview import PREVIEW_FILE
 
 MODEL = "models/model_b"
 EXTRA_S = 120.0                         # the schedule lasts this much longer than the recording, so it never ends first
@@ -82,7 +83,8 @@ def start_camera(source, rules, *, now=None, launcher=None, limit_s=None):
     run_dir = rc.new_run_dir("CAMERA", now)
     schedule = rs.for_hours(seconds / 3600.0, now=now, tz="America/New_York", schedule_id="CAMERA",
                             description="Camera session").approve()
-    config = rc.build_config(run_dir, schedule, rules, camera_spec(source), model=MODEL, speed=1.0, fps=source.fps,
+    spec = {**camera_spec(source), "preview": str(Path(run_dir) / PREVIEW_FILE)}   # the newest drawn picture, for the page
+    config = rc.build_config(run_dir, schedule, rules, spec, model=MODEL, speed=1.0, fps=source.fps,
                             start_when_ready=True)                       # loading the model and the camera is not part of the chosen time
     return rc.start_run(config, launcher=launcher)
 

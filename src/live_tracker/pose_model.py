@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -25,6 +26,7 @@ from .calms21 import IMAGE_SIZE, KEYPOINTS, MICE
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_ENV = "LIVE_TRACKER_POSE_MODEL"
 DEFAULT_CONFIG = "models/pose/pose_model.json"
+MAC_CONFIG = "models/pose/pose_model_mac.json"
 COLUMNS = ("mouse", "keypoint", "x", "y", "score")
 MAX_OUTSIDE_SHARE = 0.25                    # more points than this outside the frame: the model's coordinates do not fit
 
@@ -43,7 +45,12 @@ def register_backend(name, factory):
 def config_path(root=None, env=None):
     env = os.environ if env is None else env
     named = (env.get(CONFIG_ENV) or "").strip()
-    return Path(named) if named else Path(root or ROOT) / DEFAULT_CONFIG
+    if named:
+        return Path(named)
+    mac = Path(root or ROOT) / MAC_CONFIG                     # a Mac has no Intel GPU: its own settings (the .pt model on "mps")
+    if sys.platform == "darwin" and mac.is_file():
+        return mac
+    return Path(root or ROOT) / DEFAULT_CONFIG
 
 
 def check_output(found):

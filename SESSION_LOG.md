@@ -465,3 +465,12 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 4. Result with the real USB webcam and the stub: camera 25.3 pictures per second, run program 29.5 frames per second for 40 s, slowest 10 s 29.9, every score reached the monitor, 8 alerts and 1 question. The pose speed check is SKIPPED (stub): the model is the missing piece.
 5. The user is running `colab/train_yolo_pose_colab.ipynb` on a Colab T4 (T4 was connected; Gemini panel was open: told to close it and press Run all). Waiting for best.pt and eval.json. Nikon still charging.
 6. Not done: acceptance with the trained model; Nikon; browser test of the staged demo with the real camera (was interrupted by a slow page; the preview was fixed); the 2 order-dependent test_session_view failures.
+
+## 2026-10-25 (poster figures)
+1. Ava fills the middle of the poster. Sadaf builds the slide, so we only make figures and numbers.
+2. Wrote `scripts/poster_figures.py`. It draws 3 PNG pictures (pipeline, speed, alert quality) with transparent background.
+3. Command: `C:/Users/AnTiC/fastpose_test/env/Scripts/python.exe -I scripts/poster_figures.py outputs/poster` - makes the pictures. (That env already has matplotlib; the project .venv does not.)
+4. Copied the pictures to Desktop\poster_figures (outputs/ is not in Git).
+5. Problem: first pipeline picture was cut on the right. Fixed by making the canvas wider.
+6. Not finished: speed picture has no "fast model" bar yet. After training, run with `--fast-ms <measured ms>`. The numbers 29.5 fps and 16 ms are not final for the mouse model.
+7. Next time: read eval.json and best.pt when Ava says "done", measure the speed, remake the pictures.

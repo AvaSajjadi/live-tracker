@@ -41,7 +41,8 @@ def open_usb(monkeypatch, snapshot):
     return AppTest.from_file(PAGE, default_timeout=30).run()
 
 
-def test_a_working_camera_can_be_chosen_and_the_pose_model_gap_is_said(monkeypatch):
+def test_a_working_camera_can_be_chosen_and_the_pose_model_gap_is_said(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIVE_TRACKER_POSE_MODEL", str(tmp_path / "no_such_pose_model.json"))     # not the local model of this computer
     at = open_usb(monkeypatch, lambda device, opener=None: (PNG, None))
     assert "Press Test the camera to see live video" in texts(at.caption)
     button(at, "upload_test_camera").click().run()

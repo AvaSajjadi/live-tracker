@@ -91,6 +91,9 @@ def load(root=None, env=None):
         function = factory(settings, Path(root or ROOT))
     except Exception as exc:                                  # a backend can fail in many ways; say which one
         return None, f"The pose model could not be loaded ({type(exc).__name__})."
+    if settings.get("stabilize"):                             # optional, off by default: see point_stabilizer.py
+        from . import point_stabilizer
+        function = point_stabilizer.wrap(function, settings["stabilize"] if isinstance(settings["stabilize"], dict) else {})
     return (lambda image: check_output(function(image))), None
 
 

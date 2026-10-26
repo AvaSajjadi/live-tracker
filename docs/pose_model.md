@@ -61,3 +61,17 @@ The settings file only names a backend. It never runs code. Model files are big 
 ## Install OpenCV
 
 `python -m pip install opencv-python-headless` (also listed as the `camera` option in `pyproject.toml`).
+
+## Steadier points (optional, off by default)
+
+`src/live_tracker/point_stabilizer.py` makes the 14 points of each picture steadier. It uses the same steps as the ScopeScore tracker (Ava's surgical video paper):
+1. **Flow mix.** The model's point is mixed with the point followed from the last picture by optical flow: `p = 0.2 * model + 0.8 * flow`.
+2. **Smoothing.** A One-Euro filter on every coordinate (past pictures only; 0.6 Hz, beta 0.04).
+3. **Tolerance.** A point that moves less than about 1% of the picture height (5.7 px) stays still. A bigger move is followed almost at once.
+
+It invents nothing. If the model finds no mouse, the answer is still "no mouse". After a gap of more than 0.5 s it starts again.
+
+Turn it on in `models/pose/pose_model.json` by adding a block, for example `"stabilize": {}` for the defaults, or
+`"stabilize": {"alpha": 0.2, "min_cutoff": 0.6, "beta": 0.04, "sigma_px": 5.7, "flow": true}`. Set `"flow": false`, `"sigma_px": 0` or `"min_cutoff": 0` to switch one step off.
+
+**Not proven yet.** The tests show that it steadies noisy points and follows real moves. It has not been measured on the trained mouse model or on real camera video. Measure first (noise test and unseen videos), then decide if it stays on.

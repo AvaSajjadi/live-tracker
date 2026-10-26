@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from . import demo
@@ -28,7 +29,7 @@ from . import schedule_workflow as sw
 from . import video_web as vw
 from .run_ui import approved_rules
 from .uploads import SessionSource
-from .ui_style import note
+from .ui_style import note, badge, color_actions, event_notice
 
 KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SOURCE, KEY_SERIES = "live_run", "live_video", "live_go_sent", "live_source", "live_series"
 DEFAULT_OFFSET_S = 0.3                      # the video needs a moment to start after its element is drawn
@@ -54,6 +55,7 @@ def _reset():
 
 
 def render():
+    st.caption("Recorded-data simulation: behavior scoring uses saved keypoints, not camera images.")
     source = flow.get_source()
     if source is None:
         st.info("Nothing is chosen yet. Go back to the Upload step and choose a recording.")
@@ -236,7 +238,7 @@ def render_intro(source, rules):
         st.number_input("Wait before the run starts, after the video is drawn (seconds)", min_value=0.0, max_value=3.0,
                         value=DEFAULT_OFFSET_S, step=0.1, key="live_offset",
                         help="Raise it if the alerts come before the fight in the video; lower it if they come late.")
-    label = "Start the live session" if (playable or not source.has_video) else "Start without the picture"
+    label = "Start recorded session" if (playable or not source.has_video) else "Start without the picture"
     if st.button(label, type="primary", key="live_start"):
         try:
             run_dir = ls.start_live(source, rules, wait_for_go=playable is not None,
@@ -281,9 +283,8 @@ def render_running(run_dir, source):
 def counts(run_dir):
     """Two small boxes with the number of alerts and questions (above the video)."""
     status = rc.read_status(Path(run_dir)) or {}
-    a, q = st.columns(2)
-    a.markdown(f"<div style='background:#DDE6E3;border-radius:6px;padding:2px 10px;font-size:0.9rem'>Alerts <b>{status.get('alerts', 0)}</b></div>", unsafe_allow_html=True)
-    q.markdown(f"<div style='background:#DDE6E3;border-radius:6px;padding:2px 10px;font-size:0.9rem'>Questions <b>{status.get('asks', 0)}</b></div>", unsafe_allow_html=True)
+    st.markdown(badge(f"Alerts: {status.get('alerts', 0)}", "alert") + " "
+                + badge(f"Questions: {status.get('asks', 0)}", "ask"), unsafe_allow_html=True)
 
 
 def _small_headings(text):
@@ -321,7 +322,7 @@ def render_biologist_report(run_dir, report_json):
     if text is None:
         st.caption("Claude writes a short report in plain words for the biologist. It sends the facts of this run "
                    "(no video, no keypoints) to Claude and uses your Claude key, so it costs a little.")
-        if st.button("Write the report for the biologist", key="live_bio_write"):
+        if st.button("Write report with Claude (paid call)", key="live_bio_write"):
             with st.spinner("Claude is writing the report..."):
                 text, problem = bio.write(report_json)
             if problem:
@@ -358,6 +359,13 @@ def panel(run_dir, length_s, fps):
         st.session_state[KEY_VIDEO] = True                     # draw the video, then send GO (see render_running)
         st.rerun()
 
+    events = rc.read_events(run_dir)
+    last = ls.latest_alert(events)
+    if last is not None:
+        event_notice(last, _mmss(last['start_s']))
+    elif status.get("state") == "running":
+        st.caption("No alert yet.")
+
     frames = status.get("frames", 0)
     st.progress(min(1.0, frames / fps / length_s), text=f"{_mmss(frames / fps)} of {_mmss(length_s)}")
     series = st.session_state.get(KEY_SERIES)
@@ -370,15 +378,6 @@ def panel(run_dir, length_s, fps):
             if not bool(view["tracking_ok"].iloc[-1]):
                 st.warning("Tracking is lost for at least one mouse right now. A gap is not a still mouse.")
 
-    events = rc.read_events(run_dir)
-    last = ls.latest_alert(events)
-    if last is not None:
-        text = (f"**{'ALERT' if last['action'] == 'alert' else 'Question'}** at {_mmss(last['start_s'])}: possible "
-                f"{last['behavior']}, confidence {last['confidence']:.2f}")
-        (st.error if last["action"] == "alert" else st.warning)(text)
-    elif status.get("state") == "running":
-        st.caption("No alert yet.")
-
     lag = status.get("max_lag_s", 0.0)
     if status.get("state") in ("running", "finished") and frames:
         if lag < 1.0:
@@ -388,17 +387,18 @@ def panel(run_dir, length_s, fps):
 
     shown = [e for e in events if e["action"] in ("alert", "ask")]
     if shown:
-        rows = [{"time": _mmss(e["start_s"]), "action": e["action"], "confidence": round(e["confidence"], 2)}
+        rows = [{"time": _mmss(e["start_s"]), "action": e["action"], "behavior": e["behavior"], "confidence": round(e["confidence"], 2)}
                 for e in sorted(shown, key=lambda e: e["start_s"], reverse=True)]
-        st.dataframe(rows, hide_index=True, width="stretch", height=240)
+        st.dataframe(color_actions(pd.DataFrame(rows)), hide_index=True, width="stretch", height=240)
 
     if status.get("state") == "finished":
-        if status.get("message") == "The schedule ended.":
-            st.success("The chosen time is over, so the analysis has stopped. The report is ready. "
-                       "The video may still be playing.")
-        else:
-            st.success("The session has finished. The report is ready. The full report is on the Run page.")
         report = rc.read_report(run_dir)
+        if report is None:
+            st.warning("The session has finished; the report is not available yet.")
+        elif status.get("message") == "The schedule ended.":
+            st.success("The chosen time is over; analysis stopped and the report is ready (video may still play).")
+        else:
+            st.success("The session has finished; its report is ready on the Run page.")
         if report is not None:
             with st.expander("Report"):
                 st.markdown(report[0])

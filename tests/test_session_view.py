@@ -145,6 +145,9 @@ def test_page_without_cache_explains_how_to_build_it(tmp_path, monkeypatch):
     monkeypatch.setattr(sv, "DEFAULT_MANIFEST", tmp_path / "m.json")
     at = AppTest.from_file(PAGE, default_timeout=60).run()
     assert not at.exception
+    assert not at.checkbox(key="session_explore_motion").value
+    at.checkbox(key="session_explore_motion").check().run()
+    assert not at.exception
     assert any("not available" in i.value for i in at.info)
     assert any("investigation_data" in c.value for c in at.code)
 
@@ -155,6 +158,9 @@ def test_page_shows_a_session_and_labels_the_annotation_as_context(cache, monkey
     monkeypatch.setattr(sv, "DEFAULT_MANIFEST", manifest)
     at = AppTest.from_file(PAGE, default_timeout=120).run()
     assert not at.exception, [e.value for e in at.exception]
+    assert not at.metric  # optional exploration does not crowd the recorded-session controls
+    at.checkbox(key="session_explore_motion").check().run()
+    assert not at.exception
     assert [m.label for m in at.metric][:4] == ["Frames", "Duration", "tracking_ok frames", "Tracking warnings"]
     assert at.selectbox[0].options == [sv.short_name(s) for s in VAL]
     assert any(h.value == "Annotation" for h in at.subheader)

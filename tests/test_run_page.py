@@ -71,7 +71,7 @@ def button(at, key):
 
 def test_an_empty_page_says_what_is_missing(env):
     at = open_page()
-    assert "No approved rule yet" in texts(at.warning) and "No approved schedule yet" in texts(at.warning)
+    assert "confirm a rule" in texts(at.warning) and "run schedule" in texts(at.warning)
     assert button(at, "run_start")[0].disabled
     assert "No runs yet." in texts(at.caption)
 
@@ -102,7 +102,7 @@ def test_a_schedule_that_has_ended_is_not_offered(env):
     root, _ = env
     save_schedule(root, datetime.now(timezone.utc) - timedelta(hours=5), seconds=3600)
     at = open_page(with_rule=True)
-    assert "No approved schedule yet" in texts(at.warning)
+    assert "run schedule" in texts(at.warning)
     assert button(at, "run_start")[0].disabled
 
 
@@ -110,7 +110,7 @@ def test_start_needs_an_approved_rule(env):
     root, _ = env
     save_schedule(root, datetime.now(timezone.utc))
     at = open_page(with_rule=False)
-    assert "No approved rule yet" in texts(at.warning) and button(at, "run_start")[0].disabled
+    assert "confirm a rule" in texts(at.warning) and button(at, "run_start")[0].disabled
 
 
 # ---- watching a run ----
@@ -123,9 +123,10 @@ def test_a_finished_run_shows_status_events_report_and_messages(env):
     at = open_page()
     assert at.selectbox(key="run_pick").value == run_dir.name
     assert "Finished" in texts(at.markdown) and "complete" in texts(at.markdown)
-    metrics = {m.label: m.value for m in at.metric}
-    assert metrics["Frames"] == "720" and metrics["Alerts"] == "1" and metrics["Questions"] == "1"
-    assert metrics["Unanswered"] == "1" and metrics["Interruptions"] == "0"
+    details = texts(at.caption)
+    assert "Frames: 720" in details and "Alerts: 1" in details and "Questions: 1" in details
+    assert "Unanswered: 1" in details and "Interruptions: 0" in details
+    assert "Run details" in [e.label for e in at.expander]
     events = [df for df in at.dataframe if "action" in df.value.columns][0].value
     assert list(events["action"]) == ["alert", "ask"]
     assert "Run report: S1" in texts(at.markdown) and "Session summary" in texts(at.markdown)
@@ -194,7 +195,7 @@ def test_a_failed_run_shows_its_message(env):
     run_dir = finished_demo(root)
     write_status(run_dir, "failed", datetime.now(timezone.utc), outcome="failed", message="refused: the schedule is not approved")
     at = open_page()
-    assert "Failed" in texts(at.markdown) and "refused: the schedule is not approved" in texts(at.caption)
+    assert "Failed" in texts(at.markdown) and "refused: the schedule is not approved" in texts(at.error)
 
 
 def test_a_run_without_a_status_yet_waits_quietly(env):

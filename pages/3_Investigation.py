@@ -1,7 +1,8 @@
 """Investigation page: the Contract v1 evidence behind a synthetic Replay session (new file).
 
-Data choice (Phase 2B): the SYNTHETIC demonstration below, unchanged and the default, or the recorded Contract v1
-tool run of a verified REAL validation run, shown read only by live_tracker.validation_run_ui.
+Data choice (Phase 2B): the SYNTHETIC demonstration below, unchanged and the default, or a verified REAL validation
+run, shown read only by live_tracker.validation_run_ui in two views of the one selected run: its monitoring record
+(the recorded events, alerts, asks and evaluation) and its scientific investigation (the recorded Contract v1 tool run).
 
 Shows, for one SYNTHETIC session and one approved rule, the record of the
 deterministic Contract v1 tool run (replay_investigation): the bouts found,
@@ -31,14 +32,12 @@ from streamlit.errors import StreamlitPageNotFoundError
 WORKFLOW_KEY = "rule_workflow"
 REPLAY_SESSION_KEY = "replay_session"
 SESSION_KEY = "investigation_session"
-STATUS_BOX = {"supported": st.info, "insufficient": st.warning, "no_bouts": st.info, "unsupported": st.info,
+STATUS_BOX = {"supported": st.success, "insufficient": st.warning, "no_bouts": st.info, "unsupported": st.info,
               "error": st.error}
 
 ui_style.apply()
 st.title("Investigation")
-ui_style.note("caption", "The evidence behind a replayed session.",
-              "The evidence behind a replayed session: which bouts the approved rule finds, how each is checked, and "
-              "what the Contract v1 tools can and cannot conclude.")
+st.caption("Inspect bouts, tracking quality and association-only evidence behind a replay.")
 nav = st.columns([2, 1, 4])
 try:
     nav[0].page_link("pages/2_Replay.py", label="Back to Replay", icon=":material/arrow_back:")
@@ -48,7 +47,7 @@ except StreamlitPageNotFoundError:                  # this file run on its own, 
 
 # 0. data: the SYNTHETIC demonstration (below, unchanged) or a verified REAL validation run (read only)
 if vui.choose_mode("investigation_data_mode_widget") == vui.REAL:
-    vui.render_investigation()
+    vui.render_real_run()
     st.stop()
 
 # 1. approved rules (the same researcher workflow the Replay page reads)

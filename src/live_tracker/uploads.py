@@ -38,7 +38,7 @@ TABLE_TYPES = ("csv", "parquet")
 MIN_FRAMES = 30
 MAX_FRAMES = 2_000_000                      # about 18 hours at 30 fps
 MAX_OUTSIDE_SHARE = 0.05                    # more points than this outside the image frame: wrong coordinates
-POSE_COLUMNS = ["session", "mouse", "keypoint", "frame", "time_s", "x", "y", "score"]
+POSE_COLUMNS = ["session", "mouse", "keypoint", "frame", "time_s", "x", "y", "score", "score_observed"]
 
 
 class UploadError(ValueError):
@@ -192,6 +192,10 @@ def normalize_keypoints(df, name="upload", fps=FPS):
     else:
         score = pd.Series(np.nan, index=df.index)
     df["score"] = score
+    observed = score.notna()
+    if "score_observed" in df:
+        observed &= df["score_observed"].eq(True)
+    df["score_observed"] = observed
 
     inside = df["x"].between(0, IMAGE_SIZE[0]) & df["y"].between(0, IMAGE_SIZE[1])
     present = df["x"].notna() & df["y"].notna()
@@ -204,13 +208,16 @@ def normalize_keypoints(df, name="upload", fps=FPS):
     # every keypoint of both mice on every frame: a missing one is NaN with score 0, never absent
     frames = np.sort(df["frame"].unique())
     grid = pd.MultiIndex.from_product([frames, MICE, KEYPOINTS], names=["frame", "mouse", "keypoint"]).to_frame(index=False)
-    full = grid.merge(df[["frame", "mouse", "keypoint", "x", "y", "score"]], on=["frame", "mouse", "keypoint"], how="left")
+    # Display-only supplied quality; no new quality computation or scorer input.
+    display_flags = [c for c in ("missing", "low_conf", "frozen", "jump", "out_of_frame", "imputed", "tracking_ok") if c in df]
+    full = grid.merge(df[["frame", "mouse", "keypoint", "x", "y", "score", "score_observed", *display_flags]], on=["frame", "mouse", "keypoint"], how="left")
+    full["score_observed"] = full["score_observed"].eq(True)
     has_xy = full["x"].notna() & full["y"].notna()
     full["score"] = full["score"].where(full["score"].notna(), np.where(has_xy, 1.0, 0.0))
     full.loc[~has_xy, "score"] = 0.0
     full["session"] = session
     full["time_s"] = full["frame"] / float(fps)
-    return full[POSE_COLUMNS].sort_values(["frame", "mouse", "keypoint"]).reset_index(drop=True)
+    return full[POSE_COLUMNS + display_flags].sort_values(["frame", "mouse", "keypoint"]).reset_index(drop=True)
 
 
 def save_keypoints(folder, name, data, fps=FPS):

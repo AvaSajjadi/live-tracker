@@ -134,9 +134,9 @@ def test_the_intro_shows_the_recording_the_rules_and_a_start_button(env):
     root, _ = env
     at = open_view(with_source(source(root)))
     shown = texts(at.markdown)
-    assert "Simulated live stream" not in texts(at.caption)                       # removed on request
+    assert "Recorded-data simulation" in texts(at.caption) and "not camera images" in texts(at.caption)
     assert "clip.mp4, 0:10 long" in shown and "attack for at least 0.5 s" in shown and "not calibrated" in shown
-    assert button(at, "live_start")[0].label == "Start the live session"
+    assert button(at, "live_start")[0].label == "Start recorded session"
 
 
 def test_a_video_the_browser_cannot_play_is_explained_and_start_changes_its_label(env):
@@ -151,7 +151,7 @@ def test_a_web_copy_makes_the_video_playable_again(env):
     src = source(root, playable=False)
     Path(vw.web_copy_path(src.video)).write_bytes(fake_mp4(b"avc1", seconds=10.0))
     at = open_view(with_source(src))
-    assert not at.warning and button(at, "live_start")[0].label == "Start the live session"
+    assert not at.warning and button(at, "live_start")[0].label == "Start recorded session"
 
 
 def test_start_with_a_picture_waits_for_go(env):
@@ -168,7 +168,7 @@ def test_start_with_a_picture_waits_for_go(env):
 def test_start_without_a_picture_does_not_wait(env):
     root, launched = env
     at = open_view(with_source(source(root, with_video=False)))
-    assert button(at, "live_start")[0].label == "Start the live session"
+    assert button(at, "live_start")[0].label == "Start recorded session"
     button(at, "live_start")[0].click().run()
     assert json.loads(Path(launched[0]).read_text(encoding="utf-8"))["wait_for_go"] is False
     assert at.session_state["live_go_sent"] is True
@@ -216,8 +216,8 @@ def test_the_panel_shows_alert_counts_table_and_the_motion_chart_next_to_the_vid
     write_status(run_dir, "running", frames=240, alerts=1, asks=1, max_lag_s=0.1)
     at = open_view(running_state(src, run_dir))
     assert len(at.get("video")) == 1
-    assert "Alerts <b>1</b>" in texts(at.markdown) and "Questions <b>1</b>" in texts(at.markdown)
-    assert "Question" in texts(at.warning) and "possible attack" in texts(at.warning)
+    assert "Alerts: 1" in texts(at.markdown) and "Questions: 1" in texts(at.markdown)
+    assert "ASK" in texts(at.warning) and "possible attack" in texts(at.warning)
     assert list(at.dataframe[0].value["action"]) == ["ask", "alert"]
     assert len(at.get("vega_lite_chart")) == 1 and "Motion, last 30 s" in texts(at.markdown)
     assert "Keeping up with real time" in texts(at.caption)
@@ -229,7 +229,7 @@ def test_a_session_without_a_picture_still_shows_the_analysis(env):
     run_dir = demo_run(root)
     write_status(run_dir, "running", frames=240, alerts=1, asks=1, max_lag_s=0.0)
     at = open_view(running_state(src, run_dir))
-    assert not at.get("video") and "Alerts <b>1</b>" in texts(at.markdown)
+    assert not at.get("video") and "Alerts: 1" in texts(at.markdown)
 
 
 def test_falling_behind_is_a_warning(env):
@@ -386,3 +386,26 @@ def test_a_staged_demo_shows_the_camera_and_go_is_sent_by_the_button(env, monkey
     assert not (run_dir / "GO").exists()                                              # GO waits for the researcher
     button(at, "live_go_staged")[0].click().run()
     assert (run_dir / "GO").exists() and at.session_state["live_go_sent"] is True
+
+
+def test_finished_without_a_report_does_not_claim_it_is_ready(env):
+    root, _ = env
+    src = source(root)
+    run_dir = root / "runs" / "NO_REPORT"
+    write_status(run_dir, "finished", frames=300)
+    at = open_view(running_state(src, run_dir))
+    assert "report is not available yet" in texts(at.warning)
+    assert "report is ready" not in texts(at.success)
+
+
+def test_live_event_table_keeps_behavior_and_confidence_readable(env):
+    root, _ = env
+    src = source(root)
+    run_dir = demo_run(root)
+    write_status(run_dir, "running", frames=240, alerts=1, asks=1)
+    at = open_view(running_state(src, run_dir))
+    table = at.dataframe[0].value
+    assert list(table["action"]) == ["ask", "alert"]
+    assert list(table["behavior"]) == ["attack", "attack"]
+    assert set(("time", "confidence")) <= set(table.columns)
+    assert "model score, not verified behavior" in texts(at.warning)

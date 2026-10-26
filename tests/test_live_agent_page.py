@@ -424,7 +424,8 @@ def test_a_completed_rehearsal_is_selected_in_the_browser_too(synthetic):
     sb = at.selectbox(key="live_agent_saved")
     assert showing(at) == (new, new) and displayed_question(at).startswith("Question C")
     assert sb.proto.set_value                     # the new selection is pushed to the browser, not only the server
-    assert sb.format_func(sb.value) == f"Live Agent: {new}"
+    label = sb.format_func(sb.value)                 # UI-4: a verified run is labelled by what it is
+    assert "free rehearsal" in label and "“Question C: the new rehearsal”" in label
     at.selectbox(key="live_agent_saved").set_value(str(synthetic["tmp"] / "live" / old))
     at = run(at)                                  # and the researcher can go back
     assert showing(at) == (old, old) and displayed_question(at).startswith("Question A")

@@ -51,15 +51,19 @@ def test_pose_frames_keep_points_and_leave_missing_ones_out(tmp_path):
     write_poses(tmp_path / "p.parquet")
     frames = sp.pose_frames(tmp_path / "p.parquet")
     assert len(frames) == 5 and set(frames[0]) == {"a", "b"}
-    assert frames[0]["a"][0] == [10.0, 20.0]
-    assert frames[2]["a"][0] is None                      # missing: no position is invented
+    assert frames[0]["a"][0]["x"] == 10.0 and frames[0]["a"][0]["y"] == 20.0
+    assert frames[0]["a"][0]["status"] == "unreliable"
+    assert frames[2]["a"][0]["status"] == "missing"
+    assert frames[2]["a"][0]["x"] is None                      # missing: no position is invented
 
 
 def test_html_holds_the_poses_and_follows_the_video(tmp_path):
     write_poses(tmp_path / "p.parquet")
     page = sp.html(sp.pose_frames(tmp_path / "p.parquet"), 30.0)
     assert "currentTime" in page and "__DATA__" not in page
-    data = json.loads(page.split("const D = ")[1].split(";\nconst cv")[0])
+    data = sp.payload(sp.pose_frames(tmp_path / "p.parquet"), 30.0)
+    assert "requestVideoFrameCallback" in page
+    assert "PROVISIONAL connections" in page
     assert data["fps"] == 30.0 and len(data["frames"]) == 5 and len(data["edges"]) == 8
 
 

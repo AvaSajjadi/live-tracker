@@ -26,15 +26,16 @@ DEMO_CSV = Path(__file__).resolve().parents[1] / 'example_pose_demo.csv'
 
 st.set_page_config(page_title='Live Tracker', layout='wide')
 apply_style()
-st.title('Live Tracker | Motion Engine')
+st.title('Motion tool')
+st.caption('Explore positions and tracking quality; these measurements do not classify behavior.')
 fps = st.number_input(
-    'Camera frame rate (frames per second)', min_value=1.0, value=30.0,
+    'Recording frame rate (frames per second)', min_value=1.0, value=30.0,
     help='Frames per second (fps): how many pictures of the recording there are in each second. '
          'The page uses it to turn row numbers into seconds, so speeds and times are only right if '
          'this number is right. Check your camera or recording settings. 30 is common.')
 
 # --- added: data source choice -------------------------------------------
-use_demo = st.checkbox('Try demo data', help='A small made-up recording, so you can try the page without a file.')
+use_demo = st.checkbox('Try synthetic demo data', help='A small made-up recording, so you can try the page without a file.')
 upload = None if use_demo else st.file_uploader(
     'Pose CSV (one row per frame)', type='csv',
     help='Four columns, in pixels: x_a, y_a = position of mouse a; x_b, y_b = position of mouse b.')
@@ -80,7 +81,7 @@ if data is not None:
         st.metric('Frames', len(f))
         st.metric('Both tracks usable', f'{f.tracking_ok.mean():.1%}')
         st.line_chart(f[['speed_a_px_s', 'speed_b_px_s', 'distance_px']])
-        st.dataframe(f.head(50), use_container_width=True)
+        st.dataframe(f.head(50), width="stretch")
         st.download_button('Download motion features CSV', f.to_csv(index=False),
                            file_name='motion_features.csv', mime='text/csv')
 
@@ -106,7 +107,7 @@ if data is not None:
             col.metric(f'{name} (all rows)', f'{flags[name].mean():.1%}')
         wq = window_quality(flags, window_s=window_s, min_quality=min_quality)
         st.write(f"Windows with a quality warning: {int(wq['warning'].sum())} of {len(wq)}")
-        st.dataframe(wq, use_container_width=True)
+        st.dataframe(wq, width="stretch")
 
         # --- added: causal smoothing ----------------------------------------
         st.subheader('Causal smoothing (live-safe)')

@@ -1,11 +1,7 @@
-"""Replay page: the real video next to the mouse skeletons, to check that the model finds the mice (new file).
-
-Nothing about the run is shown here. The video is the one chosen on the Upload step. The skeleton drawing follows
-the video's own time (see live_tracker.skeleton_player). The run details are on the Real session page.
-"""
+"""Read-only recorded video/pose inspection; monitoring belongs to Real session and Run."""
+from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from live_tracker import flow, ui_style
 from live_tracker import skeleton_player as sp
@@ -15,11 +11,13 @@ ui_style.apply()
 flow.render_bar("replay")
 st.title("Replay")
 flow.render_nav("replay")
+st.caption("Inspect recorded video with the matching recorded keypoints. This page does not infer poses from a "
+           "camera or run monitoring. Monitoring and execution remain on Real session and Run.")
 
 
-@st.cache_data(show_spinner="Reading the keypoints...", max_entries=2)
-def _frames(poses):
-    return sp.pose_frames(poses)
+@st.cache_data(show_spinner="Reading the recorded keypoints...", max_entries=2)
+def _frames(poses, session, stamp, require_observed=False):
+    return sp.pose_frames(poses, session=session, require_observed=require_observed)
 
 
 source = flow.get_source()
@@ -32,11 +30,15 @@ if source is None or not source.has_video or not source.poses:
     st.stop()
 playable = vw.playable_video(source.video)
 if playable is None:
-    st.warning("The picture cannot be shown in the browser. Open the Real session page to prepare the video.")
+    st.warning("This recording's codec cannot be shown in the browser; no synchronized skeleton is claimed. "
+               "Replay never converts or changes the source video.")
     st.stop()
-
-video, skeletons = st.columns(2)
-with video:
-    st.video(str(playable), muted=True)
-with skeletons:
-    components.html(sp.html(_frames(source.poses), source.fps), height=420)
+try:
+    stat = Path(source.poses).stat()
+    frames = _frames(source.poses, source.session, (stat.st_mtime_ns, stat.st_size),
+                     source.kind == "video_keypoints")
+except (OSError, ValueError, KeyError) as exc:
+    st.error(f"Cannot display this pose source: {exc}")
+    st.stop()
+sp.render(playable, frames, source.fps, session=source.session, poses_path=source.poses,
+          original_video=source.video)

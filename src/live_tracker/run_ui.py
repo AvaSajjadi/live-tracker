@@ -10,7 +10,10 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
+
+from .ui_style import note, color_actions, event_notice
 
 from . import monitor_runner as mr
 from . import run_control as rc
@@ -22,7 +25,7 @@ RULE_WORKFLOW_KEY = "rule_workflow"            # set by the Rules page
 SCHEDULE_WORKFLOW_KEY = "schedule_workflow"    # set by the Rules page, run schedule part
 SELECTED_KEY = "run_selected"
 STATE_TEXT = {"waiting": ":orange[Waiting for the start time]", "ready": ":orange[Ready, waiting for GO]", "running": ":green[Running]",
-              "finishing": ":orange[Writing the report]", "finished": ":blue[Finished]", "failed": ":red[Failed]"}
+              "finishing": ":orange[Writing the report]", "finished": ":green[Finished]", "failed": ":red[Failed]"}
 OUTCOME_TEXT = {"complete": "complete", "partial": "partial: part of the planned time is missing",
                 "stopped": "stopped early", "no_data": "no data", "failed": "failed"}
 
@@ -68,19 +71,20 @@ def render():
 def render_start():
     st.subheader("Start a run")
     rules, schedules = approved_rules(), usable_schedules()
-    if not rules:
-        st.warning("No approved rule yet. Confirm a rule on the Rules page first.")
-    if not schedules:
-        st.warning("No approved schedule yet. Confirm a run schedule on the Rules page first.")
+    missing = [label for label, ready in (("rule", rules), ("run schedule", schedules)) if not ready]
+    if missing:
+        st.warning("Before starting, confirm a " + " and a ".join(missing) + " on the Rules page.")
 
     sources = rc.available_sources()
     enabled = [s for s in sources if s["enabled"]]
     chosen_schedule = st.selectbox("Schedule", schedules, format_func=lambda s: f"{s.schedule_id}: {s.describe()}",
                                    key="run_schedule_choice") if schedules else None
     source = st.radio("Frames come from", enabled, format_func=lambda s: s["label"], key="run_source_choice")
-    for s in sources:
-        if not s["enabled"]:
-            st.caption(f"{s['label']}: not available, {s['reason']}.")
+    with st.expander("More info"):
+        st.caption("Recorded keypoints are scored by Model B; camera image inference is unavailable.")
+        for s in sources:
+            if not s["enabled"]:
+                st.caption(f"{s['label']}: not available, {s['reason']}.")
     spec = {"kind": source["kind"]}
     if source["kind"] == "keypoints":
         sessions = rc.validation_sessions()
@@ -134,27 +138,27 @@ def run_panel(run_dir):
     st.markdown(f"**{STATE_TEXT.get(status['state'], status['state'])}**"
                 + (f" ({OUTCOME_TEXT.get(status.get('outcome'), status.get('outcome'))})" if status.get("outcome") else ""))
     if status.get("message"):
-        st.caption(status["message"])
+        note("error" if status["state"] == "failed" else "caption", status["message"])
     if rc.is_stale(status):
         if rc.run_is_over(run_dir, status):
-            st.error("The run program is no longer running (a power cut or an error), and no report was written. "
-                     "Answers you give now go straight into the event log. See runner.log in the run folder.")
+            note("error", "The run program is no longer running and no report was written.",
+                 "A power cut or error may have stopped it; see runner.log in the run folder. "
+                 "Answers you give now go straight into the event log.")
         else:
-            st.error("The run program has not reported for a while. It may have stopped (a power cut or an error). "
-                     "See runner.log and error.txt in the run folder.")
+            note("error", "The run program has not reported for a while and may have stopped.",
+                 "Check runner.log and error.txt in the run folder for a power cut or error.")
     if status.get("interrupted_now"):
         st.warning("The video source is interrupted right now. The program keeps trying to reconnect.")
     if status.get("schedule"):
         st.caption(rs.RunSchedule.from_dict(status["schedule"]).describe())
     st.progress(rc.progress(status), text=f"{_clock(status.get('seconds_left', 0))} left")
 
-    c = st.columns(5)
-    c[0].metric("Frames", status.get("frames", 0))
-    c[1].metric("Alerts", status.get("alerts", 0))
-    c[2].metric("Questions", status.get("asks", 0))
-    c[3].metric("Unanswered", status.get("unanswered", 0))
-    c[4].metric("Interruptions", status.get("interruptions", 0))
-    st.caption(f"Source: {status.get('source') or 'unknown'}. Last report from the program: {status.get('heartbeat_at', '?')}.")
+    render_events(run_dir, status)
+    with st.expander("Run details"):
+        st.caption(f"Frames: {status.get('frames', 0)} · Alerts: {status.get('alerts', 0)} · "
+                   f"Questions: {status.get('asks', 0)} · Unanswered: {status.get('unanswered', 0)} · "
+                   f"Interruptions: {status.get('interruptions', 0)}")
+        st.caption(f"Source: {status.get('source') or 'unknown'}. Last update: {status.get('heartbeat_at', '?')}.")
 
     if status["state"] in rc.ACTIVE_STATES:
         if rc.stop_requested(run_dir):
@@ -163,7 +167,6 @@ def run_panel(run_dir):
             rc.stop_run(run_dir)
             st.rerun()
 
-    render_events(run_dir, status)
     report = rc.read_report(run_dir)
     if report is not None:
         md, js = report
@@ -186,17 +189,21 @@ def render_events(run_dir, status):
     if not events:
         st.caption("No event yet.")
         return
+    important = next((e for e in reversed(events) if e["action"] in ("alert", "ask")), None)
+    if important:
+        event_notice(important, _clock(important["start_s"]))
     pending = rc.pending_answers(run_dir)
     rows = [{"event": e["event_id"].rsplit("-", 1)[-1], "action": e["action"], "behavior": e["behavior"],
              "from": _clock(e["start_s"]), "confidence": round(e["confidence"], 2),
              "answer": e.get("researcher_answer") or ("sent, waiting for the run" if e["event_id"] in pending else "")}
             for e in events]
-    st.dataframe(rows, hide_index=True, width="stretch")
+    st.dataframe(color_actions(pd.DataFrame(rows)), hide_index=True, width="stretch")
     for e in events:
         if e["action"] != "ask" or e.get("researcher_answer") or e["event_id"] in pending:
             continue
-        st.markdown(f"**Question {e['event_id'].rsplit('-', 1)[-1]}:** possible {e['behavior']} at {_clock(e['start_s'])} "
-                    f"into the run, confidence {e['confidence']:.2f}.")
+        if e is not important:
+            event_notice(e, _clock(e["start_s"]))
+        st.markdown(f"**Review question {e['event_id'].rsplit('-', 1)[-1]}**")
         a, b = st.columns(2)
         if a.button("Confirm", key=f"run_confirm_{e['event_id']}", type="primary"):
             rc.answer_event(run_dir, e["event_id"], "confirmed")

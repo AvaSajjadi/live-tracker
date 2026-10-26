@@ -1,4 +1,4 @@
-"""Tests for the USB camera choice on the Upload step (fake camera, no hardware)."""
+"""Tests for the Camera page: USB camera, live video, corners, record and analyze, staged demo (fake camera, no hardware)."""
 
 from pathlib import Path
 
@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 from live_tracker import camera_check as cc
 
-PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "0_Upload.py")
+PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "7_Camera.py")
 PNG = cv2.imencode(".png", np.zeros((8, 8, 3), dtype=np.uint8))[1].tobytes()
 
 
@@ -38,10 +38,7 @@ def open_usb(monkeypatch, snapshot):
     from live_tracker import run_sources as rsrc
     monkeypatch.setattr(cc, "snapshot", snapshot)
     monkeypatch.setattr(rsrc, "open_camera", lambda device: FakeCap())      # the live video never touches a real camera
-    at = AppTest.from_file(PAGE, default_timeout=30).run()
-    at.radio(key="upload_choice").set_value("Connect a camera").run()
-    at.radio(key="upload_camera_kind").set_value("USB camera").run()
-    return at
+    return AppTest.from_file(PAGE, default_timeout=30).run()
 
 
 def test_a_working_camera_can_be_chosen_and_the_pose_model_gap_is_said(monkeypatch):
@@ -71,9 +68,16 @@ def test_changing_the_number_asks_for_a_new_test(monkeypatch):
     assert not any(b.key == "upload_use_camera" for b in at.button)
 
 
-def test_choosing_a_usb_camera_drops_the_demo_camera(monkeypatch):
-    at = open_usb(monkeypatch, lambda device, opener=None: (PNG, None))
-    assert "flow_source" not in at.session_state
+def test_opening_the_camera_page_drops_the_simulated_demo_camera_of_the_upload_page(monkeypatch):
+    from live_tracker import flow
+    from live_tracker import uploads as up
+    monkeypatch.setattr(cc, "snapshot", lambda device, opener=None: (PNG, None))
+    at = AppTest.from_file(PAGE, default_timeout=30)
+    at.session_state[flow.SOURCE_KEY] = up.SessionSource("demo", "Demo camera (recorded-video simulation)", video="v.mp4", poses="p.parquet",
+                                                         session="task1/train/x")
+    at.run()
+    button(at, "upload_test_camera").click().run()
+    assert not at.exception and at.session_state[flow.SOURCE_KEY] is None if flow.SOURCE_KEY in at.session_state else True
 
 
 def test_the_screen_corners_are_saved_with_the_camera_and_shown_stretched(monkeypatch):

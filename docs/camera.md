@@ -25,14 +25,14 @@ Steps 4 to 7 are built and tested. Step 3 is the gap.
 **A. Demo camera** (Upload page, "Demo camera").
 No real camera. A recorded video plays, and the program reads the saved CalMS21 keypoints.
 
-**B. Staged demo** (Upload page, "USB camera", then "Staged demo").
+**B. Staged demo** (Camera page, "Staged demo").
 - A USB camera films the iPad. The page shows the live camera video (`camera_live.py`). This part is real.
 - Behind it, the program reads the **saved keypoints** of the same video at real speed.
 - The alerts come from those saved keypoints, **not from the camera picture**.
 - The researcher presses GO and presses play on the iPad at the same moment. The error is about 0.3 seconds.
 - The page shows a yellow "STAGED DEMO" box, so nobody is misled.
 
-**C. Real camera run** (Upload page, "USB camera", then "Real pose model").
+**C. Real camera run** (Camera page, "Live real pose").
 - `CameraSource` in `run_sources.py` opens the camera, reads pictures, and sends each one to the pose model.
 - It numbers the frames by time, and it tries to reconnect if the camera drops out.
 - If no pose model is set up, the run is refused and the page says why.
@@ -44,7 +44,7 @@ No real camera. A recorded video plays, and the program reads the saved CalMS21 
 |---|---|
 | List cameras and check one works | `camera_check.py`, `scripts/find_cameras.py` |
 | Keep one camera open and share it between pages | `camera_live.py` |
-| Live video, corner sliders, choice of staged or real | `upload_ui.py` |
+| Live video, corner dragging, record and analyze, staged or real (own page: Camera) | `camera_ui.py`, `corner_picker.py`, `pages/7_Camera.py` |
 | Stretch the iPad video to 1024 x 570 | `screen_map.py` |
 | Read pictures, reconnect | `run_sources.py` (`CameraSource`) |
 | The empty slot for the pose model | `pose_model.py` |
@@ -109,7 +109,7 @@ about 5 minutes, and 1 minute of video takes about 25 minutes. Start with a shor
 
 **In the app (recommended):**
 
-1. Upload step, "Connect a camera", "USB camera", press **Test the camera**. The live video starts.
+1. Open the **Camera** page (left menu) and press **Test the camera**. The live video starts. (The Upload page is for recorded data only.)
 2. Drag the 4 red corners onto the 4 corners of the video on the screen. Check the stretched view.
 3. Mode **"Record, then analyze with MARS"** (the default). Press **Start recording**, play the video on the screen, press
    **Stop recording** (10 to 20 seconds first). The recording is saved as 1024 x 570 at 30 frames per second in
@@ -122,13 +122,13 @@ About 45 s of the time is start-up, then about 1.2 frames per second.
 **On the command line (same result):**
 
 1. Record the camera video (for example with the Windows Camera app). Keep the screen steady in the picture.
-2. In the app, Upload step: drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook"
+2. In the app, Camera page: drag the 4 corners on the live video. Copy the line "Corners for the Colab notebook"
    (it works for the local command too).
 3. Run, from the project folder (keypoints.parquet and stretched.mp4 appear in the folder you run it from):
 
        scripts\mars_local.cmd my_video.mp4 --corners 0.23,0.22,0.81,0.22,0.81,0.65,0.23,0.65 --max-frames 300
 
-4. In the app: Upload > "Upload a video and its keypoints", choose `stretched.mp4` and `keypoints.parquet`. Then Rules and
+4. In the app: Upload page, "Upload a video and its keypoints", choose `stretched.mp4` and `keypoints.parquet`. Then Rules and
    Real session as usual.
 
 Note: OpenCV on this laptop cannot write H.264, so the recording is an older mp4 format. It is fine for the analysis. To see it in

@@ -1,4 +1,4 @@
-"""Camera page: connect a USB camera, set the screen corners, record and analyze, or use the staged demo (new file).
+"""Camera page: connect a USB camera, set the screen corners, analyze it live or record and analyze (new file).
 
 Rendering only; see live_tracker.camera_ui. The Upload page (recorded data) is Syed's; the camera screens live here."""
 

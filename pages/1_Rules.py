@@ -31,8 +31,6 @@ BACKEND_LABELS = {
     "Offline parser + Claude cross-check (paid API call)": "claude",
     "Claude reads the sentence (stronger with loose wording, paid API call)": "claude_interpret",
 }
-INTERPRETED_BY = {"offline": "smart reading (offline, free)", "claude": "offline parser + Claude cross-check",
-                  "claude_interpret": "Claude (paid), checked by code"}
 
 # a missing or malformed stored value is replaced, never read as rules
 recovered = WORKFLOW_KEY in st.session_state and not is_valid_workflow(st.session_state[WORKFLOW_KEY])
@@ -46,7 +44,6 @@ st.title("Monitoring rules")
 if recovered:
     st.error("The stored rule session was invalid and has been reset. No rules are approved; "
              "please enter and confirm your rules again.")
-st.caption("Describe what to monitor, propose a rule, then review and Confirm to approve it.")
 
 backend_label = st.radio("Interpretation", list(BACKEND_LABELS), index=0)
 backend = BACKEND_LABELS[backend_label]
@@ -127,12 +124,6 @@ if wf.pending is not None:
         st.markdown(f"**{info['behavior']}** · {info['min_duration']} · {info['alert_mode']}")
         st.markdown(f"**Ask threshold:** {info['ask_threshold']}  \n"
                     f"**Alert threshold:** {info['alert_threshold']}")
-        st.caption(f"Interpreted by {INTERPRETED_BY[pending.backend]}.")
-        st.warning("Not active until you click Confirm; review the thresholds and assumptions.")
-        if info["assumptions"]:
-            st.markdown("**Assumptions to check**\n" + "\n".join(f"- {a}" for a in info["assumptions"]))
-        with st.expander("More info"):
-            st.json(info["rule_json"], expanded=False)
         yes, no = st.columns(2)
         confirm = yes.button("Confirm", key=f"rule_confirm_{pending.token}", type="primary", width="stretch")
         reject = no.button("Reject", key=f"rule_reject_{pending.token}", width="stretch")

@@ -416,11 +416,17 @@ def make_source(spec, root=ROOT):
             if estimator is None:
                 raise NoPoseModelError(reason)
         if spec.get("screen") is not None:      # the camera films a screen: stretch the video part to the CalMS21 frame first
-            from .screen_map import ScreenError, with_screen
+            from .screen_map import ScreenError, check_corners, with_screen
             try:
-                estimator = with_screen(estimator, spec["screen"])
+                if spec.get("preview"):
+                    check_corners(spec["screen"])
+                else:
+                    estimator = with_screen(estimator, spec["screen"])
             except ScreenError as exc:
                 raise SourceRefusedError(f"the screen corners cannot be used: {exc}") from exc
+        if spec.get("preview"):                 # also save the newest drawn picture for the page (it does the screen stretch itself)
+            from .pose_preview import with_preview
+            estimator = with_preview(estimator, spec["preview"], spec.get("screen"))
         if kind == "video_camera":
             path = Path(spec["path"])
             path = path if path.is_absolute() else root / path

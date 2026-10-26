@@ -1,5 +1,14 @@
 # Live Tracker
 
+> **About this copy.** This public repository holds the **minimum needed to run the demo**: the app (`app.py`, `pages/`),
+> the code (`src/`), the settings and the split manifest. The full project (tests, scripts, documentation, Colab notebooks,
+> working notes and the camera acceptance test) is kept in a private repository for the team. Where this README names
+> `docs/`, `tests/`, `scripts/` or `INTERFACES.md`, those files are in the private copy.
+>
+> **Not included, on purpose:** the CalMS21 data, the MARS models and data (CC BY-NC 4.0, non-commercial), and the trained
+> fast mouse pose model (`models/pose/`). Put your own model files in `models/` (the pose model settings are described in `docs/pose_model.md`, in the private copy).
+> The live camera path needs a pose model, `opencv-python-headless`, and for the fast model `ultralytics` (AGPL-3.0) and `openvino`.
+
 **Turning mouse pose data into researcher-approved behavior alerts, with every step kept honest about what the data
 can and cannot show.**
 
@@ -153,7 +162,7 @@ $env:PYTHONPATH = "src"
 
 Upload → Rules → Replay → Real session. Upload accepts recorded video with matching keypoints or a positions CSV.
 **Simulated camera (recorded video)** uses a local recording; its success message explicitly says no physical camera
-is connected. It requires the video and matching pose artifact described in [demo readiness](docs/demo_readiness.md).
+is connected. It requires the video and matching pose artifact described in demo readiness.
 A positions CSV gives motion only, without behavior alerts. Rules are proposed, reviewed and explicitly confirmed.
 Replay is read-only inspection of the Upload recording: its video with the matching recorded keypoints drawn in sync;
 it does not score or monitor. Real session uses the Upload source and approved rules. No camera-image inference is implemented.
@@ -281,7 +290,7 @@ The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.p
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q                     # Windows: .\.venv\Scripts\python.exe -m pytest -q
+.venv/bin/python -m pytest -q                     # private copy only (this public copy has no tests)
 ```
 
 - Every pull request and every push to `main` runs the full suite in GitHub Actions on `ubuntu-latest` and
@@ -321,9 +330,9 @@ The scripts in `scripts/` (`ablation.py`, `tune_quality.py`, `tune_attack_rule.p
 ## Investigation, replay and session summary
 
 Investigation offers synthetic demonstrations and saved real **validation** runs. The documented real
-validation run is described in [validation_run_v1.md](docs/validation_run_v1.md); browsing checks consistency of local
+validation run is described in validation_run_v1.md; browsing checks consistency of local
 records, not independent authenticity, and does not re-score data. This does not complete H5 on the held-out test set:
-that work remains subject to team agreement and Ava's approved run. See [demo readiness](docs/demo_readiness.md) for
+that work remains subject to team agreement and Ava's approved run. See demo readiness for
 required local artifacts and an offline backup.
 
 | Work | Status |
@@ -364,10 +373,10 @@ writes the event log, sends short messages (a log file, and a phone through ntfy
 at the end. A question left open can be answered the next morning.
 
 It works today with recorded data. **A real camera is not supported yet: there is no mouse pose model in this repository.**
-What was measured, the limits and a setup checklist: [`docs/lab_run.md`](docs/lab_run.md).
+What was measured, the limits and a setup checklist: `docs/lab_run.md`.
 The dashboard opens on a **guided flow**: Upload, Rules, Replay, Real session. On the Real session page the recording plays on one side and the
 live analysis runs on the other (a simulated live stream from a recording, not a camera):
-[`docs/demo_recording.md`](docs/demo_recording.md).
+`docs/demo_recording.md`.
 
 ## Project structure
 
@@ -379,7 +388,7 @@ pages/3_Investigation.py   Streamlit page: the evidence behind a replayed sessio
 pages/4_Real_Session.py    Streamlit page: recorded-data simulation and optional validation motion measurements
 src/live_tracker/          the package (quality, filters, features, calms21, classify, evaluate,
                            agent, claude_agent, rules, rule_workflow, monitor, event_log, ...)
-tests/                     pytest suite (synthetic fixtures only)
+tests/                     pytest suite (synthetic fixtures only); in the private copy only
 scripts/                   analysis scripts (sensitivity, ablation, quality tuning, dry runs)
 splits/split_manifest.json session-level train / validation / test split
 docs/                      CalMS21 schema notes, investigation tool contract

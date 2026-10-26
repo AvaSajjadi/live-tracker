@@ -60,7 +60,7 @@ It is released by the Stop button, by a new camera test, by a reset, and before 
    must be inside the picture.
 2. Put the browser-friendly copy of the demo video (`mouse064_task1_annotator1_web.mp4`, H.264) on the iPad. Do not press play yet.
 3. iPad brightness high, auto-dim off, no lamp or window reflecting in the glass.
-4. Upload step: choose "Connect a camera", then "USB camera". Press "Test the camera".
+4. Camera page (left menu): press "Test the camera".
 5. Move the 4 corner sliders until the green shape sits on the edge of the iPad video. The stretched view should be filled
    by the video, with no border.
 6. Choose "Staged demo", then "Use the staged demo".

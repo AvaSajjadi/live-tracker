@@ -21,6 +21,8 @@ from . import flow
 from . import biologist_report as bio
 from . import live_session as ls
 from . import monitor_runner as mr
+from . import camera_live
+from . import pose_model
 from . import run_control as rc
 from . import run_schedule as rs
 from . import schedule_workflow as sw
@@ -49,6 +51,7 @@ def chosen_limit_s():
 def _reset():
     for key in (KEY_RUN, KEY_VIDEO, KEY_SENT, KEY_SERIES):
         st.session_state.pop(key, None)
+    camera_live.release()
 
 
 def render():
@@ -61,8 +64,7 @@ def render():
         _reset()
         st.session_state[KEY_SOURCE] = source.to_dict()
     if source.kind == "camera":
-        st.info("A camera cannot be analysed yet: turning each camera picture into mouse keypoints needs a mouse pose "
-                "model, and this project does not have one. Choose a recording on the Upload step.")
+        render_camera(source)
         return
     if source.kind == "centers":
         render_centers(source)
@@ -79,6 +81,42 @@ def render():
         render_intro(source, rules)
     else:
         render_running(Path(run_dir), source)
+
+
+# ---- a real camera ----
+
+def render_camera(source):
+    rules = approved_rules()
+    if not rules:
+        st.warning("No approved rule yet. Go back to the Rules step and confirm a rule: the agent needs to know what to look for.")
+        return
+    if not demo.model_available():
+        st.warning("Model B is not on this computer (models/model_b), so the keypoints cannot be scored.")
+        return
+    run_dir = st.session_state.get(KEY_RUN)
+    if run_dir is not None:
+        counts(Path(run_dir))
+        panel(Path(run_dir), ls.camera_limit_s(chosen_limit_s()), source.fps)
+        return
+    estimator, why = pose_model.load()
+    limit = chosen_limit_s()
+    st.markdown(f"- **Camera:** {source.label}. This is a real camera, not a recording.\n"
+                f"- **Rules:** " + "; ".join(f"{r.behavior} for at least {r.min_duration_s:g} s "
+                                             f"(ask above {r.ask_threshold:g}, alert at {r.alert_threshold:g})" for r in rules)
+                + f".\n- **Time limit:** {_mmss(ls.camera_limit_s(limit))}"
+                + (" (the time you confirmed on the Rules page)." if limit else " (no time chosen on the Rules page)."))
+    if estimator is None:
+        st.error(why)
+        return
+    if st.button("Start the camera session", type="primary", key="live_start_camera"):
+        camera_live.release()                                     # the camera run opens the camera in its own program
+        try:
+            run_dir = ls.start_camera(source, rules, limit_s=limit)
+        except (mr.RunRefusedError, rs.ScheduleError, ValueError, OSError) as exc:
+            st.error(f"Not started: {exc}.")
+            return
+        st.session_state.update({KEY_RUN: str(run_dir), KEY_SENT: True})
+        st.rerun()
 
 
 # ---- a centers file: motion only ----
@@ -101,7 +139,75 @@ def render_centers(source):
 
 # ---- before the session starts ----
 
+STAGED_WARNING = ("STAGED DEMO. The camera picture is shown live, but the alerts are computed from the SAVED keypoints of the "
+                  "demo video, not from what the camera sees. There is no pose model in this demo.")
+
+
+def render_staged_intro(source, rules):
+    st.warning(STAGED_WARNING)
+    seconds = ls.length_s(source.poses, source.fps)
+    st.markdown(f"- **Camera:** {source.label}.\n"
+                f"- **Video on the screen:** {Path(source.video).name}, {_mmss(seconds)} long. Play it from the start.\n"
+                f"- **Rules:** " + "; ".join(f"{r.behavior} for at least {r.min_duration_s:g} s "
+                                             f"(ask above {r.ask_threshold:g}, alert at {r.alert_threshold:g})" for r in rules)
+                + ".\n- **Scores:** Model B's raw scores (not calibrated).")
+    limit = chosen_limit_s()
+    if limit is not None and limit < seconds:
+        st.markdown(f"- **Time limit:** the analysis stops after {_mmss(limit)} (the time you confirmed on the Rules page).")
+    st.caption("Steps: 1. Press Start. 2. Wait for 'Ready'. 3. Press GO and press play on the screen at the same moment.")
+    if st.button("Start the staged session", type="primary", key="live_start_staged"):
+        try:
+            run_dir = ls.start_live(source, rules, wait_for_go=True, limit_s=limit)
+        except (mr.RunRefusedError, rs.ScheduleError, ValueError, OSError) as exc:
+            st.error(f"Not started: {exc}.")
+            return
+        st.session_state.update({KEY_RUN: str(run_dir), KEY_VIDEO: False, KEY_SENT: False})
+        st.rerun()
+
+
+@st.fragment(run_every=0.5)
+def camera_preview(device, screen):
+    """The live camera picture (stretched to the video part when corners were set). Only shown, never analysed."""
+    image, why = camera_live.read(device)
+    if image is None:
+        st.error(f"The camera cannot be shown: {why}.")
+        return
+    import cv2
+    if screen:
+        from . import screen_map as sm
+        image = sm.warp(image, screen)
+    st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera picture (shown only)", width="stretch", output_format="JPEG")
+
+
+def render_staged_running(run_dir, source):
+    st.warning(STAGED_WARNING)
+    if KEY_SERIES not in st.session_state:
+        st.session_state[KEY_SERIES] = ls.motion_series(source.poses, source.fps)
+    length = ls.length_s(source.poses, source.fps)
+    left, right = st.columns([11, 9])
+    with right:
+        counts(run_dir)
+        camera_preview(source.device, source.screen)
+        status = rc.read_status(run_dir) or {}
+        if not st.session_state.get(KEY_SENT):
+            if status.get("state") == "ready":
+                st.success("Ready.")
+                if st.button("GO (press play on the screen at the same moment)", type="primary", key="live_go_staged"):
+                    rc.send_go(run_dir)
+                    st.session_state[KEY_SENT] = True
+                    st.rerun()
+            elif status.get("state") == "failed":
+                st.error("The run could not start.")
+            else:
+                st.info("Getting ready: loading the model and the keypoints.")
+    with left:
+        panel(run_dir, length, source.fps)
+
+
 def render_intro(source, rules):
+    if source.staged_camera:
+        render_staged_intro(source, rules)
+        return
     seconds = ls.length_s(source.poses, source.fps)
     playable = vw.playable_video(source.video) if source.has_video else None
     recording = source.label if source.kind == "demo" else f"{source.label}, {_mmss(seconds)} long"
@@ -147,6 +253,9 @@ def render_intro(source, rules):
 # ---- while it runs ----
 
 def render_running(run_dir, source):
+    if source.staged_camera:
+        render_staged_running(run_dir, source)
+        return
     playable = vw.playable_video(source.video) if source.has_video else None
     if KEY_SERIES not in st.session_state:
         st.session_state[KEY_SERIES] = ls.motion_series(source.poses, source.fps)
@@ -178,6 +287,31 @@ def counts(run_dir):
                 + badge(f"Questions: {status.get('asks', 0)}", "ask"), unsafe_allow_html=True)
 
 
+def _small_headings(text):
+    """Page view only: the theme makes Markdown headings very large, so a heading line becomes a bold line."""
+    lines = []
+    for line in text.split("\n"):
+        if line.startswith("# ") or line.startswith("## "):
+            line = f"**{line.lstrip('#').strip()}**"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _show_report(text):
+    """The report text; a Markdown table is shown as a small data table so it fits the box."""
+    text = _small_headings(text)
+    rows = [ln for ln in text.split("\n") if ln.startswith("|")]
+    if len(rows) < 3:
+        st.markdown(text)
+        return
+    cells = [[c.strip() for c in ln.strip("|").split("|")] for ln in rows]
+    before, _, after = text.partition(rows[0])
+    after = after.split(rows[-1], 1)[1]
+    st.markdown(before)
+    st.dataframe([dict(zip(cells[0], r)) for r in cells[2:]], hide_index=True, width="stretch")
+    st.markdown(after)
+
+
 def render_biologist_report(run_dir, report_json):
     """The written report for the biologist: Claude writes it when the button is clicked (one paid request)."""
     key = f"live_bio_{run_dir.name}"
@@ -192,16 +326,21 @@ def render_biologist_report(run_dir, report_json):
             with st.spinner("Claude is writing the report..."):
                 text, problem = bio.write(report_json)
             if problem:
-                st.error(f"Not written: {problem}")
-                return
+                text, plain_problem = bio.write_plain(report_json)       # no Claude: the program writes the facts
+                if plain_problem:
+                    st.error(f"Not written: {problem}")
+                    return
+                st.session_state[key + "_why"] = f"Claude could not write it ({problem}) so this is the plain report."
             st.session_state[key] = text
             st.session_state[key + "_note"] = bio.save_and_notify(run_dir, text)
         else:
             return
     with st.container(border=True):
-        st.markdown(text)
+        _show_report(text)
     st.download_button("Download the report (Markdown)", text, file_name=f"{run_dir.name}_report.md",
                        mime="text/markdown", key="live_bio_download", on_click="ignore")
+    if st.session_state.get(key + "_why"):
+        st.caption(st.session_state[key + "_why"])
     if st.session_state.get(key + "_note"):
         st.caption(st.session_state[key + "_note"])
 

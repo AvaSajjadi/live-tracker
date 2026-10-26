@@ -104,6 +104,17 @@ def write(report_json, *, client=None, config=None):
             f"Check the table; it is not written by Claude._\n\n{facts_table(f)}\n"), None
 
 
+def write_plain(report_json):
+    """(markdown, None) made by this program alone (no Claude, no cost), or (None, message). Same facts table."""
+    try:
+        f = facts(report_json)
+    except (ValueError, KeyError, TypeError) as exc:
+        return None, f"The run report could not be read ({type(exc).__name__})."
+    return (f"# Report for the biologist\n\n_Made by the program from the facts of the run. Claude did not write "
+            f"this text. Events are detections by a computer model on keypoint scores, not human labels. "
+            f"Check them by eye._\n\nRecording length: {f['recording_length']}.\n\n{facts_table(f)}\n"), None
+
+
 def save_and_notify(run_dir, markdown, env=None):
     """Save the report in the run folder and send a short phone message when ntfy is set up. Returns a sentence."""
     run_dir = Path(run_dir)
@@ -118,4 +129,4 @@ def save_and_notify(run_dir, markdown, env=None):
         "The report is saved. The phone message is off (no ntfy topic is set).")
 
 
-__all__ = ["DEFAULT_MODEL", "FILE_NAME", "facts", "facts_table", "write", "save_and_notify", "ClaudeUnavailable"]
+__all__ = ["DEFAULT_MODEL", "FILE_NAME", "facts", "facts_table", "write", "write_plain", "save_and_notify", "ClaudeUnavailable"]

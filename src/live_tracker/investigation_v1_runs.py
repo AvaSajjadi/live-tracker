@@ -74,21 +74,55 @@ def offline_dir():
 
 # ---- inputs and configuration ----
 
+# The "repacked" score zip named below is not available to the team (Igor and Syed do not have it). Igor's own handoff zip,
+# igor_scores_validation_model_b.zip, holds the SAME score file: scores_validation_model_b.csv, SHA-256 ff00f6fe...a008676
+# (checked inside the CLI, unchanged). Only the zip packing differs. So the page also accepts that zip, by its own checksum.
+# Decided by the project owner on 2026-10-25; Syed should review it. Any other zip is still refused by the CLI.
+ORIGINAL_ARCHIVE_SHA256 = "e45e63c156413afa0a3fa32c9355ed2fb7210a9503241c19fe4663fc8d496149"
+
+
 @dataclass(frozen=True)
 class ValidationInputs:
     """The verified CalMS21 validation inputs of Phase 3B.1 (paths relative to the repository root, as run5's)."""
     label: str = "CalMS21 validation split: Igor's model B scores + verified pose cache (14 sessions, 94,305 frames)"
     archive: str = str(Path.home() / "Downloads" / "igor_scores_validation_model_b_repacked.zip")
     archive_sha256: str = "5c1a81e40ca12f00dea0ae511708b7d534d42e8b1feb43948af338b8b5c23427"
+    archive_alternatives: tuple = (str(Path.home() / "Downloads" / "igor_scores_validation_model_b.zip"),)
+    archive_alternative_sha256: tuple = (ORIGINAL_ARCHIVE_SHA256,)
     member: str = "scores_validation_model_b.csv"
     cache_dir: str = "data/raw/calms21_validation"
     manifest: str = "splits/split_manifest.json"
     runs_dir: str | None = None                # recorded Phase 2 runs (default: validation_run_view's)
     allow_synthetic: bool = False              # tests only
 
+    def archive_candidates(self):
+        """The archive paths to try, in order. The alternatives are not used in tests (allow_synthetic)."""
+        return [self.archive] + ([] if self.allow_synthetic else list(self.archive_alternatives))
+
+    def resolved_archive(self):
+        """The first archive that exists (the repacked zip wins), else the default path."""
+        for candidate in self.archive_candidates():
+            path = Path(candidate).expanduser()
+            if path.is_file():
+                return str(path)
+        return self.archive
+
+    def archive_digest(self):
+        """The checksum to give the CLI as --archive-sha256: the archive's own, if it is one of the accepted ones, else the
+        expected one (so the CLI refuses any other file exactly as before)."""
+        accepted = (self.archive_sha256,) + (() if self.allow_synthetic else tuple(self.archive_alternative_sha256))
+        try:
+            h = hashlib.sha256()
+            with open(self.resolved_archive(), "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+        except OSError:
+            return self.archive_sha256
+        return h.hexdigest() if h.hexdigest() in accepted else self.archive_sha256
+
     def problems(self):
         out = []
-        if not Path(self.archive).expanduser().is_file():
+        if not any(Path(c).expanduser().is_file() for c in self.archive_candidates()):
             out.append(f"score archive not found: {Path(self.archive).name}")
         if not (Path(self.cache_dir) / "extraction_index.json").is_file():
             out.append(f"verified validation cache not found at {self.cache_dir}")
@@ -388,7 +422,7 @@ def execute(config, inputs, *, confirm_budget_usd, authorization, paid=True, roo
     lr = script("investigation_v1_live")
     root = Path(root or live_dir())
     name = new_run_name()
-    argv = [inputs.archive, "--archive-sha256", inputs.archive_sha256, "--out", str(root / name),
+    argv = [inputs.resolved_archive(), "--archive-sha256", inputs.archive_digest(), "--out", str(root / name),
             *config.argv(inputs)]
     if config.validation_run:
         argv += ["--validation-run", config.validation_run] + (["--runs-dir", inputs.runs_dir] if inputs.runs_dir

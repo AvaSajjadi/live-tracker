@@ -79,3 +79,9 @@ def test_page_shows_no_run_details(tmp_path):
     at.run()
     assert not at.exception
     assert not at.metric and not at.dataframe and not at.slider and not at.radio
+
+
+def test_a_real_camera_says_it_has_no_recording_to_replay():
+    at = start(workflow(), **{flow.SOURCE_KEY: SessionSource("camera", "USB camera 0", device="0")})
+    text = " ".join(i.value for i in at.info)
+    assert "no recording to replay" in text and "Staged demo" in text

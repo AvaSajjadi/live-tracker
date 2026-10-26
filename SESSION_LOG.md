@@ -238,3 +238,230 @@ Notes:
 - Tests: `tests/test_biologist_report.py` (fake client, no network) and two page tests.
 - Not tried with a real Claude key yet. The model is `$LIVE_TRACKER_CLAUDE_MODEL`, or `claude-sonnet-5-5`.
 - Lesson: patching `urllib.request.urlopen` did not stop the ntfy class (it keeps its own copy). Patch `NtfyNotifier.send` in tests. One test may have sent one harmless message to ntfy.sh topic "longrandomtopic" before the fix.
+
+## Part 6 - 2026-10-25 (Review of the demo, no code changed)
+1. Read the log, the branch commits, `docs/demo_recording.md`, `skeleton_player.py`, `pages/2_Replay.py`, `biologist_report.py`, `live_view.py`.
+2. Ran `pytest` on `test_biologist_report.py`, `test_replay_page.py`, `test_session_view.py`, `test_demo_smoke.py`: 23 passed. (Runs the tests; no files changed.)
+3. Found: `docs/demo_recording.md` is out of date (Demo mode line, Confirm button, assumptions list, video side). `save_and_notify` has no error handling for the file write. Skeleton canvas is not checked in a browser. Full test run still not done.
+4. Next: fix the doc, check Replay in a browser, full test run, Syed reviews PR #38.
+
+## Part 7 - 2026-10-25 (Real backend, step 1 and 2: the camera)
+1. Plan from the user: make the demo real, starting with the camera. Choices: build the pose-model plug-in only (no model yet), USB webcam first.
+2. Installed OpenCV in the project Python: `.\.venv\Scripts\python.exe -m pip install opencv-python-headless` (lets the program open a camera).
+3. New `src/live_tracker/pose_model.py`: the slot for a pose model (picture to keypoints), checks the model output on every frame. `docs/pose_model.md` explains it. No backend ships yet.
+4. `run_sources.py`: `make_source({"kind": "camera"})` now checks the pose model first, then opens the real camera (number or address) and can reconnect. New `camera_device`.
+5. New `src/live_tracker/camera_check.py`: is OpenCV there, does the camera give a picture, is there a pose model.
+6. Upload page: "Connect a camera" now has two types: Demo camera (recorded video, as before) and USB camera (number box, "Test the camera" shows one picture, "Use this camera"). `SessionSource` has a new `device` field.
+7. Tests: `tests/test_pose_model.py` (20), `tests/test_upload_camera.py` (4). 344 passed in the camera, flow, upload, replay, live view and run tests. Full suite not run.
+8. Bug found by a test and fixed: choosing USB camera kept the demo source selected in the background.
+9. Commits: d934f6e, 248fbb3 (pushed on `ava/demo-integration`).
+
+Not finished: the Real session page still says a camera cannot be analysed (`live_view.py`). A camera run needs: a run spec for the camera, a live panel that does not need a poses file or video, and the Rules page schedule as the time limit. No pose model exists. No real camera was tried (no hardware test).
+Next time: step 3 (start a camera run from the Real session page), then the pose model backend, then a real camera test.
+
+### Part 7, later: connecting the Nikon D7500 (2026-10-25)
+1. What we did, step by step
+   1. Tested camera numbers with OpenCV. Camera 0 = laptop webcam (640x480), works. Camera 1 (1024x768) gives a flat dark picture (brightness 7.6 every time, no change). It is NOT the Nikon: Windows lists "USB2.0 IR UVC WebCam" (the laptop infrared camera for face login), most likely camera 1.
+   2. Learned: the D7500 is a Nikon (not Canon). It has Wi-Fi and Bluetooth (SnapBridge), but they send photos, not a live video stream our program can read. So we need a cable: USB with Nikon Webcam Utility, or HDMI with a capture card (better for overnight runs).
+   3. A phone can also be a camera (IP Webcam on Android, or DroidCam/Camo): type its address in the camera box. Good for a test, weak for all-night runs.
+   4. The user installed Nikon "Webcam Utility" 1.1.1.30000 (today). Windows sees the D7500 only as a file device (WPD), not as a webcam. Windows Settings > Cameras shows only "USB2.0 HD UVC WebCam". Teams was running (it can hold the camera).
+   5. Started a second dashboard with the new code on port 8767 (the old one on 8766 was left alone).
+2. Commands we ran
+   - OpenCV test scripts: open camera numbers 0 to 5, read 20 to 30 pictures, print only size and brightness (no picture saved the second time).
+   - `Get-PnpDevice`: list camera and Nikon devices Windows sees (read only).
+   - Registry and folder look: check that Nikon Webcam Utility is installed (read only).
+   - `streamlit run app.py --server.port 8767` (background): the new dashboard.
+3. Files changed: none in this part (only this log).
+4. Problems
+   - Nikon does not show up as a webcam yet. No light on the camera at one point (power or battery). Lens cap was removed by the user.
+   - One test picture of the user (webcam, camera 0) is still in the scratchpad folder `...\scratchpad\cam0.png`. The user said no to deleting it. It is not in Git. Delete it by hand when you want.
+   - Two photos of the user's screen are in `Downloads` (`photo_5109786690603126395_y.jpg`, `photo_5109786690603126400_y.jpg`). Not in Git.
+5. Not finished
+   - Make the Nikon work as a webcam.
+   - Step 3: the Real session page for a camera. A pose model (none exists).
+6. What to do next time
+   1. Restart the computer, turn the D7500 on, plug in USB, wait 10 seconds.
+   2. Open Zoom or Teams and look for a Nikon camera name. Tell the assistant the names.
+   3. Camera on video mode with Live View (LV) on. Check the D7500 is on Nikon's supported list.
+   4. If it still fails: HDMI cable and a capture card (clean HDMI out in the camera menu).
+   5. Then run the camera test again (camera numbers 0 to 5, brightness must change between pictures).
+   6. Then step 3 and the pose model.
+
+## Part 8 - 2026-10-25 (Web page back to demo only)
+1. What we did
+   1. The user asked to take the web version back to the demo only.
+   2. We undid commit 248fbb3 (the USB camera choice on the Upload page) with `git revert`. The Upload page is now Demo camera only, as before.
+2. Commands
+   - `git revert --no-edit 248fbb3`: makes a new commit that undoes that one commit. History is kept.
+   - `pytest tests -k "upload or session_view or demo_smoke or replay"`: runs the web tests.
+3. Files changed: `src/live_tracker/upload_ui.py`, `src/live_tracker/uploads.py`, and `tests/test_upload_camera.py` (deleted) - all by the revert.
+4. Problems: 2 tests in `test_session_view.py` fail when run together with the others. They fail the same way before our change. They pass when run alone. So it is a test order problem, not new.
+5. Not finished: the camera code is still in the project but no page uses it: `pose_model.py`, `camera_check.py`, `make_source` camera, `scripts/find_cameras.py`. Nikon is still not a webcam.
+6. Next time: find out why the 2 tests fail in a group. Camera work waits until the user wants it back (`git revert` the revert to get the USB page back).
+
+### Part 8, later: all camera work removed
+1. The user said the camera option was still there. We also reverted `d934f6e` (pose model slot, camera check, camera in `make_source`) and `427a437` (camera scan script).
+2. Code, pages, tests and docs now match commit `53278e2` (the demo before the real camera work). Only the session log is different.
+3. The old dashboard on port 8766 is the demo version. The test dashboard on port 8767 is gone. Restart `streamlit run app.py` and press Ctrl+F5 in the browser.
+4. To get camera work back: `git revert` the three revert commits.
+
+### Part 8, later: Real session "Access is denied" (2026-10-25)
+1. Problem: Real session said "The run could not start: PermissionError [WinError 5] ... status.json.tmp -> status.json". Windows blocks the rename when the page has `status.json` open at the same moment.
+2. Fix: `_write_json` in `monitor_runner.py` now tries the rename up to 40 times (50 ms apart). New test in `tests/test_monitor_runner.py`.
+3. Not changed: the same rename pattern is in `event_log.write_jsonl`, `investigation_data.py` and `schedule_workflow.py`. They could fail the same way. Not seen yet.
+
+### Part 8, later: report button (2026-10-25)
+1. Problem: the "Write the report for the biologist" button did nothing useful. Two causes: (a) without a Claude key the button only showed an error; (b) the new `write_plain` had real line breaks inside a normal string, a syntax error, so the file could not load.
+2. Fix: `write_plain` in `biologist_report.py` now uses `\n`. If Claude cannot write, `live_view.py` shows a plain report made by the program, with a note saying why. New test in `tests/test_live_view.py`.
+3. Commands: `pytest tests -k "live_view or biologist"` runs the related tests (29 passed).
+4. Not tried: the real Claude request with a real key.
+
+### Part 8, later: report looks too big (2026-10-25)
+1. Problem: on the Real session page the report headings were huge (screenshot from the user).
+2. Fix: `_small_headings` in `live_view.py` makes `#` into `####` and `##` into `#####` for the page only. The saved and downloaded file is not changed.
+3. Not finished: the user may want more changes to the look (spacing, table, shorter text).
+
+Later: the smaller headings still looked big (the theme in `ui_style.py` sizes all headings). Now `_small_headings` turns heading lines into bold lines. Dashboard on 8766 restarted.
+
+Later: the report table was wider than the box (screenshot). New `_show_report` in `live_view.py` shows the Markdown table as a small data table (`st.dataframe`, full width). The text parts stay Markdown.
+
+## Part 9 - 2026-10-25 (Real camera, step 3)
+1. What we did
+   1. The user said the demo is basically fake and wants the real camera. Answers: they have a trained pose model (file not given yet), the camera is the Nikon D7500, and we restart from the old camera code.
+   2. Reapplied the old camera work with `git revert` on the three revert commits (`e675814`, `7415198`, `bdcddc2`). Pose model slot, camera check, scan script and USB camera choice are back.
+   3. Installed OpenCV (`pip install opencv-python-headless`) and ran `scripts/find_cameras.py`. Camera 0 (USB webcam) works. Camera 1 is the infrared camera (flat picture). No Nikon found.
+   4. Step 3 done: the Real session page can start a camera run. `live_session.py` has `camera_spec`, `camera_limit_s`, `start_camera`. `live_view.py` has `render_camera`. It shows the pose model error when there is none.
+2. Commands
+   - `git revert --no-edit <commit>`: undoes an earlier undo.
+   - `python scripts/find_cameras.py`: lists cameras and checks if the Nikon is a webcam.
+   - `pytest tests/test_live_view.py tests/test_live_session.py ...`: 82 passed.
+3. Files changed: `src/live_tracker/live_session.py`, `src/live_tracker/live_view.py`, `tests/test_live_view.py`, `tests/test_live_session.py`, this log.
+4. Problems: I again wrote a line break inside an f-string (syntax error). Fixed with `\n`.
+5. Not finished
+   - The pose model backend: needs the user's model file and its type. Then `register_backend` + `models/pose/pose_model.json`.
+   - The Nikon is not a webcam. Needs HDMI + capture card, or Nikon Webcam Utility working.
+   - No real camera run has been tried. A camera run time is the Rules time, else 30 minutes.
+   - Model B was trained on CalMS21 top-down view: a different view gives weak scores.
+6. Next time: get the pose model file, write the backend, test with the USB webcam (camera 0), then the Nikon.
+
+### Part 9, later: camera films an iPad (2026-10-25)
+1. The real presentation: a camera on a holder films an iPad that plays the demo video (CalMS21 `mouse064_task1_annotator1`, 1024 x 570, validation split).
+2. New `screen_map.py`: the researcher sets the 4 corners of the video; each picture is stretched to 1024 x 570 before the pose model. `SessionSource.screen` keeps the corners. `run_sources.make_source` and `live_session.camera_spec` pass them on. The Upload page has the corner sliders and shows the stretched picture.
+3. Tests: `tests/test_screen_map.py` and one more in `tests/test_upload_camera.py` (123 passed with the related tests). Docs: `docs/pose_model.md`.
+4. Not finished: the pose model file and backend (still missing). No real picture of an iPad was tried yet. The USB webcam (camera 0) is enough for this setup; the Nikon is not needed.
+5. Next time: get the pose model, test the corners with the webcam pointed at the iPad, check glare and brightness.
+
+### Part 9, later: pose model search (2026-10-25)
+1. The repo has NO mouse pose model (searched all 34 branches, history, ignored files, Downloads, zips). `pose_model.py` is only the empty slot. The demo read saved CalMS21 keypoints, never pictures.
+2. Tested the public DeepLabCut SuperAnimal-TopViewMouse (hrnet_w32 + fasterrcnn_resnet50_fpn_v2) on 5 s of the demo video, CPU only, in a separate env in the scratchpad (1.76 GB, DELETED after the test at the user's request).
+   - Speed: about 5.8 s per frame (detector about 5.7 s, pose network about 40 ms). Real time needs 0.033 s.
+   - Quality: a mouse found in only 31 of 150 frames, the second mouse never. With a lower detector cut-off (0.2) on 12 frames: no mouse found at all. Not usable on CalMS21-style footage.
+3. Found MARS (Segalin et al. 2021, the tool behind the CalMS21 keypoints): pretrained top-view pose models, v1.8, Caltech record 801be-66057 (models.zip 543 MB, license CC BY-NC 4.0, needs black and white mice). Not tried yet. Needs an older TensorFlow setup; GPU recommended; speed not reported.
+4. Not finished: no working pose model. Next: decide between trying MARS (old TensorFlow, may not run on this laptop) and the staged demo (camera films the iPad, saved keypoints are read, said openly).
+5. Small test files left in the scratchpad (about 6 MB). pip cache may hold some GB (not deleted).
+
+### Part 9, later: staged demo (2026-10-25)
+1. Built the staged demo, the safe plan for the presentation: a real USB camera films the iPad that plays the demo video; the page shows the camera live; the alerts come from the SAVED keypoints of that video (not from the picture). The page says this in a yellow box on the Upload step and on the Real session page.
+2. Upload page, USB camera: new choice "Staged demo" (the other choice is "Real pose model"). It creates a `demo` source with a camera number (`SessionSource.staged_camera`) and the screen corners.
+3. Real session page: `render_staged_intro`, `camera_preview` (live picture, stretched to the video part when corners are set), `render_staged_running` with a GO button. GO is pressed together with play on the iPad (about 0.3 s human delay).
+4. Tests: 106 passed (live view, upload camera, uploads, screen map, flow, live session, demo smoke). Not tried with a real camera and a real iPad yet.
+5. Not finished: real test with the webcam on the iPad; MARS try (543 MB models, old TensorFlow); the Nikon.
+
+### Part 9, later: live video on the Upload step (2026-10-25)
+1. The user: the camera works, but it should be video, not a picture. We asked what they meant; they chose "Live video on the Upload step too" only.
+2. New `camera_live.py`: ONE open camera shared by the Upload step and the Real session page (Windows lets only one program use a camera). `release()` is called by the Stop button, by the Test button before a new test, by the session reset, and before a real camera run starts.
+3. Upload page: after "Test the camera" it shows live video (`live_preview`, a fragment that runs about 10 times a second) with the screen outline and the stretched screen. "Stop the camera" releases it. Real camera speed measured: 15 pictures per second at 640 x 480.
+4. Tests: 93 passed (upload camera, live view, screen map, uploads, flow), with a fake camera. Real webcam checked only for speed, not through the page.
+5. Not done (not chosen): saving the camera as a video file in the run folder; smoother live video on the Real session page (it still refreshes about twice a second).
+
+### Part 9, later: camera doc (2026-10-25)
+1. Wrote `docs/camera.md` (the whole camera chain, the three ways the camera is used, which file does what, presentation setup, video quality needed, what is real). A copy is on the Desktop as `camera.md`.
+2. Restarted the dashboard on port 8766 after the live video work (it was running old code). Fresh page: press Ctrl+F5.
+3. Not finished: real test of the staged demo with the camera on the iPad; MARS test; optional camera video file and smoother live video on the Real session page.
+
+### Part 9, later: drag the corners (2026-10-25)
+1. The user wanted to set the grid (4 screen corners) by dragging. New `corner_picker.py`: an inline custom component (st.components.v2) draws the live camera picture on a canvas with 4 red handles; dragging works with mouse or touch; the corners go back to Python when a handle is let go. The 8 sliders are gone. A Reset button makes a new picker (new key) at the default corners.
+2. `upload_ui.py`: `live_preview` shows the picker and the stretched screen under it; the corners are read from the picker state (`_corners_now`).
+3. Tested in a real Chrome tab on the dashboard (port 8766, restarted): live video works, dragging corner 1 moved the outline and the stretched view changed. Unit tests: 41 passed (corner picker, upload camera, screen map, live view). The browser test used the real webcam and was released with Stop the camera.
+4. Known small thing: the browser console shows an occasional "Image source error" for the fast refreshing stretched picture (st.image 10 times a second). Harmless so far.
+5. Not finished: staged demo end-to-end with the real camera and the iPad; MARS; saving a camera video file.
+
+### Part 9, later: MARS pose model test (2026-10-25, user approved the download)
+1. Downloaded MARS models v1.8 (Caltech record 801be-66057, models.zip 543 MB, md5 verified, license CC BY-NC 4.0) and cloned neuroethology/MARS into the scratchpad (not in the project). Extracted only the `.pb` graphs (2 detectors for the black and the white mouse, 1 top-view pose model). Did NOT load the `.pkl` classifier files (pickle can run code).
+2. The models are frozen TensorFlow graphs, so they run with modern TensorFlow 2.21 on Python 3.12 (separate env `mars_env`, no old TensorFlow needed). Wrote `scratchpad/mars/mars_run.py`, a port of MARS_pose_machinery.py (resize to 299, detectors, crop to 256, hourglass heatmaps, argmax).
+3. Result on 20 frames (60 s of the demo video): both mice found in 20 of 20 frames; median error against the saved CalMS21 keypoints (made by MARS) 2 to 7 px (body about 190 px). Keypoint order matches the CalMS21 order directly. Degraded copy (small, blur, JPEG, dimmer, like a webcam filming a screen): both mice still found 20 of 20; most keypoints 3 to 8 px, but the white mouse's hips and tail base 17 to 37 px.
+4. Speed on this CPU after warm-up: about 0.9 s per frame (detectors about 160 ms each, pose about 540 ms). Needs 0.033 s for 30 fps live. DeepLabCut was 5.8 s per frame.
+5. Caveats: the comparison is MARS against MARS-made keypoints and these videos may be in its training data, so it does not prove it works on a phone screen or other mice. MARS needs one black and one white mouse, top view.
+6. Not finished: not wired into the project (`pose_model.py` backend); not tested on the live camera picture; speed ideas not tried (skip detectors by tracking boxes, batch, ONNX/OpenVINO, GPU).
+
+### Part 9, later: Colab route (2026-10-25)
+1. The user chose Google Colab. Wrote `scripts/mars_pose_offline.py` (video in, CalMS21 keypoints parquet out; optional screen corners; batches for a GPU; downloads the MARS models with an md5 check and only extracts the .pb files) and `colab/mars_pose_colab.ipynb` (GPU check, get script and models, choose video, corners and a 60-frame speed test, full run, quick look, download).
+2. Tested the script on this laptop (frames 1800+): median error 3.2 px against the saved keypoints; the project own upload check (`normalize_keypoints`) accepts the output file. 0.7 frames per second on CPU with batches. Not run on Colab yet.
+3. Upload page: the live preview now shows "Corners for the Colab notebook", one line of 8 numbers to copy.
+4. Tests: 81 passed (mars script helpers, notebook file, screen map, upload camera, corner picker, live view, uploads).
+5. Not finished: run the notebook on Colab and measure the GPU speed; a record-camera-to-file button in the app (today: record with the Windows Camera app); wiring MARS into pose_model.py for a live GPU machine.
+
+### Part 9, later: MARS runs locally (2026-10-25)
+1. The user decided to skip Colab and run MARS on this laptop.
+2. Set up a stable folder `C:\Users\AnTiC\mars_local` (outside Git): `models\` (the 3 .pb files, 328 MB) and `env\` (Python 3.12 venv with TensorFlow 2.21, numpy, opencv-python-headless, pandas, pyarrow). Deleted the temporary copies in the scratchpad (env, extracted models, models.zip, MARS code clone).
+3. New `scripts/mars_local.cmd` runs the offline script with those paths (defaults: keypoints.parquet and stretched.mp4 in the folder you run it from). Tested on 32 frames: works; steady speed about 1.2 frames per second after a 20 s warm-up (1 minute of video is about 25 minutes).
+4. Docs: `docs/camera.md` section 8 is now the local route (Colab kept as an option).
+5. Not finished: a record-to-file button in the app; speed-ups (skip detectors by tracking boxes, other model formats); live use (needs about 27 times more speed); wiring MARS into pose_model.py.
+
+### Part 9, later: record and analyze inside the app (2026-10-25)
+1. The user needs the camera to record and convert to keypoints. True real time is not possible on this laptop (Intel i7-1165G7, 4 cores, Intel Iris Xe, no NVIDIA; MARS about 0.85 s per frame, live needs 0.033). The user chose: staged demo for the live part, real pose offline.
+2. `camera_live.py` rewritten: a background thread (Grabber) reads the camera all the time, keeps the newest picture, and writes the recording (Recorder: fixed 30 frames per second, a 15 fps webcam gets each picture twice; with corners the screen is stretched to 1024 x 570). The camera is given back after 20 s if no page looks at it.
+3. New `mars_job.py`: starts scripts/mars_pose_offline.py in the background with the mars_local env, reads progress from mars.log and a .done.json file (the script now writes it, also on failure).
+4. Upload page, USB camera: three modes (Record then analyze with MARS (default), Staged demo, Live real pose). Record: Start recording / Stop recording, Analyze with MARS (time estimate), progress bar, Use this recording (builds a video_keypoints source, 30 fps).
+5. Checked in a real Chrome tab with the real webcam: modes and buttons show, recording works (14 s, 427 frames, 1024 x 570, valid mp4). Real background job on a 40-frame clip of the demo video: progress, finished, result file (start-up about 45 s, then 1.2 fps). The test recording showed the user face (camera was not on the iPad), so it was deleted at once; MARS was not run on it.
+6. Tests: 120 passed in the related files before the last small change (camera live, mars job, mars script, upload camera, live view, screen map, corner picker, uploads, flow, replay, demo smoke).
+7. Not finished: OpenCV cannot write H.264 here, so the recording is old-format mp4 and the browser cannot play it without the optional imageio-ffmpeg (not installed; asked the user). Not tried: a full run on a real recording of the iPad. Live (30 fps) pose is not possible on this laptop.
+
+### Part 9, later: Live Agent page blocked (2026-10-25)
+1. The Live Agent page (`/Live_Agent`) says "score archive not found: igor_scores_validation_model_b_repacked.zip". It needs that exact file in Downloads (SHA-256 `5c1a81e40ca12f00dea0ae511708b7d534d42e8b1feb43948af338b8b5c23427`, set in `investigation_v1_runs.py`).
+2. Searched the repo (all branches and history), the disk and the other zips: the file is not here. The user has `igor_scores_validation_model_b.zip` (SHA-256 `e45e63c1...`, 24 Oct 17:17): it is a different zip, but its `scores_validation_model_b.csv` has the expected inner checksum `ff00f6fe...a008676`, so the data is the same, only the packing differs. `igor_models (1).zip` is an exact copy of `igor_models.zip` (models only).
+3. Decision: do NOT change Syed guard code. The user asks Igor for the exact repacked zip (message written in the chat). Option kept in reserve: accept the second archive checksum with a test and tell Syed.
+4. When the file arrives: put it in Downloads with the same name, check its SHA-256, reload the Live Agent page, run the free rehearsal (no key, no cost). A paid run needs a separate decision.
+5. Camera work status: Upload page has Record then analyze with MARS (default), Staged demo, Live real pose; live 30 fps pose is not possible on this laptop. Next: a real recording of the iPad; optional `imageio-ffmpeg` (not installed, asked).
+
+### Part 9, later: deep research on a much faster pose model (2026-10-25)
+1. Four researchers (mouse toolkits, fast generic frameworks, speeding up MARS, training data and Apple M5) and a report writer produced `docs/fast_pose_options.md` (copy of the report in the scratchpad `reports/`; notes in `research_notes/`). All speeds for this laptop and the M5 in it are GUESSES from other tests; nobody published a test on the i7-1165G7 or on an M5.
+2. Recommendation: do not speed up MARS; train a small, fast model that copies it. First choice YOLO26n-pose (AGPL-3.0, exports to OpenVINO for Intel and CoreML for the Mac); second choice RTMPose-t/s (Apache-2.0, top-down). Best data: MARS hand-labeled pose set, Caltech record 2011 (15,000 top frames, 1024x570, CC BY-NC 4.0, keep out of the public repo); CalMS21 points are MARS output (extra pseudo-labels, license unclear: use the stricter). Faster MARS (skip detectors, fewer stacks, OpenVINO) is only a fallback, about 5 to 10 fps by estimate.
+3. Next tests (need the user OK for each download): Test 1 laptop speed floor with a pretrained YOLO pose model (pip install ultralytics openvino); then download the MARS pose set (1.5 GB images + 21.6 MB json), convert labels to YOLO format, train on a GPU (Colab or Mac), measure accuracy (touching mice!) and speed on the laptop and the M5.
+
+### Part 9, later: Test 1, speed of a small YOLO pose model on this laptop (2026-10-25, user approved the install)
+1. Made `C:\Users\AnTiCastpose_test` (outside the project): a venv with ultralytics 8.4.189, openvino 2026.4.1, torch 2.14.1 CPU, opencv. Downloaded the small pretrained `yolo26n-pose.pt` (7.5 MB, human pose) by ultralytics. Speed only, no mouse accuracy.
+2. Result (1024x570 frames, 384x640 input): PyTorch CPU 64 ms; OpenVINO CPU 61 ms; **OpenVINO on the Intel Iris Xe graphics chip 16.5 ms (about 60 fps)**. Sustained 4 minutes: 14,258 frames, average 59 fps, median 14.8 to 18.4 ms, 99% of frames under 20 to 36 ms. The 33 ms target is met for this step on this laptop, with the integrated GPU.
+3. Scripts saved: `scripts/bench_yolo_pose_speed.py`, `scripts/bench_yolo_pose_sustained.py`. Results are in the appendix of `docs/fast_pose_options.md`.
+4. Not finished: train a mouse model (needs the MARS pose set, Caltech record 2011, 1.5 GB images + 21.6 MB json, CC BY-NC 4.0, user OK needed for the download; and a GPU for training: Colab T4 or the M5 MacBook on Tuesday); check accuracy (touching mice, mouse ID); measure the whole live chain; plug into the app.
+
+### Part 9, later: MARS pose training data ready (2026-10-25, user approved the download)
+1. Downloaded from Caltech Data record 2011 (CC BY-NC 4.0, not in Git): `MARS_keypoints_top.json` (md5 checked) and `raw_images_top.zip` (1.4 GB, md5 checked by the script) into `C:\Users\AnTiC\fastpose_test\data`; deleted the zip after extracting (re-download if needed).
+2. The labels: 15,000 pictures of 1024x570, per picture 7 keypoints for a "black" and a "white" mouse (median of 5 workers), none missing, none outside the picture; black mouse nose to tail base about 197 px (same as CalMS21 192 px). MARS order: nose, right ear, left ear, neck, right side, left side, tail base.
+3. New `scripts/mars_pose_to_yolo.py` makes the YOLO dataset in `C:\Users\AnTiC\fastpose_test\dataset` (images, labels, train.txt 13,500, val.txt 1,500, dataset.yaml). Two classes (0 black = resident = CalMS21 mouse "a", 1 white = intruder = "b"), kpt_shape [7,3], flip_idx [0,2,1,3,5,4,6], box = keypoints plus a 20%% margin. Checked 8 labeled pictures by eye: the points sit on the mice. Caveat: the test split is the last 1,500 pictures; the names do not say which video a picture is from, so the test accuracy may be a little too good. Check on new videos (the demo video, the iPad recording).
+4. Not finished: training (CPU would take about 55 hours; needs a GPU: Colab T4 about 1 to 3 h, or the M5 MacBook with MPS on Tuesday); accuracy check (touching mice); speed with the trained model; plug into the app.
+
+### Part 9, later: training scripts and notebook for the fast mouse pose model (2026-10-25)
+1. New `scripts/train_yolo_pose.py` (trains yolo26n-pose, falls back to yolo11n-pose; fliplr 0.5, flipud off because Ultralytics does not swap left and right keypoints for it, rotation 15 degrees), `scripts/eval_yolo_pose.py` (finds the most confident black and white mouse per test picture, median error per keypoint in pixels, share within 5 and 10 px, split into "touching" (centers closer than 120 px) and "apart"), `colab/train_yolo_pose_colab.ipynb` (GPU check, install, get scripts from GitHub, download data with md5 check, convert, optional Drive, train 50 epochs, evaluate, look at 6 pictures, download best.pt and eval.json), `tests/test_mars_pose_to_yolo.py` (5 tests).
+2. Smoke test on this laptop (CPU, 1 epoch, 1%% of the pictures, imgsz 320): training starts, the dataset, labels and flip map load, best.pt is written; the evaluation script runs (found 0 of 40, expected for 1 epoch). So the format and the scripts work. No real accuracy yet.
+3. The user chose Google Colab for the training. Waiting for the user to run the notebook (T4 GPU, about 1 to 3 hours) and bring back best.pt and eval.json. Then: export for OpenVINO and measure speed on the Iris Xe chip, check accuracy on the demo video and on iPad recordings, plug into the app.
+4. Igor and Syed say they do not have `igor_scores_validation_model_b_repacked.zip`. Igor integration report: the handoff bundle was `igor_score_drops.zip` (3 CSVs + SHA256SUMS) and `scores_validation_model_b.csv` has sha256 `ff00f6fe31d9348d177f7c548a21ce13cae8c30560d5234ca11f16e42a008676`: the same as the file inside the user's `igor_scores_validation_model_b.zip`. Open decision: let the Live Agent page accept the second archive checksum (`e45e63c1...`), keeping the inner checksum check, and tell Syed.
+
+### Part 9, later: Live Agent accepts Igor's original zip (2026-10-25, the user said YES)
+1. `investigation_v1_runs.py` (Syed's guard module): new `ORIGINAL_ARCHIVE_SHA256` (`e45e63c1...`), `ValidationInputs.archive_alternatives` and `archive_alternative_sha256`, and `resolved_archive()` / `archive_digest()`. The page uses the repacked zip if it exists, else `Downloads\igor_scores_validation_model_b.zip`, and gives the CLI that zip's own checksum only if it is the accepted one; any other file is still refused by the CLI. The check of the score file inside the zip (`ff00f6fe...a008676`) is unchanged. The alternatives are off for the synthetic test inputs (`allow_synthetic`).
+2. Reason: Igor and Syed do not have the repacked zip; Igor's report shows the same score file in his handoff zip.
+3. Tests: `tests/test_investigation_archive_alternative.py` (6) plus the Live Agent page and evidence tests (68 passed, 5 skipped). Checked with the real Downloads zip: no "score archive not found" and no other problems on this laptop.
+4. To do: tell Syed (it is his guard code). Not run yet: the free rehearsal on the page (needs the user to press the button; no key, no cost). A paid run needs a separate decision.
+
+### Part 9, later: live preview was too heavy (2026-10-25)
+1. While testing the staged demo in Chrome the page became slow and a screenshot timed out. The dashboard process had used 4441 CPU-seconds (a whole core all the time). Cause: the live preview sent a 1024x570 PNG ten times a second (24.7 ms of encoding each, about 1 MB each). Fix: the stretched view is shown at 640x356 as JPEG (4.0 ms), the live picture and the Real session picture are JPEG too. 39 related tests pass.
+2. The user asked: for each type of uploaded data we need an accuracy test and a precision test. Plan (not built yet): per data type (keypoints with labels, video+keypoints, centers CSV, camera recording, staged demo) define accuracy (closeness to truth) and precision (repeatability, and classification precision TP/(TP+FP)), run what has ground truth, report.
+3. Staged demo end-to-end with the real webcam in Chrome: started, interrupted by the slowness; to be redone after the restart of the dashboard.
+
+### Part 9, later: live chain acceptance, bugs found and fixed (2026-10-25)
+1. Built `scripts/live_camera_acceptance.py` (real run program on a camera or on a video played like a camera; PASS/WARN/FAIL per check; rehearsal with a stub), `scripts/realtime_pose_test.py` (live feed at 30 fps into a model: keep-up, lateness, accuracy), `pose_backends.py` (yolo and stub backends registered in `pose_model.py`), `PacedVideoCapture` and the `video_camera` source in `run_sources.py`, `scripts/accuracy_precision_report.py` and `docs/accuracy_precision_report.md`.
+2. Measured: MARS in a live feed processed 22 of 601 frames (3.7%), 1.03 fps, keypoints about 1 s late, median error 3.3 px vs saved keypoints; MARS vs hand labels median 6.5 px (35% within 5 px, 70% within 10 px; hips worst, about 12 px; touching mice about the same as apart); the full test suite: 4912 passed, 126 skipped, 11 xfailed, 2 failed (test_session_view, order-dependent, pass alone, not from this work).
+3. Bugs found by the rehearsals and fixed: the camera was read only on demand (pictures dropped in slow moments): reader thread with a 15-picture queue; frame numbers came from the clock (jitter made gaps, a 15 fps webcam made a gap per picture): small gaps filled with repeated keypoints; the scorer needs about 130 ms per chunk: live cameras use chunks of 15 frames; Stop recording could crash Python (access violation) while the camera thread wrote: lock in Recorder; a reader thread could spin when read() does not block: 2 ms sleep.
+4. Result with the real USB webcam and the stub: camera 25.3 pictures per second, run program 29.5 frames per second for 40 s, slowest 10 s 29.9, every score reached the monitor, 8 alerts and 1 question. The pose speed check is SKIPPED (stub): the model is the missing piece.
+5. The user is running `colab/train_yolo_pose_colab.ipynb` on a Colab T4 (T4 was connected; Gemini panel was open: told to close it and press Run all). Waiting for best.pt and eval.json. Nikon still charging.
+6. Not done: acceptance with the trained model; Nikon; browser test of the staged demo with the real camera (was interrupted by a slow page; the preview was fixed); the 2 order-dependent test_session_view failures.

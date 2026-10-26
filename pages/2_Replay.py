@@ -21,6 +21,10 @@ def _frames(poses, session, stamp, require_observed=False):
 
 
 source = flow.get_source()
+if source is not None and source.kind == "camera":
+    st.info("A real camera has no recording to replay, so this step has nothing to show. Press Next to continue. "
+            "(For the staged demo, choose 'Staged demo' on the Upload step: it has a video and saved keypoints to replay.)")
+    st.stop()
 if source is None or not source.has_video or not source.poses:
     st.info("Nothing to replay yet. On the Upload step, choose a video that has a keypoints file.")
     st.stop()

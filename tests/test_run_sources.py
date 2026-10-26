@@ -102,11 +102,32 @@ def test_camera_needs_a_pose_model():
 
 
 def test_camera_frames_are_numbered_from_the_clock_not_counted():
-    # jittery timestamps, one duplicate slot (0.001 s after the first) and a drop (frames 3-4 missing)
+    # jittery timestamps, one duplicate slot (0.001 s after the first) and a small drop (frames 3-4 missing)
     steps = [(10.000, True), (10.001, True), (10.034, True), (10.066, True), (10.170, True)]
     cam, _ = camera(steps)
-    frames = [cam.read().frame for _ in range(4)]
-    assert frames == [0, 1, 2, 5]                       # the duplicate was skipped; frames 3-4 were dropped
+    out = [cam.read() for _ in range(6)]
+    assert [f.frame for f in out] == [0, 1, 2, 3, 4, 5]          # the duplicate was skipped; frames 3-4 are repeats, so no gap
+    assert out[3].pose["x"].tolist() == out[2].pose["x"].tolist() and out[3].pose["frame"].iloc[0] == 3
+    assert out[4].pose["time_s"].iloc[0] == 4 / 30.0
+
+
+def test_a_slow_camera_gets_consecutive_frame_numbers_with_repeated_keypoints():
+    steps = [(20.0 + i / 15.0, True) for i in range(8)]            # a webcam that gives 15 pictures per second
+    cam, _ = camera(steps)
+    assert [cam.read().frame for _ in range(15)] == list(range(15))
+
+
+def test_a_fast_camera_is_cut_down_to_30_frame_numbers_per_second():
+    steps = [(30.0 + i / 60.0, True) for i in range(40)]           # 60 pictures per second
+    cam, _ = camera(steps)
+    frames = [cam.read().frame for _ in range(20)]
+    assert frames == list(range(20))
+
+
+def test_a_real_stall_stays_a_gap_and_is_not_filled():
+    steps = [(40.0, True), (40.0334, True), (40.60, True)]          # 0.57 s without a picture: 17 frame numbers
+    cam, _ = camera(steps)
+    assert [cam.read().frame for _ in range(3)] == [0, 1, 18]
 
 
 def test_camera_pose_rows_have_the_scorer_format():

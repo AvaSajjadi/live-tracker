@@ -54,10 +54,18 @@ class SessionSource:
     session: str | None = None
     centers: str | None = None          # CSV with x_a, y_a, x_b, y_b
     fps: float = FPS
+    device: str | None = None           # a real camera: its number ("0") or stream address; none means camera 0
+    screen: tuple | None = None         # a camera that films a screen: the 4 corners of the video (see screen_map.py)
 
     def __post_init__(self):
         if self.kind not in KINDS:
             raise UploadError(f"unknown source kind {self.kind!r}")
+        if self.screen is not None:
+            from .screen_map import ScreenError, check_corners
+            try:
+                object.__setattr__(self, "screen", check_corners(self.screen))
+            except ScreenError as exc:
+                raise UploadError(f"screen corners: {exc}") from exc
         if self.kind in SCORING_KINDS and not (self.poses and self.session):
             raise UploadError("this source needs a keypoints file")
         if self.kind == "centers" and not self.centers:
@@ -68,6 +76,11 @@ class SessionSource:
     @property
     def can_score(self):
         return self.kind in SCORING_KINDS
+
+    @property
+    def staged_camera(self):
+        """A real camera that films a recording (an iPad), while the numbers come from the recording's saved keypoints."""
+        return self.kind == "demo" and bool(self.device)
 
     @property
     def has_video(self):

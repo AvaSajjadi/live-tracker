@@ -83,9 +83,24 @@ def test_no_source_points_back_to_upload(env):
     assert "Go back to the Upload step" in texts(open_view().info)
 
 
-def test_a_camera_says_it_cannot_be_analysed_yet(env):
-    at = open_view({"flow_source": up.SessionSource("camera", "Camera")})
-    assert "mouse pose model" in texts(at.info) and not at.button
+def test_a_camera_without_a_pose_model_says_so_and_has_no_start_button(env):
+    root, _ = env
+    at = open_view(with_source(up.SessionSource("camera", "USB camera 0", device="0")))
+    assert "There is no pose model" in texts(at.error) and not button(at, "live_start_camera")
+
+
+def test_a_camera_with_a_pose_model_starts_a_camera_run(env, monkeypatch):
+    root, launched = env
+    monkeypatch.setenv("LIVE_TRACKER_POSE_MODEL", str(root / "pose_model.json"))
+    (root / "pose_model.json").write_text(json.dumps({"backend": "fake"}), encoding="utf-8")
+    from live_tracker import pose_model
+    pose_model.register_backend("fake", lambda settings, r: (lambda image: None))
+    at = open_view(with_source(up.SessionSource("camera", "USB camera 2", device="2")))
+    assert "real camera" in texts(at.markdown)
+    button(at, "live_start_camera")[0].click().run()
+    assert not at.exception and len(launched) == 1
+    cfg = json.loads(Path(launched[0]).read_text(encoding="utf-8"))
+    assert cfg["source"]["kind"] == "camera" and cfg["source"]["device"] == "2" and cfg["wait_for_go"] is False
 
 
 def test_a_centers_file_shows_motion_only(env):
@@ -307,6 +322,70 @@ def test_choosing_a_different_recording_resets_the_session(env):
     at.session_state["flow_source"] = other
     at.run()
     assert "live_run" not in at.session_state and button(at, "live_start")
+
+
+def test_without_claude_the_plain_report_is_shown(env, monkeypatch):
+    from live_tracker import biologist_report as bio
+    root, _ = env
+    run_dir = demo_run(root)
+    write_status(run_dir, "finished", frames=720, alerts=1, asks=0, max_lag_s=0.0)
+    (run_dir / "report.md").write_text("# Run report", encoding="utf-8")
+    (run_dir / "report.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bio, "write", lambda report_json: (None, "ANTHROPIC_API_KEY is not set."))
+    monkeypatch.setattr(bio, "write_plain", lambda report_json: ("# Report for the biologist plain", None))
+    monkeypatch.setattr(bio, "save_and_notify", lambda d, md: "The report is saved.")
+    at = open_view(running_state(source(root), run_dir))
+    button(at, "live_bio_write")[0].click().run()
+    assert not at.exception and "Report for the biologist plain" in texts(at.markdown)
+    assert "plain report" in texts(at.caption) and len(at.get("download_button")) == 1
+
+
+# ---- staged demo: a real camera films a screen, the numbers come from saved keypoints ----
+
+def staged_source(tmp_path):
+    base = source(tmp_path)
+    return up.SessionSource("demo", "Staged demo: camera 0 films the screen", video=base.video, poses=base.poses,
+                            session=base.session, device="0")
+
+
+class FakeCap:
+    def read(self):
+        import time
+        import numpy as np
+        time.sleep(0.01)
+        return True, np.full((60, 80, 3), 90, dtype=np.uint8)
+
+    def release(self):
+        pass
+
+
+def test_a_staged_demo_says_what_it_is_and_waits_for_go(env, monkeypatch):
+    from live_tracker import run_sources as rsrc
+    monkeypatch.setattr(rsrc, "open_camera", lambda device: FakeCap())
+    root, launched = env
+    at = open_view(with_source(staged_source(root)))
+    assert "STAGED DEMO" in texts(at.warning) and "SAVED keypoints" in texts(at.warning)
+    button(at, "live_start_staged")[0].click().run()
+    assert not at.exception and len(launched) == 1
+    cfg = json.loads(Path(launched[0]).read_text(encoding="utf-8"))
+    assert cfg["wait_for_go"] is True and cfg["source"]["kind"] == "poses_file"       # the saved keypoints, not the camera
+    assert "Getting ready" in texts(at.info) and not button(at, "live_go_staged")
+
+
+def test_a_staged_demo_shows_the_camera_and_go_is_sent_by_the_button(env, monkeypatch):
+    from live_tracker import run_sources as rsrc
+    monkeypatch.setattr(rsrc, "open_camera", lambda device: FakeCap())
+    root, launched = env
+    at = open_view(with_source(staged_source(root)))
+    button(at, "live_start_staged")[0].click().run()
+    run_dir = Path(launched[0]).parent
+    write_status(run_dir, "ready")
+    at.run()
+    assert not at.exception and isinstance(at.session_state["camera_live_grabber"].capture, FakeCap)   # the camera is open and shown
+    assert "STAGED DEMO" in texts(at.warning)
+    assert not (run_dir / "GO").exists()                                              # GO waits for the researcher
+    button(at, "live_go_staged")[0].click().run()
+    assert (run_dir / "GO").exists() and at.session_state["live_go_sent"] is True
 
 
 def test_finished_without_a_report_does_not_claim_it_is_ready(env):

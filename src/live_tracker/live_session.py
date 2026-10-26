@@ -23,6 +23,7 @@ from .calms21 import FPS, TORSO_KEYPOINTS
 MODEL = "models/model_b"
 EXTRA_S = 120.0                         # the schedule lasts this much longer than the recording, so it never ends first
 SCHEDULE_ID = "LIVE"
+CAMERA_DEFAULT_S = 1800.0               # a camera run with no time chosen on the Rules page stops after 30 minutes
 
 
 def length_s(poses_path, fps=FPS):
@@ -56,6 +57,32 @@ def start_live(source, rules, *, wait_for_go, now=None, launcher=None, limit_s=N
     config = rc.build_config(run_dir, live_schedule(length_s(source.poses, source.fps), now, limit_s=limit_s), rules, run_spec(source),
                              model=MODEL, speed=1.0, fps=source.fps)
     config.wait_for_go = bool(wait_for_go)
+    return rc.start_run(config, launcher=launcher)
+
+
+def camera_limit_s(limit_s=None):
+    """How long a camera run lasts: the time confirmed on the Rules page, else CAMERA_DEFAULT_S. A camera has no end."""
+    return float(limit_s) if limit_s else CAMERA_DEFAULT_S
+
+
+def camera_spec(source):
+    """The run_sources description of a real camera. No GO signal: the camera is already live."""
+    if source.kind != "camera":
+        raise mr.RunRefusedError("this source is not a camera")
+    spec = {"kind": "camera", "device": (source.device or "0").strip(), "session": "camera"}
+    if source.screen is not None:
+        spec["screen"] = [list(p) for p in source.screen]
+    return spec
+
+
+def start_camera(source, rules, *, now=None, launcher=None, limit_s=None):
+    """Start a run on a real camera with the researcher's approved rules. Returns the run folder."""
+    now = now or datetime.now(timezone.utc)
+    seconds = camera_limit_s(limit_s)
+    run_dir = rc.new_run_dir("CAMERA", now)
+    schedule = rs.for_hours(seconds / 3600.0, now=now, tz="America/New_York", schedule_id="CAMERA",
+                            description="Camera session").approve()
+    config = rc.build_config(run_dir, schedule, rules, camera_spec(source), model=MODEL, speed=1.0, fps=source.fps)
     return rc.start_run(config, launcher=launcher)
 
 

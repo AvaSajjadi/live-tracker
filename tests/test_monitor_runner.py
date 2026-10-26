@@ -311,6 +311,7 @@ def test_the_command_line_refuses_a_bad_run_and_says_why(tmp_path, monkeypatch, 
 
 def test_a_camera_run_is_refused_because_no_pose_model_exists(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(mr.signal, "signal", lambda *a: None)
+    monkeypatch.setenv("LIVE_TRACKER_POSE_MODEL", str(tmp_path / "no_such_pose_model.json"))     # not the local model of this computer
     cfg = config(tmp_path, source={"kind": "camera", "device": 0})
     path = tmp_path / "config.json"
     path.write_text(cfg.to_json(), encoding="utf-8")
@@ -439,3 +440,11 @@ def test_write_json_tries_again_when_windows_locks_the_file(tmp_path, monkeypatc
     monitor_runner._write_json(tmp_path / "status.json", {"a": 1})
     assert len(calls) == 3
     assert (tmp_path / "status.json").read_text(encoding="utf-8").count('"a": 1') == 1
+
+
+def test_a_camera_run_starts_its_time_when_it_is_ready_not_when_it_was_launched(tmp_path):
+    late = T0 + timedelta(seconds=45)                                       # loading the model and the camera took 45 s of a 60 s window
+    runner, _ = make_runner(tmp_path, clock_start=late, start_when_ready=True)
+    assert runner.schedule.start == late and (runner.schedule.end - runner.schedule.start) == timedelta(seconds=60)
+    with pytest.raises(mr.RunRefusedError, match="already ended"):          # without the flag the same late start would lose the window
+        make_runner(tmp_path / "other", clock_start=T0 + timedelta(seconds=90))

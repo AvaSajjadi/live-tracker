@@ -47,14 +47,14 @@ def new_run_dir(schedule_id, now=None, root=None):
     return path
 
 
-def build_config(run_dir, schedule, rules, source, *, model=None, speed=1.0, fps=30.0):
+def build_config(run_dir, schedule, rules, source, *, model=None, speed=1.0, fps=30.0, start_when_ready=False):
     """A RunConfig from an approved RunSchedule and approved Rule objects. Refuses anything not approved."""
     if schedule.status != "approved":
         raise mr.RunRefusedError("the schedule is not approved")
     if not rules or any(r.status != "approved" for r in rules):
         raise mr.RunRefusedError("every rule must be approved")
     return mr.RunConfig(run_dir=str(run_dir), schedule=schedule.to_dict(), rules=[r.to_dict() for r in rules],
-                        source=dict(source), model=model, speed=float(speed), fps=float(fps))
+                        source=dict(source), model=model, speed=float(speed), fps=float(fps), start_when_ready=bool(start_when_ready))
 
 
 def default_launcher(config_path):

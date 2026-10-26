@@ -62,8 +62,8 @@ def find_cameras(opener=None, numbers=TRY_NUMBERS):
 
 
 def _pose(root, env):
-    estimator, reason = pose_model.load(root, env)
-    return estimator is not None, "A pose model is set up." if estimator is not None else reason
+    ok, reason = pose_model.check(root, env)                  # not load(): loading a trained model takes seconds on every click
+    return ok, "A pose model is set up." if ok else reason
 
 
 def check(device, opener=None, root=None, env=None):

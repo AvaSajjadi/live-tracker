@@ -73,8 +73,8 @@ def check_output(found):
     return df
 
 
-def load(root=None, env=None):
-    """(pose function, None) when a pose model is set up, else (None, the reason in plain words)."""
+def _read_settings(root=None, env=None):
+    """(settings, None) when the settings file is there and names a backend this program has, else (None, the reason in plain words)."""
     path = config_path(root, env)
     if not path.is_file():
         return None, (f"There is no pose model. A camera needs one to turn each picture into mouse keypoints. "
@@ -84,11 +84,32 @@ def load(root=None, env=None):
         backend = settings["backend"]
     except (OSError, ValueError, KeyError, TypeError):
         return None, f"The pose model settings in {path.name} cannot be read (they need a \"backend\" name)."
-    factory = _BACKENDS.get(backend)
-    if factory is None:
+    if _BACKENDS.get(backend) is None:
         return None, f"The pose model backend {backend!r} is not available in this program."
+    return settings, None
+
+
+def check(root=None, env=None):
+    """(True, None) when a pose model looks set up, else (False, the reason). FAST: nothing is loaded and no model is prepared, so a page
+    can ask this on every click (load() takes seconds: it imports the model library and prepares the Intel GPU)."""
+    settings, reason = _read_settings(root, env)
+    if settings is None:
+        return False, reason
+    for key in ("weights", "poses"):                          # the files the backend will need, if the settings name them
+        if settings.get(key):
+            named = Path(settings[key])
+            if not (named if named.is_absolute() else Path(root or ROOT) / named).exists():
+                return False, "The pose model could not be loaded (FileNotFoundError)."
+    return True, None
+
+
+def load(root=None, env=None):
+    """(pose function, None) when a pose model is set up, else (None, the reason in plain words). SLOW for a trained model: use check() to ask."""
+    settings, reason = _read_settings(root, env)
+    if settings is None:
+        return None, reason
     try:
-        function = factory(settings, Path(root or ROOT))
+        function = _BACKENDS[settings["backend"]](settings, Path(root or ROOT))
     except Exception as exc:                                  # a backend can fail in many ways; say which one
         return None, f"The pose model could not be loaded ({type(exc).__name__})."
     if settings.get("stabilize"):                             # optional, off by default: see point_stabilizer.py

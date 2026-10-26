@@ -70,15 +70,23 @@ def test_the_yolo_backend_gives_14_keypoints_that_pass_the_slot_check(monkeypatc
     assert len(out) == 14 and set(out["mouse"]) == {"a", "b"} and list(out["keypoint"][:7]) == list(KEYPOINTS)
     a, b = out[out["mouse"] == "a"], out[out["mouse"] == "b"]
     assert a["x"].iloc[0] == 100 and b["x"].iloc[0] == 700 and np.allclose(out["score"], 0.7)   # class 0 is mouse a (black)
-    shape, kw = model.seen[0]
+    shape, kw = model.seen[-1]
     assert kw["imgsz"] == (320, 512) and kw["device"] == "intel:gpu" and kw["conf"] == pb.DEFAULT_CONF
+
+
+def test_the_model_is_prepared_once_at_load_so_the_first_real_picture_is_not_slow(monkeypatch, tmp_path):
+    model = install(monkeypatch, tmp_path, two_mice())
+    fn, _ = pm.load(tmp_path, env={})
+    assert len(model.seen) == 1 and model.seen[0][0] == (570, 1024, 3)  # one warm-up picture before any real picture
+    fn(np.zeros((570, 1024, 3), np.uint8))
+    assert len(model.seen) == 2
 
 
 def test_a_picture_of_another_size_is_resized_to_the_calms21_frame(monkeypatch, tmp_path):
     model = install(monkeypatch, tmp_path, two_mice())
     fn, _ = pm.load(tmp_path, env={})
     fn(np.zeros((480, 640, 3), np.uint8))
-    assert model.seen[0][0] == (570, 1024, 3)
+    assert model.seen[-1][0] == (570, 1024, 3)
 
 
 def test_the_most_confident_detection_of_each_class_is_used_and_a_missing_mouse_is_left_out(monkeypatch, tmp_path):

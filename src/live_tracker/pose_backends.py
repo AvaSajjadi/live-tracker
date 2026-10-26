@@ -50,11 +50,14 @@ def yolo_factory(settings, root):
     conf = float(settings.get("conf", DEFAULT_CONF))
     device = settings.get("device")
     model = _load_yolo(weights)
+    kw = {"imgsz": imgsz, "conf": conf, "verbose": False}
+    if device:
+        kw["device"] = device
+    # The first picture makes OpenVINO prepare the model for the Intel GPU, and that takes several seconds (a stall of about 10 s was
+    # seen in the first 10 s of a run, 21 instead of 29 pictures per second). Do it here, once, before the first real picture.
+    model.predict(np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), np.uint8), **kw)
 
     def pose(image):
-        kw = {"imgsz": imgsz, "conf": conf, "verbose": False}
-        if device:
-            kw["device"] = device
         r = model.predict(_to_frame(image), **kw)[0]
         if r.boxes is None or len(r.boxes) == 0 or r.keypoints is None:
             return None

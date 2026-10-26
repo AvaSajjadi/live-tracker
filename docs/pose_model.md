@@ -61,3 +61,47 @@ The settings file only names a backend. It never runs code. Model files are big 
 ## Install OpenCV
 
 `python -m pip install opencv-python-headless` (also listed as the `camera` option in `pyproject.toml`).
+
+## Steadier points (optional, off by default)
+
+`src/live_tracker/point_stabilizer.py` makes the 14 points of each picture steadier. It uses the same steps as the ScopeScore tracker (Ava's surgical video paper):
+1. **Flow mix.** The model's point is mixed with the point followed from the last picture by optical flow: `p = 0.2 * model + 0.8 * flow`.
+2. **Smoothing.** A One-Euro filter on every coordinate (past pictures only; 0.6 Hz, beta 0.04).
+3. **Tolerance.** A point that moves less than about 1% of the picture height (5.7 px) stays still. A bigger move is followed almost at once.
+
+It invents nothing. If the model finds no mouse, the answer is still "no mouse". After a gap of more than 0.5 s it starts again.
+
+Turn it on in `models/pose/pose_model.json` by adding a block, for example `"stabilize": {}` for the defaults, or
+`"stabilize": {"alpha": 0.2, "min_cutoff": 0.6, "beta": 0.04, "sigma_px": 5.7, "flow": true}`. Set `"flow": false`, `"sigma_px": 0` or `"min_cutoff": 0` to switch one step off.
+
+**Not proven yet.** The tests show that it steadies noisy points and follows real moves. It has not been measured on the trained mouse model or on real camera video. Measure first (noise test and unseen videos), then decide if it stays on.
+
+### Test of the steadier points (noise test, validation sessions, measured)
+
+Script: `scripts/point_stability_test.py` (pass rules are written at the top of the script, before the first run). Input: the CalMS21 keypoints of 3 validation sessions (1800 frames each) plus 1 px or 3 px of noise. Flow is off in this test (there are no pictures).
+
+| Settings | Accuracy | Precision of steps | Lag | Still mouse |
+|---|---|---|---|---|
+| ScopeScore settings (defaults) | FAIL (1.18 to 5.55 px at 1 px noise) | FAIL | FAIL | PASS |
+| No tolerance | FAIL | PASS | FAIL | PASS |
+| Search of 18 other settings (changed after seeing results) | best settings pass 2 of 4 rules | | | |
+
+**What it means.** The ScopeScore settings were made for slow surgical instruments at 24 frames per second. Mice move fast at 30 frames per second, so the filter lags behind. The settings that avoid the lag also remove almost none of the noise (3 px noise goes down to about 3.4 px). **No setting passed all 4 rules.** So the stabilizer stays OFF.
+
+The search of other settings (min_cutoff 2, 5, 10; beta 0.5, 2, 8; sigma 0 and 1.5) was done after the first result was seen. The pass rules were not changed. The flow mix is still untested on real video.
+
+## Finding both mice more often: `conf` and `hold` (measured)
+
+Script: `scripts/mouse_found_experiment.py` (the selection rule is written at the top, before the first run). One video (mouse064), 8 parts of 100 pictures, reference = MARS points. **A development check on one video, not a validation.**
+
+| Setting | Both mice found | Median error vs MARS | Wrong detections (over 40 px) |
+|---|---|---|---|
+| conf 0.25, no hold (before) | 93.8% | 11.9 px | 4.7% |
+| conf 0.15, hold 3 pictures (used) | 99.1% | 12.1 px | 5.4% |
+| conf 0.05, hold 3 pictures (best by the rule) | 99.8% | 12.2 px | 5.9% |
+
+The rule picked conf 0.05, the edge of the grid. It was **not** used: it was not tested on pictures without mice, and a very low confidence may find a mouse in a face or a room. conf 0.15 with hold 3 was chosen by hand. Hold 3 means: a mouse that is missed keeps its last points for up to 3 pictures (0.1 s), with the same score. `models/pose/pose_model.json`: `{"backend": "yolo", ..., "conf": 0.15, "hold": 3}`.
+
+Acceptance test with the trained model, the demo video played like a camera (40 s): PASS, 0 warnings; model 12 to 20 ms; both mice found in 100% of 60 pictures (held points included); 28 to 29.5 pictures per second; 3 alerts and 1 question.
+
+**Start-up stall (fixed).** The first picture made OpenVINO prepare the model for the Intel GPU, about 10 s, so a 40 s run showed only 21 pictures per second. The model is now prepared once when it loads.

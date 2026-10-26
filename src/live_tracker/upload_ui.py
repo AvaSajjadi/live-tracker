@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import streamlit as st
 
-from .ui_style import note
+from . import camera_check as cc
+from . import camera_live
+from . import mars_job
 from . import demo
 from . import flow
 from . import uploads as up
 from . import video_web as vw
 
-CAMERA = "Simulated camera (recorded video)"
+CAMERA = "Connect a camera"
 VIDEO = "Upload a video and its keypoints"
 CENTERS = "Upload a CSV of mouse positions"
 CHOICES = [CAMERA, VIDEO, CENTERS]
@@ -31,7 +33,7 @@ KIND_TEXT = {"demo": "demo camera, a recorded video stands in for the feed", "vi
 
 def camera_source(d):
     """The demo camera: the demo recording (video and keypoints) used as the stand-in feed."""
-    return up.SessionSource("demo", "Demo camera (recorded-video simulation)", video=str(d.video), poses=str(d.poses),
+    return up.SessionSource("demo", "Demo camera (live stream camera)", video=str(d.video), poses=str(d.poses),
                             session=d.session)
 
 
@@ -60,8 +62,7 @@ def show_path(path):
                 else:
                     st.rerun()
     else:
-        note("caption", "No video converter is installed; analysis can run without the picture.",
-             "Install the optional package imageio-ffmpeg in the project's Python "
+        st.caption("No video converter is installed. Install the optional package imageio-ffmpeg in the project's Python "
                    "(see docs/demo_recording.md), then a button appears here that makes a browser-friendly copy. The "
                    "original is never changed. The analysis does not need the picture.")
 
@@ -77,6 +78,10 @@ def show_preview(preview):
             st.video(preview[2], muted=True)
         else:
             st.warning(f"This video cannot be shown in the browser: {why}. It can still be used for the analysis.")
+    elif preview[0] == "live":
+        live_preview(preview[1])
+    elif preview[0] == "image":
+        st.image(preview[1], caption="One picture from the camera", width="stretch")
     elif preview[0] == "table":
         st.markdown("**First rows of the file**")
         st.dataframe(preview[1].head(8), hide_index=True, width="stretch")
@@ -84,24 +89,258 @@ def show_preview(preview):
 
 # ---- the three choices ----
 
-def render_camera():
+DEMO_CAMERA, USB_CAMERA = "Demo camera (a recorded video)", "USB camera"
+
+
+def render_demo_camera():
     demos = demo.find_demos()
     if not demos:
-        st.warning("No recorded video is available on this computer to stand in for a camera. A real camera cannot be "
-                   "analysed yet, because that needs a mouse pose model.")
+        st.warning("No recorded video is available on this computer to stand in for a camera. "
+                   "A real camera cannot be analysed yet, because that needs a mouse pose model.")
         return None
     source = camera_source(demos[0])
     current = flow.get_source()
     if current is None or current.to_dict() != source.to_dict():
         flow.set_source(source)                                  # choosing the demo camera is the whole step
-    st.success("Simulated camera ready — prerecorded video, no physical camera connected.")
+    st.success("Camera connected successfully!")
     return ("path", demos[0].video)
 
 
+def render_usb_camera():
+    """A real camera: test it, watch live video from it, drag the screen corners, then use it."""
+    if not cc.opencv_available():
+        st.error("OpenCV is not installed, so a camera cannot be opened. Run: pip install opencv-python-headless")
+        return None
+    device = st.text_input("Camera number or stream address", value="0", key="upload_device",
+                           help="0 is the first camera, 1 the second. A network camera has an address like rtsp://...")
+    current = flow.get_source()                                  # the demo camera or another camera number is no longer the choice
+    if current is not None and current.kind == "demo" and not current.device:
+        st.session_state.pop(flow.SOURCE_KEY, None)
+    state = st.session_state.get("upload_camera_test")
+    if st.button("Test the camera", key="upload_test_camera"):
+        camera_live.release()                                    # a camera opened by this page would block the test
+        with st.spinner("Opening the camera..."):
+            png, why = cc.snapshot(device)
+        state = st.session_state["upload_camera_test"] = {"device": device, "png": png, "why": why}
+        st.session_state["upload_live"] = png is not None
+    if not state or state["device"] != device:
+        st.caption("Press Test the camera to see live video from it.")
+        return None
+    if state["png"] is None:
+        st.error(f"The camera cannot be used: {state['why']}.")
+        return None
+    st.success("The camera works.")
+    live = bool(st.session_state.get("upload_live"))
+    if live and st.button("Stop the camera", key="upload_stop_camera"):
+        camera_live.release()
+        st.session_state["upload_live"] = live = False
+    screen_on = st.checkbox("The camera films a screen (for example an iPad that plays the video)", value=True, key="upload_screen_on")
+    screen, png = None, state["png"]
+    if screen_on:
+        st.caption("Drag the 4 red corners on the video until the green shape sits on the edge of the video: 1 = top-left, "
+                   "2 = top-right, 3 = bottom-right, 4 = bottom-left.")
+        if st.button("Reset the corners", key="upload_reset_corners"):
+            st.session_state[KEY_VERSION] = st.session_state.get(KEY_VERSION, 0) + 1   # a new picker starts at the default corners
+        screen = _corners_now()
+        if screen is None:
+            st.error("These corners cannot be used. Press Reset the corners.")
+        elif not live:
+            png = _marked_png(state["png"], screen)
+    mode = st.radio("What should the program analyze?", [OFFLINE, STAGED, REAL_POSE], key="upload_cam_mode",
+                    help="Record then analyze: real pose from your recording, with MARS, not live (about 25 minutes for each minute "
+                         "of video). Staged: the camera shows the iPad live, but the numbers come from saved keypoints of the demo "
+                         "video. Live real pose: needs a pose model fast enough for live video (none yet).")
+    staged = mode == STAGED
+    current = flow.get_source()                                  # another camera, corners or mode than the saved ones: choose again
+    if current is not None and current.device is not None and (
+            current.device != device.strip() or current.screen != screen or current.staged_camera != staged):
+        st.session_state.pop(flow.SOURCE_KEY, None)
+    if mode == OFFLINE:
+        render_record_and_analyze(device, live, screen_on, screen)
+        return ("live", device.strip()) if live else ("image", png)
+    if staged:
+        render_staged_choice(device, screen)
+        return ("live", device.strip()) if live else ("image", png)
+    _, reason = cc.pose_model.check()                              # check, not load: loading a trained model takes seconds
+    if reason:
+        st.warning(f"{reason} You can choose this camera now, but the analysis cannot start until a pose model is set up.")
+    if st.button("Use this camera", type="primary", key="upload_use_camera"):
+        flow.set_source(up.SessionSource("camera", f"USB camera {device}", device=device.strip(), screen=screen))
+    return ("live", device.strip()) if live else ("image", png)
+
+
+OFFLINE = "Record, then analyze with MARS (real pose, not live)"
+STAGED = "Staged demo (saved keypoints of the demo video)"
+REAL_POSE = "Live real pose (needs a fast pose model)"
+
+
+def render_staged_choice(device, screen):
+    """The camera films a screen that plays the demo video. The picture is only shown; the keypoints are read from a file."""
+    st.warning("STAGED DEMO. The camera picture is shown live, but the alerts are computed from the SAVED keypoints of the demo "
+               "video, not from what the camera sees. Say this plainly when you present it.")
+    demos = demo.find_demos()
+    if not demos:
+        st.error("No demo video with saved keypoints is on this computer (data/raw/calms21_video/), so there is nothing to stage.")
+        return
+    d = demos[0]
+    st.caption(f"Play this video on the screen the camera films: {d.video.name}")
+    if st.button("Use the staged demo", type="primary", key="upload_use_staged"):
+        flow.set_source(up.SessionSource("demo", f"Staged demo: camera {device} films the screen", video=str(d.video),
+                                         poses=str(d.poses), session=d.session, device=device.strip(), screen=screen))
+
+
+def recordings_root():
+    import os
+    from pathlib import Path
+    return Path(os.environ.get("LIVE_TRACKER_RECORDINGS") or up.ROOT / "outputs" / "recordings")
+
+
+def render_record_and_analyze(device, live, screen_on, screen):
+    """Record the camera (the screen stretched to 1024 x 570), run MARS on the recording in the background, use the result."""
+    from datetime import datetime, timezone
+    st.info("Real pose, offline. The camera is recorded with the screen stretched to 1024 x 570. Then MARS finds the mice in the "
+            "recording. This laptop needs about 25 minutes for each minute of video, so record 10 to 20 seconds first. "
+            "MARS needs a top view with one black and one white mouse.")
+    ok, why = mars_job.available()
+    if not ok:
+        st.error(why)
+    g = None
+    if live:
+        try:
+            g = camera_live.grabber(device)              # opens the camera now, so the buttons below can use it
+        except camera_live.rsrc.CameraUnavailableError as exc:
+            st.error(f"The camera cannot be used: {exc}.")
+    if g is None:
+        st.caption("Press Test the camera first, so the live video runs. Then you can record.")
+    elif g.recording:
+        st.error("RECORDING. Play the video on the screen now. Press Stop recording when it is over.")
+        if st.button("Stop recording", type="primary", key="upload_rec_stop"):
+            st.session_state["upload_recording"] = g.stop_recording()
+            st.session_state.pop("upload_job", None)
+            st.rerun()
+    else:
+        blocked = screen_on and screen is None
+        if st.button("Start recording", type="primary", key="upload_rec_start", disabled=blocked):
+            folder = recordings_root() / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            folder.mkdir(parents=True, exist_ok=True)
+            try:
+                g.start_recording(folder / "camera.mp4", screen if screen_on else None)
+            except (RuntimeError, OSError) as exc:
+                st.error(f"Not started: {exc}")
+            else:
+                st.session_state.pop("upload_recording", None)
+                st.session_state.pop("upload_job", None)
+                st.rerun()
+    rec = st.session_state.get("upload_recording")
+    if not rec:
+        return
+    st.success(f"Recorded {rec['seconds']:.0f} s ({rec['frames']} frames, {rec['width']} x {rec['height']}). Saved in {rec['path']}.")
+    if "upload_job" not in st.session_state:
+        minutes = mars_job.estimate_minutes(rec["frames"])
+        if st.button(f"Analyze with MARS (about {minutes:.0f} min)", type="primary", key="upload_mars_start", disabled=not ok):
+            from pathlib import Path
+            job = Path(rec["path"]).parent / "mars"
+            try:
+                mars_job.start(rec["path"], job, fps=rec["fps"])
+            except (RuntimeError, OSError) as exc:
+                st.error(f"Not started: {exc}")
+            else:
+                camera_live.release()                           # the camera is not needed now; the CPU is
+                st.session_state["upload_live"] = False
+                st.session_state["upload_job"] = str(job)
+                st.rerun()
+    else:
+        job_panel(st.session_state["upload_job"], rec)
+
+
+@st.fragment(run_every=2)
+def job_panel(job_dir, rec):
+    s = mars_job.status(job_dir)
+    if s["state"] == "running":
+        total = s["total"] or rec["frames"]
+        st.progress(min(1.0, s["done"] / total) if total else 0.0,
+                    text=f"MARS: {s['done']} of {total} frames ({s['message']}). You can leave this page; the job goes on.")
+    elif s["state"] == "failed":
+        st.error(f"The analysis did not finish: {s['message']}. The log is in {job_dir}.")
+    elif s["state"] == "finished":
+        st.success(f"MARS finished ({s['message']}).")
+        if st.button("Use this recording", type="primary", key="upload_use_recording"):
+            from pathlib import Path
+            try:
+                source = up.build_keypoints_source(("keypoints.parquet", mars_job.result(job_dir).read_bytes()),
+                                                   (Path(rec["path"]).name, Path(rec["path"]).read_bytes()), fps=rec["fps"])
+            except (up.UploadError, OSError) as exc:
+                st.error(f"Not used: {exc}")
+            else:
+                flow.set_source(source)
+                st.rerun()
+
+
+STRETCHED_CAPTION = "The screen stretched to 1024 x 570. The whole video should fill this picture, with no border."
+KEY_VERSION = "upload_corner_version"
+
+
+def _picker_key():
+    """A new key makes a new picker, which starts at the default corners (the Reset button)."""
+    return f"upload_corner_picker_{st.session_state.get(KEY_VERSION, 0)}"
+
+
+def _corners_now():
+    """The corners the researcher dragged to (the default ones before any drag), or None when they cannot be used."""
+    from . import corner_picker as cp
+    from . import screen_map as sm
+    try:
+        return sm.check_corners(cp.current_corners(_picker_key(), sm.DEFAULT_CORNERS))
+    except sm.ScreenError:
+        return None
+
+
+def _marked_png(png, corners):
+    import cv2
+    import numpy as np
+    from . import screen_map as sm
+    image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    return cv2.imencode(".png", sm.outline(image, corners))[1].tobytes()
+
+
+@st.fragment(run_every=0.1)
+def live_preview(device):
+    """The camera as live video (about 10 pictures a second). With a screen: the corners can be dragged on it, and the
+    stretched screen is shown below."""
+    image, why = camera_live.read(device)
+    if image is None:
+        st.error(f"The camera cannot be shown: {why}.")
+        return
+    import cv2
+    g = camera_live.current()
+    status = g.recording_status() if g is not None else None
+    if status is not None:
+        st.error(f"RECORDING  {status['seconds']:.0f} s  ({status['frames']} frames)")
+    if not st.session_state.get("upload_screen_on", True):
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), caption="Live camera video", width="stretch", output_format="JPEG")
+        return
+    from . import corner_picker as cp
+    from . import screen_map as sm
+    key = _picker_key()
+    cp.corner_picker(image, cp.current_corners(key, sm.DEFAULT_CORNERS), key=key)
+    corners = _corners_now()
+    if corners is None:
+        st.error("These corners cannot be used. Press Reset the corners.")
+        return
+    stretched = cv2.resize(sm.warp(image, corners), (640, 356), interpolation=cv2.INTER_AREA)      # shown smaller: a big PNG ten times a second used a whole core
+    st.image(cv2.cvtColor(stretched, cv2.COLOR_BGR2RGB), caption=STRETCHED_CAPTION, width="stretch", output_format="JPEG")
+    st.caption("Corners for the Colab notebook (copy this line into CORNERS):")
+    st.code(sm.corners_text(corners), language=None)
+
+
+def render_camera():
+    kind = st.radio("Camera type", [DEMO_CAMERA, USB_CAMERA], key="upload_camera_kind")
+    return render_usb_camera() if kind == USB_CAMERA else render_demo_camera()
+
+
 def render_video():
-    st.markdown("Use the **keypoints of the same recording**; a video alone is not enough.")
-    with st.expander("More info"):
-        st.caption("Model B expects 7 keypoints per mouse in CalMS21 layout, in pixels of a 1024 x 570 frame.")
+    st.markdown("The analysis needs the **keypoints of the same recording** (7 per mouse, CalMS21 layout, in pixels of a "
+                "1024 x 570 frame). A video alone is not enough.")
     video = st.file_uploader("Video", type=list(up.VIDEO_TYPES), key="upload_video",
                              help="mp4, webm, mov or m4v. Browsers play H.264 and VP9; other formats can be converted later.")
     keypoints = st.file_uploader("Keypoints file", type=list(up.TABLE_TYPES), key="upload_keypoints",
@@ -123,10 +362,10 @@ def render_video():
 
 
 def render_centers():
-    note("caption", "Positions give motion and tracking quality only: no behavior scores or alerts.",
-         "Behavior scoring needs 7 keypoints per mouse; a centers file supplies only one point per mouse.")
-    file = st.file_uploader("Positions CSV", type=["csv"], key="upload_centers",
-                            help="One row per frame: x_a, y_a (mouse a), x_b, y_b (mouse b), in pixels.")
+    st.markdown("A CSV with one row per frame and four columns: `x_a`, `y_a` (mouse a) and `x_b`, `y_b` (mouse b), in pixels. "
+                "This gives motion and tracking quality only: no behavior scores and no alerts, because that needs the "
+                "7 keypoints of each mouse.")
+    file = st.file_uploader("Positions CSV", type=["csv"], key="upload_centers")
     preview = None
     if file:
         try:
@@ -146,17 +385,10 @@ def render_centers():
 def render():
     flow.render_bar("upload")
     st.title("Upload")
-    st.caption("Choose recorded data, then define a monitoring rule; camera inference is not available.")
+    st.caption("Choose what the agent should look at. Next, tell it what to look for.")
     left, right = st.columns([2, 3])
     with left:
-        current = flow.get_source()
-        initial = {"demo": CAMERA, "video_keypoints": VIDEO, "keypoints": VIDEO, "centers": CENTERS}.get(
-            current.kind if current else None)
-        choice = st.radio("Source", CHOICES, index=CHOICES.index(initial) if initial else None, key="upload_choice")
-        previous = st.session_state.get("upload_active_choice", initial)
-        if previous != choice:
-            st.session_state.pop(flow.SOURCE_KEY, None)
-        st.session_state["upload_active_choice"] = choice
+        choice = st.radio("Source", CHOICES, index=None, key="upload_choice")
         preview = {CAMERA: render_camera, VIDEO: render_video, CENTERS: render_centers}.get(choice, lambda: None)()
     with right:
         show_preview(preview)

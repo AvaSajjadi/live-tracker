@@ -86,7 +86,7 @@ def render_usb_camera():
     if staged:
         render_staged_choice(device, screen)
         return ("live", device.strip()) if live else ("image", png)
-    _, reason = cc.pose_model.load()
+    _, reason = cc.pose_model.check()                              # check, not load: loading a trained model takes seconds
     if reason:
         st.warning(f"{reason} You can choose this camera now, but the analysis cannot start until a pose model is set up.")
     if st.button("Use this camera", type="primary", key="upload_use_camera"):

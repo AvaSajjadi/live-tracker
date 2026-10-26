@@ -144,3 +144,20 @@ def test_find_cameras_lists_only_working_numbers():
             raise rsrc.CameraUnavailableError("no")
         return FakeCapture()
     assert cc.find_cameras(opener) == [1]
+
+
+def test_check_is_fast_and_does_not_load_the_model(monkeypatch, tmp_path):
+    import json
+    called = []
+    pm.register_backend("never_loaded", lambda settings, root: called.append(1))
+    (tmp_path / "models/pose").mkdir(parents=True)
+    cfg = tmp_path / pm.DEFAULT_CONFIG
+    assert pm.check(tmp_path, env={})[0] is False                              # no settings file
+    cfg.write_text(json.dumps({"backend": "never_loaded", "weights": "w.pt"}))
+    ok, reason = pm.check(tmp_path, env={})
+    assert not ok and "FileNotFoundError" in reason                            # the named weights are missing
+    (tmp_path / "w.pt").write_text("x")
+    assert pm.check(tmp_path, env={}) == (True, None)
+    cfg.write_text(json.dumps({"backend": "no_such_backend"}))
+    assert not pm.check(tmp_path, env={})[0]
+    assert called == []                                                        # the backend was never started

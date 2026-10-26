@@ -4,6 +4,7 @@ yolo  A small YOLO pose model trained on the MARS hand-labeled set (scripts/trai
       class 1 = the white mouse (mouse "b"), 7 keypoints each, in the MARS order that CalMS21 also uses. Weights: a .pt file or an exported
       OpenVINO / CoreML folder. Settings (models/pose/pose_model.json):
           {"backend": "yolo", "weights": "models/pose/mouse_pose_openvino_model", "device": "intel:gpu", "imgsz": [384, 640], "conf": 0.25}
+      hold: keep the last points of a mouse that is missed for up to this many pictures (default 0 = off; 3 is 0.1 s).
       device: "intel:gpu" (Intel Iris Xe, OpenVINO), "intel:cpu", "cpu", "mps" (Apple), "0" (NVIDIA). Omit it to let Ultralytics choose.
 
 stub  NOT a pose model. It returns the saved CalMS21 keypoints of a recording, following the wall clock, as if a perfect and instant model
@@ -48,16 +49,21 @@ def yolo_factory(settings, root):
         raise FileNotFoundError(str(weights))
     imgsz = tuple(settings.get("imgsz", DEFAULT_IMGSZ))
     conf = float(settings.get("conf", DEFAULT_CONF))
+    hold = int(settings.get("hold", 0))                     # keep the last points of a mouse that is missed for up to this many pictures
+    memory = {}                                               # mouse -> (rows, pictures since it was seen)
     device = settings.get("device")
     model = _load_yolo(weights)
+    kw = {"imgsz": imgsz, "conf": conf, "verbose": False}
+    if device:
+        kw["device"] = device
+    # The first picture makes OpenVINO prepare the model for the Intel GPU, and that takes several seconds (a stall of about 10 s was
+    # seen in the first 10 s of a run, 21 instead of 29 pictures per second). Do it here, once, before the first real picture.
+    model.predict(np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), np.uint8), **kw)
 
     def pose(image):
-        kw = {"imgsz": imgsz, "conf": conf, "verbose": False}
-        if device:
-            kw["device"] = device
         r = model.predict(_to_frame(image), **kw)[0]
         if r.boxes is None or len(r.boxes) == 0 or r.keypoints is None:
-            return None
+            return _held({}) if hold else None
         cls = r.boxes.cls.cpu().numpy().astype(int)
         box_conf = r.boxes.conf.cpu().numpy()
         xy = r.keypoints.xy.cpu().numpy()
@@ -72,7 +78,24 @@ def yolo_factory(settings, root):
                 score = float(kp_conf[best][j]) if kp_conf is not None else float(box_conf[best])
                 rows.append({"mouse": mouse, "keypoint": name, "x": float(xy[best][j][0]), "y": float(xy[best][j][1]),
                              "score": min(1.0, max(0.0, score))})
-        return pd.DataFrame(rows) if rows else None
+        seen = {}
+        for row in rows:
+            seen.setdefault(row["mouse"], []).append(row)
+        return _held(seen) if hold else (pd.DataFrame(rows) if rows else None)
+
+    def _held(seen):
+        """The mice seen now, plus the last points of a mouse that was missed for at most `hold` pictures (a short miss is not a loss)."""
+        out = []
+        for mouse in MICE:
+            if mouse in seen:
+                memory[mouse] = (seen[mouse], 0)
+                out += seen[mouse]
+            elif mouse in memory and memory[mouse][1] < hold:
+                memory[mouse] = (memory[mouse][0], memory[mouse][1] + 1)
+                out += memory[mouse][0]
+            else:
+                memory.pop(mouse, None)
+        return pd.DataFrame(out) if out else None
     return pose
 
 

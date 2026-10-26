@@ -465,3 +465,28 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 4. Result with the real USB webcam and the stub: camera 25.3 pictures per second, run program 29.5 frames per second for 40 s, slowest 10 s 29.9, every score reached the monitor, 8 alerts and 1 question. The pose speed check is SKIPPED (stub): the model is the missing piece.
 5. The user is running `colab/train_yolo_pose_colab.ipynb` on a Colab T4 (T4 was connected; Gemini panel was open: told to close it and press Run all). Waiting for best.pt and eval.json. Nikon still charging.
 6. Not done: acceptance with the trained model; Nikon; browser test of the staged demo with the real camera (was interrupted by a slow page; the preview was fixed); the 2 order-dependent test_session_view failures.
+
+## 2026-10-25 (poster figures)
+1. Ava fills the middle of the poster. Sadaf builds the slide, so we only make figures and numbers.
+2. Wrote `scripts/poster_figures.py`. It draws 3 PNG pictures (pipeline, speed, alert quality) with transparent background.
+3. Command: `C:/Users/AnTiC/fastpose_test/env/Scripts/python.exe -I scripts/poster_figures.py outputs/poster` - makes the pictures. (That env already has matplotlib; the project .venv does not.)
+4. Copied the pictures to Desktop\poster_figures (outputs/ is not in Git).
+5. Problem: first pipeline picture was cut on the right. Fixed by making the canvas wider.
+6. Not finished: speed picture has no "fast model" bar yet. After training, run with `--fast-ms <measured ms>`. The numbers 29.5 fps and 16 ms are not final for the mouse model.
+7. Next time: read eval.json and best.pt when Ava says "done", measure the speed, remake the pictures.
+
+## 2026-10-25 (point stabilizer, from the ScopeScore paper)
+1. Ava wants the point-finding step to follow her ScopeScore surgical-video paper. I read its abstract and Methods.
+2. Added `src/live_tracker/point_stabilizer.py`: flow mix (0.2 model + 0.8 flow), One-Euro filter, small-shake tolerance. It is OFF unless `models/pose/pose_model.json` has a `stabilize` block. Wired in `pose_model.load`. Tests: `tests/test_point_stabilizer.py` (7 pass).
+3. Added `scripts/point_stability_test.py` with pass rules written first. Command: `.venv/Scripts/python.exe scripts/point_stability_test.py` - adds noise to real CalMS21 validation points and measures error, step error, lag and still-mouse jitter.
+4. Result: the paper's settings made accuracy worse (mice move fast). 18 other settings: best pass 2 of 4 rules. So it stays OFF. Details in `docs/pose_model.md`.
+5. Not finished: flow mix not tested on real video; camera-shake check (track the 4 iPad corners) not built; test with the trained mouse model.
+6. Next time: when the Colab model is done, run the acceptance test, then test the stabilizer on new videos.
+
+## 2026-10-25 (explain the whole system and the ScopeScore parts)
+1. Ava asked for a very detailed description of how the model works, where ScopeScore methods are used, and what the agent can do.
+2. We read: README.md, INTERFACES.md, docs/pose_model.md, motion_engine_results.md, model_settings.md, attack_rule_v1.md, investigate_tool_contracts.md, claude_interpreter.md, lab_run.md, accuracy_precision_report.md, outputs/acceptance_trained_model_video*.json, models/model_b.json. Commands used were only reading commands (cat, sed, ls, python to print JSON).
+3. No code changed. Only this note.
+4. Found: the trained YOLO mouse model is now in `models/pose/` (acceptance: 12 to 15 ms per picture, both mice found in 80% of 60 pictures, 29.5 fps in one run). The file `eval.json` (accuracy in pixels) was not found, so the model's pixel accuracy is not written down yet. `docs/accuracy_precision_report.md` section 5 still says "not trained yet".
+5. Not finished: put the trained model's accuracy in the report; flow mix on real video; camera-shake check.
+6. Next time: run `scripts/eval_yolo_pose.py` on the trained model and update section 5.

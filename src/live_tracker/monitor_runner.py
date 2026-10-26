@@ -34,7 +34,7 @@ import signal
 import sys
 import time
 import traceback
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -106,6 +106,7 @@ class RunConfig:
     status_every_s: float = 5.0         # real seconds between heartbeats
     reconnect_wait_s: float = 2.0       # first wait before a reconnect attempt; doubles up to 60 s
     wait_for_go: bool = False           # get ready, then wait for the GO file (a video that must start at the same moment)
+    start_when_ready: bool = False      # a camera: the window of the schedule starts when the model and the camera are ready, not at launch
 
     def to_json(self):
         return json.dumps(asdict(self), indent=2) + "\n"
@@ -178,6 +179,12 @@ class Runner:
             raise RunRefusedError("this source gives pose keypoints, so a scorer (model) is needed")
         self.source, self.scorer = source, scorer
         self.clock = clock or RealClock(config.speed)
+        if config.start_when_ready:
+            # Loading the model and opening the camera can take 30 s or more. That time must not be taken from the chosen length:
+            # the same length starts now (the run folder keeps its first config, so only the schedule of this run changes).
+            length = self.schedule.end - self.schedule.start
+            now = self.clock.now()
+            self.schedule = replace(self.schedule, start=now, end=now + length)
         if self.schedule.status_at(self.clock.now()) == "finished":
             raise RunRefusedError("the schedule has already ended")
         self.run_dir.mkdir(parents=True, exist_ok=True)

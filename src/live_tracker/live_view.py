@@ -98,14 +98,14 @@ def render_camera(source):
         counts(Path(run_dir))
         panel(Path(run_dir), ls.camera_limit_s(chosen_limit_s()), source.fps)
         return
-    estimator, why = pose_model.load()
+    estimator, why = pose_model.check()                         # the run program loads the model itself
     limit = chosen_limit_s()
     st.markdown(f"- **Camera:** {source.label}. This is a real camera, not a recording.\n"
                 f"- **Rules:** " + "; ".join(f"{r.behavior} for at least {r.min_duration_s:g} s "
                                              f"(ask above {r.ask_threshold:g}, alert at {r.alert_threshold:g})" for r in rules)
                 + f".\n- **Time limit:** {_mmss(ls.camera_limit_s(limit))}"
                 + (" (the time you confirmed on the Rules page)." if limit else " (no time chosen on the Rules page)."))
-    if estimator is None:
+    if not estimator:
         st.error(why)
         return
     if st.button("Start the camera session", type="primary", key="live_start_camera"):

@@ -474,3 +474,11 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 5. Problem: first pipeline picture was cut on the right. Fixed by making the canvas wider.
 6. Not finished: speed picture has no "fast model" bar yet. After training, run with `--fast-ms <measured ms>`. The numbers 29.5 fps and 16 ms are not final for the mouse model.
 7. Next time: read eval.json and best.pt when Ava says "done", measure the speed, remake the pictures.
+
+## 2026-10-25 (point stabilizer, from the ScopeScore paper)
+1. Ava wants the point-finding step to follow her ScopeScore surgical-video paper. I read its abstract and Methods.
+2. Added `src/live_tracker/point_stabilizer.py`: flow mix (0.2 model + 0.8 flow), One-Euro filter, small-shake tolerance. It is OFF unless `models/pose/pose_model.json` has a `stabilize` block. Wired in `pose_model.load`. Tests: `tests/test_point_stabilizer.py` (7 pass).
+3. Added `scripts/point_stability_test.py` with pass rules written first. Command: `.venv/Scripts/python.exe scripts/point_stability_test.py` - adds noise to real CalMS21 validation points and measures error, step error, lag and still-mouse jitter.
+4. Result: the paper's settings made accuracy worse (mice move fast). 18 other settings: best pass 2 of 4 rules. So it stays OFF. Details in `docs/pose_model.md`.
+5. Not finished: flow mix not tested on real video; camera-shake check (track the 4 iPad corners) not built; test with the trained mouse model.
+6. Next time: when the Colab model is done, run the acceptance test, then test the stabilizer on new videos.

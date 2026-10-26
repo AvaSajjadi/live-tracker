@@ -75,3 +75,17 @@ Turn it on in `models/pose/pose_model.json` by adding a block, for example `"sta
 `"stabilize": {"alpha": 0.2, "min_cutoff": 0.6, "beta": 0.04, "sigma_px": 5.7, "flow": true}`. Set `"flow": false`, `"sigma_px": 0` or `"min_cutoff": 0` to switch one step off.
 
 **Not proven yet.** The tests show that it steadies noisy points and follows real moves. It has not been measured on the trained mouse model or on real camera video. Measure first (noise test and unseen videos), then decide if it stays on.
+
+### Test of the steadier points (noise test, validation sessions, measured)
+
+Script: `scripts/point_stability_test.py` (pass rules are written at the top of the script, before the first run). Input: the CalMS21 keypoints of 3 validation sessions (1800 frames each) plus 1 px or 3 px of noise. Flow is off in this test (there are no pictures).
+
+| Settings | Accuracy | Precision of steps | Lag | Still mouse |
+|---|---|---|---|---|
+| ScopeScore settings (defaults) | FAIL (1.18 to 5.55 px at 1 px noise) | FAIL | FAIL | PASS |
+| No tolerance | FAIL | PASS | FAIL | PASS |
+| Search of 18 other settings (changed after seeing results) | best settings pass 2 of 4 rules | | | |
+
+**What it means.** The ScopeScore settings were made for slow surgical instruments at 24 frames per second. Mice move fast at 30 frames per second, so the filter lags behind. The settings that avoid the lag also remove almost none of the noise (3 px noise goes down to about 3.4 px). **No setting passed all 4 rules.** So the stabilizer stays OFF.
+
+The search of other settings (min_cutoff 2, 5, 10; beta 0.5, 2, 8; sigma 0 and 1.5) was done after the first result was seen. The pass rules were not changed. The flow mix is still untested on real video.

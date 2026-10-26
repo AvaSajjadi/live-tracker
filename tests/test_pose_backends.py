@@ -126,3 +126,32 @@ def test_the_stub_backend_follows_the_clock_and_is_not_a_model(monkeypatch, tmp_
     assert fn(img)["x"].iloc[0] == 100.0
     assert fn(img)["x"].iloc[0] == 102.0                                # two frame times later
     assert fn(img)["x"].iloc[0] == 105.0                                # past the end: the last frame
+
+
+def test_hold_keeps_a_missed_mouse_for_a_few_pictures_and_then_lets_it_go(monkeypatch, tmp_path):
+    xy = np.zeros((2, 7, 2))
+    xy[0, :, 0], xy[0, :, 1], xy[1, :, 0], xy[1, :, 1] = 100.0, 200.0, 700.0, 300.0
+    both = Result([0, 1], [0.9, 0.8], xy, kp_conf=np.full((2, 7), 0.7))
+    only_black = Result([0], [0.9], xy[:1], kp_conf=np.full((1, 7), 0.7))
+    model = install(monkeypatch, tmp_path, both, hold=2)
+    fn, _ = pm.load(tmp_path, env={})
+    img = np.zeros((570, 1024, 3), np.uint8)
+    assert set(fn(img)["mouse"]) == {"a", "b"}
+    model.result = only_black
+    for _ in range(2):                                              # the white mouse is missed: its last points stay for 2 pictures
+        out = fn(img)
+        assert set(out["mouse"]) == {"a", "b"} and (out[out["mouse"] == "b"]["x"] == 700.0).all()
+    assert set(fn(img)["mouse"]) == {"a"}                           # the third miss: it is lost
+    model.result = Result(np.zeros(0), np.zeros(0), np.zeros((0, 7, 2)))
+    assert set(fn(img)["mouse"]) == {"a"} and set(fn(img)["mouse"]) == {"a"}      # nothing is seen now: the black mouse is held for 2 pictures
+    assert fn(img) is None                                          # then nothing is seen and nothing is held
+
+
+def test_without_hold_a_missed_mouse_is_simply_missing(monkeypatch, tmp_path):
+    xy = np.zeros((2, 7, 2))
+    model = install(monkeypatch, tmp_path, Result([0, 1], [0.9, 0.8], xy, kp_conf=np.full((2, 7), 0.7)))
+    fn, _ = pm.load(tmp_path, env={})
+    img = np.zeros((570, 1024, 3), np.uint8)
+    fn(img)
+    model.result = Result([0], [0.9], xy[:1], kp_conf=np.full((1, 7), 0.7))
+    assert set(fn(img)["mouse"]) == {"a"}

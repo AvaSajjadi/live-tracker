@@ -482,3 +482,11 @@ Later: the report table was wider than the box (screenshot). New `_show_report` 
 4. Result: the paper's settings made accuracy worse (mice move fast). 18 other settings: best pass 2 of 4 rules. So it stays OFF. Details in `docs/pose_model.md`.
 5. Not finished: flow mix not tested on real video; camera-shake check (track the 4 iPad corners) not built; test with the trained mouse model.
 6. Next time: when the Colab model is done, run the acceptance test, then test the stabilizer on new videos.
+
+## 2026-10-25 (explain the whole system and the ScopeScore parts)
+1. Ava asked for a very detailed description of how the model works, where ScopeScore methods are used, and what the agent can do.
+2. We read: README.md, INTERFACES.md, docs/pose_model.md, motion_engine_results.md, model_settings.md, attack_rule_v1.md, investigate_tool_contracts.md, claude_interpreter.md, lab_run.md, accuracy_precision_report.md, outputs/acceptance_trained_model_video*.json, models/model_b.json. Commands used were only reading commands (cat, sed, ls, python to print JSON).
+3. No code changed. Only this note.
+4. Found: the trained YOLO mouse model is now in `models/pose/` (acceptance: 12 to 15 ms per picture, both mice found in 80% of 60 pictures, 29.5 fps in one run). The file `eval.json` (accuracy in pixels) was not found, so the model's pixel accuracy is not written down yet. `docs/accuracy_precision_report.md` section 5 still says "not trained yet".
+5. Not finished: put the trained model's accuracy in the report; flow mix on real video; camera-shake check.
+6. Next time: run `scripts/eval_yolo_pose.py` on the trained model and update section 5.

@@ -1,12 +1,12 @@
 # Methods — tool-geometry tip tracking pipeline
 
-The current pipeline lives in `tool_geometry/`. Three modules:
+The current pipeline lives in this folder. Three modules:
 
-- `tool_geometry/tip_detector.py` — per-frame geometric detector
+- `tip_detector.py` — per-frame geometric detector
   (tip, start, center, secondary jaw, polyline).
-- `tool_geometry/fov_utils.py` — FOV mask + distance transform, computed
+- `fov_utils.py` — FOV mask + distance transform, computed
   once per video.
-- `tool_geometry/run_pipeline.py` — driver: YOLO-seg + the detector +
+- `run_pipeline.py` — driver: YOLO-seg + the detector +
   KLT + alpha-blend + One-Euro + boundary re-snap + render.
 
 It replaces every earlier "which end is the tip?" heuristic with a
@@ -70,7 +70,7 @@ read frame -> grayscale (for KLT)
 │       (> --max-area-frac * H*W = 30 % of frame)
 │
 ├── match seg -> existing tracks by mask IoU >= --match-iou (0.20),
-│     same class. Track dies after --track-death-frames (30) idle frames
+│     same class. Track dies after --track-death-frames (90) idle frames
 │     — long enough to survive a brief full exit of the tool from frame.
 │
 ├── tip_detector.detect_tip_start(mask, fov_dist, tool_class, ...)
@@ -125,7 +125,7 @@ read frame -> grayscale (for KLT)
 │     start:  -- not applicable (no KLT) --
 │
 ├── One-Euro filter per track per endpoint
-│     tip:    freq=fps, mincutoff=1.0,  beta=0.05    (responsive)
+│     tip:    freq=fps, mincutoff=0.6,  beta=0.04    (responsive; the published setting)
 │     start:  freq=fps, mincutoff=0.1,  beta=0.001   (heavy, trocar near-static)
 │     center: freq=fps, mincutoff=0.6,  beta=0.01    (medium)
 │
@@ -178,7 +178,7 @@ start_x, start_y, center_x, center_y, jaw_state, tip_state, klt_ok`
 ## Why this architecture
 
 Each piece replaces a specific failure mode of an earlier version
-(see `TODO.md` for the chronological history).
+(earlier versions are described in the paper).
 
 - **FOV-distance + tip-first ordering.** The original
   `RobustTipDetector` measured distance to the rectangular image edge,
@@ -223,7 +223,7 @@ Each piece replaces a specific failure mode of an earlier version
 `cholecinstanceseg_yolo/` holds the YOLO-seg dataset derived from
 CholecInstanceSeg (Nature Scientific Data 2025, arXiv 2406.16039).
 The trained checkpoint is vendored at
-`tool_geometry/weights/best.pt`.
+`weights/best.pt`.
 
 ### Source
 
@@ -289,8 +289,8 @@ Hyperparameters (matching `yolo_phakir` where sensible):
   - Mask mAP50     = **0.469** (epoch 52, best.pt saved here)
   - Mask mAP50-95  = **0.216** (epoch 71)
 - best.pt: `cholecinstanceseg_yolo/runs/yolo11m-seg/weights/best.pt`
-  (129 MB, 254 layers, 22.4 M params).
-- Vendored copy for portability: `tool_geometry/weights/best.pt`.
+  (254 layers, 22.4 M params; the training checkpoint was 129 MB).
+- Copy used here: `weights/best.pt` (43 MB: the same weights, without the training state).
 
 ## Empirical comparison: PhaKIR weights vs cholec weights (vid06 1200–1320 s)
 

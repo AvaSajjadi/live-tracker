@@ -375,7 +375,7 @@ def main():
     ap.add_argument("--min-area", type=int, default=300)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--match-iou", type=float, default=0.20)
-    ap.add_argument("--track-death-frames", type=int, default=30,
+    ap.add_argument("--track-death-frames", type=int, default=90,
                     help="keep a track alive this many idle frames before "
                          "dropping it — large enough to survive a brief "
                          "full exit of the tool from the frame")
@@ -389,8 +389,9 @@ def main():
     ap.add_argument("--alpha-center", type=float, default=0.15)
     ap.add_argument("--klt-win", type=int, default=31)
     ap.add_argument("--klt-levels", type=int, default=3)
-    ap.add_argument("--tip-mincutoff", type=float, default=1.0)
-    ap.add_argument("--tip-beta", type=float, default=0.05)
+    # tip: the published setting (ScopeScore paper, Supplementary Table: 0.6 Hz, 0.04)
+    ap.add_argument("--tip-mincutoff", type=float, default=0.6)
+    ap.add_argument("--tip-beta", type=float, default=0.04)
     # S sits at the near-static trocar end, so it can be smoothed hard.
     # Low mincutoff = heavy baseline smoothing; tiny beta = barely
     # relaxes during motion. Isolated to f_start — T and C unaffected.

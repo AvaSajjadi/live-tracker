@@ -8,7 +8,7 @@ Every model named in the project report, what it does here, and where it is.
 | **Model A** (logistic regression, 77 basic pose-geometry features) | Baseline behavior classifier, used to measure what the motion engine adds | `model_a.joblib`, `model_a.json` | this project |
 | **Model B** (logistic regression, 102 features: basic + motion engine) | Scores attack, investigation and mount on every frame; the alerts use it | `model_b.joblib`, `model_b.json` | this project |
 | **ScopeScore** (Sajjadi, 2026; YOLO11m-seg fine-tuned on CholecInstanceSeg) | The surgical-instrument tracker whose methods were adapted for mice: tracking checks, causal One-Euro smoothing, motion features, point stabilizer (`src/live_tracker/quality.py`, `filters.py`, `features.py`, `point_stabilizer.py`). Not run by Live Tracker; its defaults are the published settings, the same values `point_stabilizer.py` uses (see `scopescore/README.md`) | `scopescore/weights/best.pt`, its code, configs and `methods.md` | weights: AGPL-3.0 (Ultralytics) and non-commercial share-alike (Cholec80 data, CC BY-NC-SA 4.0); code: the author's |
-| **MARS** (Segalin et al., 2021) | The offline route: finds the mice in a recorded video when live pose is not needed (`scripts/mars_pose_offline.py`) | not stored here, see below | CC BY-NC 4.0 |
+| **MARS** (Segalin et al., 2021) | The offline route: finds the mice in a recorded video when live pose is not needed (`scripts/mars_pose_offline.py`) | `mars/` (the 3 `.pb` files are on the GitHub release [`mars-models-v1`](https://github.com/AvaSajjadi/live-tracker/releases/tag/mars-models-v1): two are 230 MB, over GitHub's file limit) | CC BY-NC 4.0 |
 
 ## Training
 
@@ -22,13 +22,9 @@ Every model named in the project report, what it does here, and where it is.
 
 ## MARS
 
-The MARS pretrained models are published by Caltech (CC BY-NC 4.0, record 801be-66057). They are not stored in this
-repository. To use the offline route, download them once:
-
-    python scripts/mars_pose_offline.py --download-only --models-dir ~/mars_local/models
-
-(543 MB zip; the md5 is checked and only the three `.pb` graph files are kept.) If the download is refused, open
-https://data.caltech.edu/records/801be-66057 in a browser, download `models.zip`, and unzip its `models/` folder there.
+The three MARS model files are attached to the GitHub release
+[`mars-models-v1`](https://github.com/AvaSajjadi/live-tracker/releases/tag/mars-models-v1): unchanged copies from the Caltech
+record 801be-66057 (CC BY-NC 4.0). `mars/README.md` has the download commands, where each file goes and its md5.
 
 ## References
 

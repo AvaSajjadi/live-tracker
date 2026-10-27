@@ -12,3 +12,5 @@ data/processed/
 *.zip
 outputs/
 *.egg-info/
+# MARS model files: too big for Git, they are on the GitHub release (models/mars/README.md)
+models/mars/**/*.pb

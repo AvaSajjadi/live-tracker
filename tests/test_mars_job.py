@@ -91,3 +91,18 @@ def test_a_job_that_stopped_without_a_done_file_is_failed(tmp_path):
 def test_the_time_estimate_matches_the_measured_speed():
     assert mj.estimate_minutes(450) == pytest.approx((mj.WARMUP_S + 450 / 1.2) / 60)
     assert 24 < mj.estimate_minutes(1800) < 27                                # one minute of video: about 25 minutes
+
+
+def test_the_project_models_folder_is_used_when_the_three_files_are_there(home, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    monkeypatch.setattr(mj, "ROOT", project)
+    assert mj.models_dir() == home / "models"                       # nothing in models/mars yet: the MARS home
+    for p in mj.PB_FILES[:2]:
+        f = project / "models" / "mars" / p
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x", encoding="utf-8")
+    assert mj.models_dir() == home / "models"                       # only two of the three: still the MARS home
+    f = project / "models" / "mars" / mj.PB_FILES[2]
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("x", encoding="utf-8")
+    assert mj.models_dir() == project / "models" / "mars"

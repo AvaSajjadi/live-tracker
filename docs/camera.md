@@ -96,8 +96,9 @@ rule the researcher confirmed. Everything is logged, and a report is written at 
 
 Live pose on this laptop is too slow, so a recorded video is analyzed afterwards and the result is loaded into the app.
 
-**Where things are (outside the project, not in Git):** `%USERPROFILE%\mars_local` holds the MARS models (`models\`, 328 MB of `.pb`
-files) and a Python environment with TensorFlow (`env\`). MARS models: CC BY-NC 4.0, from Caltech Data record 801be-66057.
+**Where things are:** the three MARS model files (584 MB of `.pb` files; CC BY-NC 4.0, from Caltech Data record 801be-66057)
+go in `models/mars/` in the project, downloaded from the GitHub release `mars-models-v1` (`models/mars/README.md`), or in
+`%USERPROFILE%\mars_local\models\`. The Python environment with TensorFlow is `%USERPROFILE%\mars_local\env\` (not in Git).
 
 **Speed on this laptop (CPU, 8 cores):** about 1.2 frames per second after a start-up of about 45 s. So 300 frames (10 s of video) take
 about 5 minutes, and 1 minute of video takes about 25 minutes. Start with a short clip.
@@ -137,7 +138,8 @@ MARS zip (pickle can run code). The models are not stored in Git (they are big; 
 
 **If the environment is missing** (new computer): create it with `python -m venv %USERPROFILE%\mars_local\env`, install
 `tensorflow numpy opencv-python-headless pandas pyarrow` into it, then run
-`python scripts\mars_pose_offline.py --download-only --models-dir %USERPROFILE%\mars_local\models` (543 MB, md5 checked).
+download the model files as in `models/mars/README.md` (or run
+`python scripts\mars_pose_offline.py --download-only --models-dir %USERPROFILE%\mars_local\models`: 543 MB from Caltech, md5 checked).
 
 ## 9. Acceptance test of the live camera path
 

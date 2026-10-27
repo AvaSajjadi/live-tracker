@@ -33,6 +33,13 @@ def home():
     return Path(os.environ.get(HOME_ENV) or Path.home() / "mars_local")
 
 
+def models_dir():
+    """models/mars in the project when the three files are there (downloaded from the GitHub release, see
+    models/mars/README.md), else <MARS home>/models."""
+    project = ROOT / "models" / "mars"
+    return project if all((project / p).is_file() for p in PB_FILES) else home() / "models"
+
+
 def python_exe():
     env = home() / "env"
     return env / "Scripts" / "python.exe" if os.name == "nt" else env / "bin" / "python"
@@ -42,9 +49,10 @@ def available():
     """(True, "") when MARS can run on this computer, else (False, what is missing)."""
     if not python_exe().is_file():
         return False, f"The MARS environment is missing ({python_exe()}). See docs/camera.md, section 8."
-    missing = [p for p in PB_FILES if not (home() / "models" / p).is_file()]
+    missing = [p for p in PB_FILES if not (models_dir() / p).is_file()]
     if missing:
-        return False, f"MARS model files are missing in {home() / 'models'}: {', '.join(missing)}. See docs/camera.md, section 8."
+        return False, (f"MARS model files are missing in {models_dir()}: {', '.join(missing)}. Download them into models/mars "
+                       "(see models/mars/README.md).")
     if not SCRIPT.is_file():
         return False, f"{SCRIPT} is missing."
     return True, ""
@@ -57,7 +65,7 @@ def estimate_minutes(frames):
 
 def command(video, job_dir, fps=30.0):
     return [str(python_exe()), str(SCRIPT), str(video), "--out", str(Path(job_dir) / "keypoints.parquet"),
-            "--models-dir", str(home() / "models"), "--batch", "4", "--session", "camera", "--fps", str(float(fps))]
+            "--models-dir", str(models_dir()), "--batch", "4", "--session", "camera", "--fps", str(float(fps))]
 
 
 def default_launcher(cmd, job_dir):

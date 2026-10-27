@@ -1,0 +1,12 @@
+path: <ScopeScore>/tool_tip_tracking_2/cholecinstanceseg_yolo
+train: images/train
+val:   images/val
+
+nc: 6
+names:
+  0: grasper
+  1: bipolar
+  2: hook
+  3: scissors
+  4: clipper
+  5: irrigator

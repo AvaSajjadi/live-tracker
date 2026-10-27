@@ -417,7 +417,7 @@ pages/2_Replay.py          guided flow 3: live camera with skeletons, or a recor
 pages/4_Real_Session.py    guided flow 4: the live run, alerts, live charts and report
 pages/3_, 5_ to 8_*.py     Investigation, Live Agent, Run, Camera, Motion tool
 src/live_tracker/          the package (camera, pose model, quality, features, classify, rules, monitor, event log, ...)
-models/                    Model A and B (behavior classifiers) and models/pose (the YOLO pose model and its settings)
+models/                    every model in the report: YOLO pose, Model A and B, ScopeScore (see models/README.md)
 tests/                     pytest suite (synthetic fixtures only)
 scripts/                   analysis, training and camera test scripts
 colab/                     notebooks: train the pose model, run MARS on a GPU

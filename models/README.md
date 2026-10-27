@@ -24,7 +24,7 @@ Every model named in the project report, what it does here, and where it is.
 
 The three MARS model files are attached to the GitHub release
 [`mars-models-v1`](https://github.com/AvaSajjadi/live-tracker/releases/tag/mars-models-v1): unchanged copies from the Caltech
-record 801be-66057 (CC BY-NC 4.0). `mars/README.md` has the download commands, where each file goes and its md5.
+record 801be-66057 (CC BY-NC 4.0). One command downloads them into `models/mars/`, joins the pieces and checks the md5s: `python scripts/download_mars_models.py`. `mars/README.md` has the details.
 
 ## References
 

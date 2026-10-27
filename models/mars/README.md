@@ -7,33 +7,25 @@ the faster YOLO pose model instead (`models/pose/`).
 
 ## The files
 
-Two of the three files are over GitHub's 100 MB limit, so they are attached to the release
-[`mars-models-v1`](https://github.com/AvaSajjadi/live-tracker/releases/tag/mars-models-v1) instead of the repository.
-Put them here:
+Two of the three files are over GitHub's 100 MB limit, so the files are attached to the release
+[`mars-models-v1`](https://github.com/AvaSajjadi/live-tracker/releases/tag/mars-models-v1) instead of the repository. The
+two 230 MB detection files are stored there in five 50 MB pieces each (`.part-a` to `.part-e`).
 
 | File | Size | Place | md5 |
 |---|---|---|---|
-| `MARS_top_detection_black.pb` | 230 MB | `models/mars/detection/` | `79f9b55a8eff1192b899e55cc0ea570c` |
-| `MARS_top_detection_white.pb` | 230 MB | `models/mars/detection/` | `4469996d5d7003c8c05d6279ed1506af` |
+| `MARS_top_detection_black.pb` | 230 MB (5 pieces) | `models/mars/detection/` | `79f9b55a8eff1192b899e55cc0ea570c` |
+| `MARS_top_detection_white.pb` | 230 MB (5 pieces) | `models/mars/detection/` | `4469996d5d7003c8c05d6279ed1506af` |
 | `MARS_top_pose.pb` | 98 MB | `models/mars/pose/` | `d380063a5177545721103a34fa650b56` |
 
-From the project folder (macOS / Linux):
+One command, from the project folder (any system), downloads them, joins the pieces and checks every md5:
 
-    R=https://github.com/AvaSajjadi/live-tracker/releases/download/mars-models-v1
-    mkdir -p models/mars/detection models/mars/pose
-    curl -L -o models/mars/detection/MARS_top_detection_black.pb $R/MARS_top_detection_black.pb
-    curl -L -o models/mars/detection/MARS_top_detection_white.pb $R/MARS_top_detection_white.pb
-    curl -L -o models/mars/pose/MARS_top_pose.pb $R/MARS_top_pose.pb
+    python scripts/download_mars_models.py
+
+By hand (macOS / Linux): download the pieces from the release page, then join them in order and check the md5:
+
+    cat MARS_top_detection_black.pb.part-? > models/mars/detection/MARS_top_detection_black.pb
+    cat MARS_top_detection_white.pb.part-? > models/mars/detection/MARS_top_detection_white.pb
     md5 -r models/mars/*/*.pb          # Linux: md5sum models/mars/*/*.pb
-
-Windows PowerShell:
-
-    $R = "https://github.com/AvaSajjadi/live-tracker/releases/download/mars-models-v1"
-    New-Item -ItemType Directory -Force models\mars\detection, models\mars\pose | Out-Null
-    Invoke-WebRequest "$R/MARS_top_detection_black.pb" -OutFile models\mars\detection\MARS_top_detection_black.pb
-    Invoke-WebRequest "$R/MARS_top_detection_white.pb" -OutFile models\mars\detection\MARS_top_detection_white.pb
-    Invoke-WebRequest "$R/MARS_top_pose.pb" -OutFile models\mars\pose\MARS_top_pose.pb
-    Get-FileHash -Algorithm MD5 models\mars\*\*.pb
 
 When the three files are here, the app uses this folder (`src/live_tracker/mars_job.py`); otherwise it looks in
 `~/mars_local/models` (or `$MARS_HOME/models`). The `.pb` files are ignored by Git.

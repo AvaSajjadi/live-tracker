@@ -106,3 +106,36 @@ def test_the_project_models_folder_is_used_when_the_three_files_are_there(home, 
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text("x", encoding="utf-8")
     assert mj.models_dir() == project / "models" / "mars"
+
+
+def test_the_download_script_joins_the_pieces_and_checks_the_md5(tmp_path, monkeypatch):
+    import hashlib
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("dl", Path(__file__).resolve().parents[1] / "scripts" / "download_mars_models.py")
+    dl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dl)
+    data = {name: name.encode() * 1000 for name in dl.FILES}
+    pieces = {}
+    for name, blob in data.items():
+        if dl.FILES[name][2]:
+            size = -(-len(blob) // len(dl.PARTS))
+            pieces.update({f"{name}.part-{p}": blob[i * size:(i + 1) * size] for i, p in enumerate(dl.PARTS)})
+        else:
+            pieces[name] = blob
+    monkeypatch.setattr(dl, "FILES", {n: (f, hashlib.md5(data[n]).hexdigest(), s) for n, (f, _, s) in dl.FILES.items()})
+    fetched = []
+    monkeypatch.setattr(dl, "fetch", lambda name, out: (fetched.append(name), out.write(pieces[name])))
+    dl.download(tmp_path)
+    assert (tmp_path / "detection" / "MARS_top_detection_black.pb").read_bytes() == data["MARS_top_detection_black.pb"]
+    assert (tmp_path / "pose" / "MARS_top_pose.pb").read_bytes() == data["MARS_top_pose.pb"]
+    assert len(fetched) == 11                                     # 5 + 5 pieces and the pose file
+    dl.download(tmp_path)                                         # already there with the right md5: nothing downloaded
+    assert len(fetched) == 11
+    monkeypatch.setattr(dl, "FILES", {"MARS_top_pose.pb": ("pose2", "0" * 32, False)})
+    try:
+        dl.download(tmp_path)
+    except SystemExit as exc:
+        assert "damaged" in str(exc) and not (tmp_path / "pose2" / "MARS_top_pose.download").exists()
+    else:
+        raise AssertionError("a wrong md5 must stop the download")
